@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fl-backdoor-system"
+version = "1.0.1"
+description = "Federated Learning with PyTorch and Flower (Quickstart Example)"
+license = "Apache-2.0"
+dependencies = [
+    "flwr[simulation]>=1.26.0",
+    "flwr-datasets[vision]>=0.5.0",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["fl_backdoor"]
+
+[tool.flwr.app]
+publisher = "flwrlabs"
+
+[tool.flwr.app.components]
+serverapp = "fl_backdoor.server.server:app"
+clientapp = "fl_backdoor.client.client:app"
+
+[tool.flwr.app.config]
+attack = "badnets"
+defense = "trimmed_mean"
+
+num-server-rounds = 20
+fraction-evaluate = 0.2
+local-epochs = 2
+learning-rate = 0.01
+batch-size = 32
+
+malicious-ratio = 0.2
+poison-rate = 0.3
+target-label = 0
+trigger-size = 4
+seed = 42
+wanet-noise = 0.2
+
+defense-clip-norm = 3.0
+# defense-trim-ratio = 0.2
+defense-trim-k = 2

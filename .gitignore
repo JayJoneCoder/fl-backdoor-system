@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+
+# Model files
+*.pt
+*.pth
+
+# Dataset
+data/
+
+# Env
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
