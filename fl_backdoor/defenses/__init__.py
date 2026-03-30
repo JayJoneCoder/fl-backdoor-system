@@ -1,6 +1,7 @@
 from .base import DefenseBase, DefenseConfig, IdentityDefense
 from .norm_clipping import NormClippingDefense, NormClippingFedAvg
 from .trimmed_mean import TrimmedMeanDefense, TrimmedMeanFedAvg
+from .krum import KrumDefense, KrumFedAvg
 
 
 def build_defense(
@@ -29,10 +30,13 @@ def build_defense(
 
     if normalized in {"trimmed_mean", "trimmed-mean"}:
         return TrimmedMeanDefense(config)
+    
+    if normalized in {"krum"}:
+        return KrumDefense(config)
 
     raise ValueError(
         f"Unsupported defense_type={defense_type!r}. "
-        f"Supported: 'none', 'identity', 'norm_clipping', 'trimmed_mean'."
+        f"Supported: 'none', 'identity', 'norm_clipping', 'trimmed_mean', 'krum'."
     )
 
 
@@ -52,4 +56,6 @@ __all__ = [
     "TrimmedMeanFedAvg",
     "build_defense",
     "build_defended_strategy",
+    "KrumDefense",
+    "KrumFedAvg",
 ]
