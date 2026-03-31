@@ -16,6 +16,13 @@ from .client import (
     FeatureDistributionFilterDefense,
     build_client_defense,
 )
+from .pipeline import (
+    DefensePipelineConfig,
+    DefensePipelineFedAvg,
+    DefensePipeline,
+    build_defense_pipeline,
+    build_defense_pipeline_from_run_config,
+)
 
 
 def build_defense(
@@ -44,7 +51,7 @@ def build_defense(
 
     if normalized in {"trimmed_mean", "trimmed-mean"}:
         return TrimmedMeanDefense(config)
-    
+
     if normalized in {"krum"}:
         return KrumDefense(config)
 
@@ -58,6 +65,7 @@ def build_defended_strategy(strategy, defense_type: str = "none", *, seed: int =
     """Convenience helper to apply defense in one step."""
     defense = build_defense(defense_type, seed=seed, **kwargs)
     return defense.apply(strategy)
+
 
 def build_detection(
     detection_type: str = "none",
@@ -90,6 +98,7 @@ def build_detection(
         f"Supported: 'none', 'identity', 'anomaly_detection'."
     )
 
+
 __all__ = [
     "DefenseBase",
     "DefenseConfig",
@@ -112,4 +121,9 @@ __all__ = [
     "IdentityDetection",
     "AnomalyDetectionDefense",
     "AnomalyDetectionFedAvg",
+    "DefensePipelineConfig",
+    "DefensePipelineFedAvg",
+    "DefensePipeline",
+    "build_defense_pipeline",
+    "build_defense_pipeline_from_run_config",
 ]

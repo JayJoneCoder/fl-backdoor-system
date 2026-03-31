@@ -8,7 +8,7 @@ from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedAvg
 
 from fl_backdoor.attacks import build_attack
-from fl_backdoor.defenses import build_defended_strategy
+from fl_backdoor.defenses.pipeline import build_defense_pipeline
 from fl_backdoor.task import Net, load_centralized_dataset, test
 from fl_backdoor.utils.logger import CSVLogger
 
@@ -25,11 +25,8 @@ def get_global_evaluate_fn(
     results_dir: str = "results",
     run_name: str = "experiment",
 ):
-    """Build server-side evaluation function with debug and CSV logging."""
-
     print(">>> [DEBUG] Enter get_global_evaluate_fn")
 
-    # Load dataset ONCE (important)
     try:
         clean_testloader = load_centralized_dataset()
         print(">>> [DEBUG] Loaded clean_testloader")
@@ -39,7 +36,6 @@ def get_global_evaluate_fn(
         traceback.print_exc()
         raise
 
-    # Logger
     logger = CSVLogger(
         save_dir=results_dir,
         filename=f"{run_name}.csv",
@@ -50,8 +46,6 @@ def get_global_evaluate_fn(
     target_label = getattr(attack.config, "target_label", 0)
 
     def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
-        """Evaluate global model each round."""
-
         print(f">>> [DEBUG] global_evaluate called (round={server_round})")
 
         try:
@@ -60,30 +54,20 @@ def get_global_evaluate_fn(
             model.to(device)
 
             # ------------------------
-            # Clean Accuracy
+            # Clean ACC
             # ------------------------
             print(">>> [DEBUG] Running clean test")
             test_loss, test_acc = test(model, clean_testloader, device)
-            print(">>> [DEBUG] Clean test done")
 
             # ------------------------
-            # ASR (Attack Success Rate)
+            # ASR
             # ------------------------
             if attack.name == "none":
                 asr = 0.0
-                print(">>> [DEBUG] attack.name == none → skip ASR")
             else:
-                print(">>> [DEBUG] Building triggered_testloader")
                 triggered_testloader = attack.get_triggered_loader(clean_testloader)
-                print(">>> [DEBUG] Built triggered_testloader")
-
-                print(">>> [DEBUG] Running ASR evaluation")
                 asr = evaluate_asr(model, triggered_testloader, device, target_label)
-                print(">>> [DEBUG] ASR evaluation done")
 
-            # ------------------------
-            # Print
-            # ------------------------
             print(
                 f"[Round {server_round:02d}] "
                 f"ACC={test_acc * 100:.2f}% | "
@@ -91,9 +75,6 @@ def get_global_evaluate_fn(
                 f"LOSS={test_loss:.4f}"
             )
 
-            # ------------------------
-            # Log
-            # ------------------------
             logger.log(
                 round=server_round,
                 accuracy=float(test_acc),
@@ -119,8 +100,6 @@ def get_global_evaluate_fn(
 
 
 def evaluate_asr(model, triggered_testloader, device, target_label: int) -> float:
-    """Compute Attack Success Rate (ASR)."""
-
     print(">>> [DEBUG] Enter evaluate_asr")
 
     model.eval()
@@ -133,7 +112,6 @@ def evaluate_asr(model, triggered_testloader, device, target_label: int) -> floa
                 images = batch["img"].to(device)
                 labels = batch["label"].to(device)
 
-                # ignore already target-label samples
                 mask = labels != target_label
                 if mask.sum().item() == 0:
                     continue
@@ -161,8 +139,6 @@ def evaluate_asr(model, triggered_testloader, device, target_label: int) -> floa
 # =========================================================
 @app.main()
 def main(grid: Grid, context: Context) -> None:
-    """Main entry point for the ServerApp."""
-
     try:
         print(">>> [DEBUG] Server main() START")
         print(">>> run_config =", dict(context.run_config))
@@ -173,82 +149,59 @@ def main(grid: Grid, context: Context) -> None:
         fraction_evaluate: float = context.run_config["fraction-evaluate"]
         num_rounds: int = context.run_config["num-server-rounds"]
         lr: float = context.run_config["learning-rate"]
+        seed = int(context.run_config.get("seed", 42))
 
         # ========================
         # Attack config
         # ========================
         attack_type = str(
-            context.run_config.get(
-                "attack-type",
-                context.run_config.get("attack", "badnets"),
-            )
+            context.run_config.get("attack-type", context.run_config.get("attack", "badnets"))
         ).lower()
-
-        malicious_ratio = float(context.run_config.get("malicious-ratio", 0.2))
-        poison_rate = float(context.run_config.get("poison-rate", 0.05))
-        target_label = int(context.run_config.get("target-label", 0))
-        trigger_size = int(context.run_config.get("trigger-size", 4))
-        seed = int(context.run_config.get("seed", 42))
-        grid_size = context.run_config.get("wanet-grid-size", None)
-        noise_scale = float(context.run_config.get("wanet-noise", 0.05))
-
-        # ========================
-        # Defense config
-        # ========================
-        defense_type = str(context.run_config.get("defense", "none")).lower()
-        defense_kwargs = {}
-
-        for key, value in dict(context.run_config).items():
-            if key.startswith("defense-") and key != "defense":
-                defense_key = key.removeprefix("defense-").replace("-", "_")
-                defense_kwargs[defense_key] = value
-
-        if "clip-norm" in context.run_config and "clip_norm" not in defense_kwargs:
-            defense_kwargs["clip_norm"] = context.run_config["clip-norm"]
-
-        # ========================
-        # Detection config
-        # ========================
-        detection_type = str(context.run_config.get("detection", "none")).lower()
-        detection_kwargs = {}
-
-        for key, value in dict(context.run_config).items():
-            if key.startswith("detection-") and key != "detection":
-                detection_key = key.removeprefix("detection-").replace("-", "_")
-                detection_kwargs[detection_key] = value
-
-        # ========================
-        # Experiment naming (VERY IMPORTANT)
-        # ========================
-        results_dir = str(context.run_config.get("results-dir", "results"))
-
-        run_name = str(
-            context.run_config.get(
-                "run-name",
-                f"{attack_type}_{defense_type}_seed{seed}",
-            )
-        )
-
-        print(f">>> [DEBUG] results_dir = {results_dir}")
-        print(f">>> [DEBUG] run_name = {run_name}")
-
-        # ========================
-        # Build attack
-        # ========================
-        print(">>> [DEBUG] Building attack...")
 
         attack = build_attack(
             attack_type=attack_type,
-            malicious_ratio=malicious_ratio,
-            poison_rate=poison_rate,
-            target_label=target_label,
-            trigger_size=trigger_size,
+            malicious_ratio=float(context.run_config.get("malicious-ratio", 0.2)),
+            poison_rate=float(context.run_config.get("poison-rate", 0.05)),
+            target_label=int(context.run_config.get("target-label", 0)),
+            trigger_size=int(context.run_config.get("trigger-size", 4)),
             seed=seed,
-            grid_size=None if grid_size is None else int(grid_size),
-            noise_scale=noise_scale,
+            grid_size=context.run_config.get("wanet-grid-size", None),
+            noise_scale=float(context.run_config.get("wanet-noise", 0.05)),
         )
 
         print(">>> [DEBUG] Attack built:", attack)
+
+        # ========================
+        # Defense configs
+        # ========================
+        client_defense_type = str(context.run_config.get("client-defense", "none")).lower()
+        detection_type = str(context.run_config.get("detection", "none")).lower()
+        aggregation_type = str(context.run_config.get("defense", "none")).lower()
+
+        def extract_kwargs(prefix: str):
+            out = {}
+            for k, v in dict(context.run_config).items():
+                if k.startswith(prefix):
+                    key = k.removeprefix(prefix).replace("-", "_")
+                    out[key] = v
+            return out
+
+        client_defense_kwargs = extract_kwargs("client-defense-")
+        detection_kwargs = extract_kwargs("detection-")
+        aggregation_kwargs = extract_kwargs("defense-")
+
+        # ========================
+        # Naming
+        # ========================
+        results_dir = str(context.run_config.get("results-dir", "results"))
+        run_name = str(
+            context.run_config.get(
+                "run-name",
+                f"{attack_type}_{client_defense_type}_{detection_type}_{aggregation_type}",
+            )
+        )
+
+        print(f">>> [DEBUG] run_name = {run_name}")
 
         # ========================
         # Model init
@@ -257,31 +210,25 @@ def main(grid: Grid, context: Context) -> None:
         arrays = ArrayRecord(global_model.state_dict())
 
         # ========================
-        # Strategy
+        # Strategy + Pipeline
         # ========================
         base_strategy = FedAvg(fraction_evaluate=fraction_evaluate)
 
-        strategy = build_defended_strategy(
-            base_strategy,
-            defense_type=defense_type,
+        pipeline = build_defense_pipeline(
+            client_defense_type=client_defense_type,
+            detection_type=detection_type,
+            aggregation_type=aggregation_type,
             seed=seed,
-            **defense_kwargs,
+            client_defense_kwargs=client_defense_kwargs,
+            detection_kwargs=detection_kwargs,
+            aggregation_kwargs=aggregation_kwargs,
         )
+
+        print(">>> [DEBUG] Pipeline ready:", pipeline)
+
+        strategy = pipeline.apply(base_strategy)
 
         print(">>> [DEBUG] Strategy ready")
-
-        # ========================
-        # Build detection
-        # ========================
-        from fl_backdoor.defenses.server.detection import build_detection
-
-        detection = build_detection(
-            detection_type=detection_type,
-            seed=seed,
-            **detection_kwargs,
-        )
-
-        strategy = detection.apply(strategy)
 
         # ========================
         # Start FL
