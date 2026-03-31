@@ -1,5 +1,6 @@
 from .base import DetectionBase, DetectionConfig, IdentityDetection
 from .anomaly_detection import AnomalyDetectionDefense, AnomalyDetectionFedAvg
+from .cosine_detection import CosineDetectionDefense, CosineDetectionFedAvg
 
 
 def build_detection(
@@ -29,9 +30,18 @@ def build_detection(
     }:
         return AnomalyDetectionDefense(config)
 
+    if normalized in {
+        "cosine_detection",
+        "cosine-detection",
+        "cosine_anomaly",
+        "cosine-anomaly",
+        "cosine_detector",
+    }:
+        return CosineDetectionDefense(config)
+
     raise ValueError(
         f"Unsupported detection_type={detection_type!r}. "
-        f"Supported: 'none', 'identity', 'anomaly_detection'."
+        f"Supported: 'none', 'identity', 'anomaly_detection', 'cosine_detection'."
     )
 
 
@@ -41,5 +51,7 @@ __all__ = [
     "IdentityDetection",
     "AnomalyDetectionDefense",
     "AnomalyDetectionFedAvg",
+    "CosineDetectionDefense",
+    "CosineDetectionFedAvg",
     "build_detection",
 ]

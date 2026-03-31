@@ -8,7 +8,7 @@ from fl_backdoor.task import Net, load_data
 from fl_backdoor.task import test as test_fn
 from fl_backdoor.task import train as train_fn
 from fl_backdoor.attacks import build_attack
-from fl_backdoor.defenses import build_client_defense
+from fl_backdoor.defenses import build_defense_pipeline_from_run_config
 
 # Flower ClientApp
 app = ClientApp()
@@ -66,29 +66,16 @@ def train(msg: Message, context: Context):
         print(f"[Client {partition_id}] benign client")
 
     # ------------------------
-    # Client-side defense
+    # Build Pipeline
     # ------------------------
-    client_defense_type = str(
-        context.run_config.get(
-            "client-defense",
-            context.run_config.get("client_defense", "none"),
-        )
-    ).lower()
-
-    client_defense_kwargs = {}
-    for key, value in dict(context.run_config).items():
-        if key.startswith("client-defense-"):
-            defense_key = key.removeprefix("client-defense-").replace("-", "_")
-            client_defense_kwargs[defense_key] = value
-
-    print(f">>> [DEBUG] client_defense_type = {client_defense_type}")
-    print(f">>> [DEBUG] client_defense_kwargs = {client_defense_kwargs}")
-
-    client_defense = build_client_defense(
-        client_defense_type,
+    pipeline = build_defense_pipeline_from_run_config(
+        context.run_config,
         seed=seed,
-        **client_defense_kwargs,
     )
+
+    client_defense = pipeline.build_client_defense()
+
+    print(f">>> [DEBUG] client_defense = {client_defense}")
 
     trainloader, defense_stats = client_defense.apply(
         model=model,

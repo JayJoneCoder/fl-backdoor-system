@@ -81,9 +81,16 @@ client-defense-min-class-samples = 8
 
 # detection = "anomaly_detection"   # ← 用这个开启测试
 
+# --- Anomaly Detection ---
 detection-z-threshold = 2.5     # 异常检测阈值（z-score）
 detection-top-k = 2             # 最多剔除多少客户端
 detection-min-clients = 3       # 至少参与检测的客户端数（防止小样本误判）
+
+# --- Cosine Detection ---
+detection-cosine-floor = 0.2
+detection-min-kept-clients = 2
+detection-max-reject-fraction = 0.5
+detection-enable-filter = true
 
 
 # =========================================================
@@ -108,7 +115,7 @@ defense-krum-k = 1
 
 results-dir = "results"
 
-run-name = "badnets_featfilter_krum"
+run-name = "badnets_featfilter_cosine_krum"
 # 推荐格式：
 # attack + client-defense + detection + aggregation
 # 例如：

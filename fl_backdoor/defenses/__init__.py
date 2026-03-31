@@ -8,6 +8,8 @@ from .server.detection import (
     IdentityDetection,
     AnomalyDetectionDefense,
     AnomalyDetectionFedAvg,
+    CosineDetectionDefense,
+    CosineDetectionFedAvg,
 )
 from .client import (
     ClientDefenseBase,
@@ -93,9 +95,18 @@ def build_detection(
     }:
         return AnomalyDetectionDefense(config)
 
+    if normalized in {
+        "cosine_detection",
+        "cosine-detection",
+        "cosine_anomaly",
+        "cosine-anomaly",
+        "cosine_detector",
+    }:
+        return CosineDetectionDefense(config)
+
     raise ValueError(
         f"Unsupported detection_type={detection_type!r}. "
-        f"Supported: 'none', 'identity', 'anomaly_detection'."
+        f"Supported: 'none', 'identity', 'anomaly_detection', 'cosine_detection'."
     )
 
 
@@ -126,4 +137,6 @@ __all__ = [
     "DefensePipeline",
     "build_defense_pipeline",
     "build_defense_pipeline_from_run_config",
+    "CosineDetectionDefense",
+    "CosineDetectionFedAvg",
 ]

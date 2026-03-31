@@ -345,112 +345,162 @@ class DefensePipelineFedAvg(FedAvg):
         self.current_arrays = arrays.copy()
         return super().configure_train(server_round, arrays, config, grid)
 
-    def _apply_detection(
-        self, replies: list[Message]
-    ) -> tuple[list[Message], MetricRecord]:
-        detection_type = _normalize_name(self.pipeline_config.detection_type)
-        extra = _normalize_kwargs(self.pipeline_config.detection_kwargs)
+def _apply_detection(
+    self, server_round: int, replies: list[Message]
+) -> tuple[list[Message], MetricRecord]:
+    detection_type = _normalize_name(self.pipeline_config.detection_type)
+    extra = _normalize_kwargs(self.pipeline_config.detection_kwargs)
 
-        if detection_type in {"", "none", "identity"}:
-            return replies, MetricRecord()
+    if detection_type in {"", "none", "identity"}:
+        return replies, MetricRecord()
 
-        if detection_type not in {
-            "anomaly_detection",
-            "anomaly_detection_defense",
-            "update_anomaly",
-            "update_detector",
-            "anomaly-detection",
-        }:
-            raise ValueError(
-                f"Combined pipeline currently supports anomaly_detection only, got "
-                f"{self.pipeline_config.detection_type!r}."
-            )
-
-        norm_z_threshold = float(
-            extra.get("norm_z_threshold", extra.get("z_threshold", 3.5))
+    supported_detection_types = {
+        "anomaly_detection",
+        "anomaly_detection_defense",
+        "update_anomaly",
+        "update_detector",
+        "anomaly-detection",
+        "cosine_detection",
+        "cosine_detection_defense",
+        "cosine-detection",
+        "cosine_anomaly",
+        "cosine-anomaly",
+        "cosine_detector",
+    }
+    if detection_type not in supported_detection_types:
+        raise ValueError(
+            f"Combined pipeline currently supports anomaly_detection and cosine_detection, got "
+            f"{self.pipeline_config.detection_type!r}."
         )
-        cosine_floor = float(extra.get("cosine_floor", 0.0))
-        min_clients = int(extra.get("min_clients", extra.get("min_total_clients", 2)))
-        min_kept_clients = int(extra.get("min_kept_clients", min_clients))
-        top_k = extra.get("top_k", extra.get("max_reject_count", None))
-        max_reject_fraction = float(extra.get("max_reject_fraction", 0.5))
-        enable_filter = bool(extra.get("enable_filter", True))
 
-        if self.current_arrays is None:
-            return replies, MetricRecord(
+    # Shared params
+    cosine_floor = float(extra.get("cosine_floor", 0.0))
+    min_clients = int(extra.get("min_clients", extra.get("min_total_clients", 2)))
+    min_kept_clients = int(extra.get("min_kept_clients", min_clients))
+    top_k = extra.get("top_k", extra.get("max_reject_count", None))
+    max_reject_fraction = float(extra.get("max_reject_fraction", 0.5))
+    enable_filter = bool(extra.get("enable_filter", True))
+    warmup_rounds = int(extra.get("warmup_rounds", 0))
+
+    # Warmup: do not detect in early rounds
+    if server_round < warmup_rounds:
+        return replies, MetricRecord(
+            {
+                "defense-detect-skipped": 1,
+                "defense-detect-skip-reason": "warmup",
+                "defense-detect-warmup-rounds": int(warmup_rounds),
+                "defense-detect-round": int(server_round),
+            }
+        )
+
+    if self.current_arrays is None:
+        return replies, MetricRecord(
+            {
+                "defense-detect-skipped": 1,
+                "defense-detect-skip-reason": "current_arrays_missing",
+                "defense-detect-round": int(server_round),
+            }
+        )
+
+    if len(replies) < min_clients:
+        return replies, MetricRecord(
+            {
+                "defense-detect-skipped": 1,
+                "defense-detect-skip-reason": "too_few_clients",
+                "defense-detect-total-clients": int(len(replies)),
+                "defense-detect-min-clients": int(min_clients),
+                "defense-detect-round": int(server_round),
+            }
+        )
+
+    global_vector = _state_dict_to_vector(self.current_arrays.to_torch_state_dict())
+    if global_vector.size == 0:
+        return replies, MetricRecord(
+            {
+                "defense-detect-skipped": 1,
+                "defense-detect-skip-reason": "empty_global_vector",
+                "defense-detect-round": int(server_round),
+            }
+        )
+
+    scored_replies: list[Message] = []
+    vectors: list[np.ndarray] = []
+    skipped = 0
+
+    for msg in replies:
+        try:
+            content = RecordDict(msg.content)
+            local_arrays = content[self.arrayrecord_key]
+            local_vector = _state_dict_to_vector(local_arrays.to_torch_state_dict())
+        except Exception:
+            skipped += 1
+            continue
+
+        if local_vector.shape != global_vector.shape:
+            skipped += 1
+            continue
+
+        scored_replies.append(msg)
+        vectors.append(local_vector)
+
+    if not scored_replies:
+        return replies, MetricRecord(
+            {
+                "defense-detect-skipped": 1,
+                "defense-detect-skip-reason": "no_valid_vectors",
+                "defense-detect-skip-count": int(skipped),
+                "defense-detect-round": int(server_round),
+            }
+        )
+
+    stacked = np.stack(vectors, axis=0)
+    deltas = stacked - global_vector.reshape(1, -1)
+
+    norms = np.linalg.norm(deltas, axis=1)
+    median_norm = float(np.median(norms)) if len(norms) > 0 else 0.0
+    mad = float(np.median(np.abs(norms - median_norm))) if len(norms) > 0 else 0.0
+    robust_scale = 1.4826 * mad + _EPS
+    norm_z = np.abs(norms - median_norm) / robust_scale
+
+    center = np.mean(deltas, axis=0)
+    cosine = np.array(
+        [_cosine_similarity(delta, center) for delta in deltas],
+        dtype=np.float64,
+    )
+    score = norm_z + np.clip(1.0 - cosine, 0.0, 2.0)
+
+    total = len(scored_replies)
+
+    # -------------------------------------------------
+    # Cosine-based detection branch
+    # -------------------------------------------------
+    if detection_type in {
+        "cosine_detection",
+        "cosine_detection_defense",
+        "cosine-detection",
+        "cosine_anomaly",
+        "cosine-anomaly",
+        "cosine_detector",
+    }:
+        if total == 1:
+            return scored_replies, MetricRecord(
                 {
-                    "defense-detect-skipped": 1,
-                    "defense-detect-skip-reason": "current_arrays_missing",
-                }
-            )
-
-        if len(replies) < min_clients:
-            return replies, MetricRecord(
-                {
-                    "defense-detect-skipped": 1,
-                    "defense-detect-skip-reason": "too_few_clients",
-                    "defense-detect-total-clients": int(len(replies)),
-                    "defense-detect-min-clients": int(min_clients),
-                }
-            )
-
-        global_vector = _state_dict_to_vector(self.current_arrays.to_torch_state_dict())
-        if global_vector.size == 0:
-            return replies, MetricRecord(
-                {
-                    "defense-detect-skipped": 1,
-                    "defense-detect-skip-reason": "empty_global_vector",
-                }
-            )
-
-        scored_replies: list[Message] = []
-        vectors: list[np.ndarray] = []
-        skipped = 0
-
-        for msg in replies:
-            try:
-                content = RecordDict(msg.content)
-                local_arrays = content[self.arrayrecord_key]
-                local_vector = _state_dict_to_vector(local_arrays.to_torch_state_dict())
-            except Exception:
-                skipped += 1
-                continue
-
-            if local_vector.shape != global_vector.shape:
-                skipped += 1
-                continue
-
-            scored_replies.append(msg)
-            vectors.append(local_vector)
-
-        if not scored_replies:
-            return replies, MetricRecord(
-                {
-                    "defense-detect-skipped": 1,
-                    "defense-detect-skip-reason": "no_valid_vectors",
+                    "defense-detect-type": detection_type,
+                    "defense-detect-round": int(server_round),
+                    "defense-detect-total-clients": 1,
+                    "defense-detect-kept-clients": 1,
+                    "defense-detect-filtered-clients": 0,
+                    "defense-detect-filter-ratio": 0.0,
+                    "defense-detect-suspicious-clients": 0,
                     "defense-detect-skip-count": int(skipped),
+                    "defense-detect-mean-cosine": 1.0,
+                    "defense-detect-min-cosine": 1.0,
+                    "defense-detect-max-cosine": 1.0,
                 }
             )
 
-        stacked = np.stack(vectors, axis=0)
-        deltas = stacked - global_vector.reshape(1, -1)
-
-        norms = np.linalg.norm(deltas, axis=1)
-        median_norm = float(np.median(norms)) if len(norms) > 0 else 0.0
-        mad = float(np.median(np.abs(norms - median_norm))) if len(norms) > 0 else 0.0
-        robust_scale = 1.4826 * mad + _EPS
-        norm_z = np.abs(norms - median_norm) / robust_scale
-
-        center = np.mean(deltas, axis=0)
-        cosine = np.array(
-            [_cosine_similarity(delta, center) for delta in deltas],
-            dtype=np.float64,
-        )
-        score = norm_z + np.clip(1.0 - cosine, 0.0, 2.0)
-
-        suspicious = (norm_z > norm_z_threshold) | (cosine < cosine_floor)
-
-        total = len(scored_replies)
+        cosine_scores = (cosine if cosine.ndim > 0 else np.asarray([float(cosine)]))
+        suspicious = cosine_scores < cosine_floor
 
         if top_k is not None:
             max_rejects = int(top_k)
@@ -465,58 +515,136 @@ class DefensePipelineFedAvg(FedAvg):
         if enable_filter:
             keep_indices = np.where(~suspicious)[0].tolist()
             if len(keep_indices) < target_keep:
-                keep_indices = np.argsort(score)[:target_keep].tolist()
+                keep_indices = np.argsort(-cosine_scores)[:target_keep].tolist()
             keep_indices = sorted(set(int(i) for i in keep_indices))
         else:
             keep_indices = list(range(total))
 
         filtered_replies = [scored_replies[i] for i in keep_indices]
+        arrays, metrics = super().aggregate_train(server_round, filtered_replies)
 
-        metrics = MetricRecord(
-            {
-                "defense-detect-type": detection_type,
-                "defense-detect-total-clients": int(total),
-                "defense-detect-kept-clients": int(len(filtered_replies)),
-                "defense-detect-filtered-clients": int(total - len(filtered_replies)),
-                "defense-detect-filter-ratio": (
-                    float((total - len(filtered_replies)) / total) if total > 0 else 0.0
-                ),
-                "defense-detect-suspicious-clients": int(np.sum(suspicious)),
-                "defense-detect-norm-z-threshold": float(norm_z_threshold),
-                "defense-detect-cosine-floor": float(cosine_floor),
-                "defense-detect-min-clients": int(min_clients),
-                "defense-detect-min-kept-clients": int(min_kept_clients),
-                "defense-detect-max-reject-count": int(max_rejects),
-                "defense-detect-mean-update-norm": (
-                    float(np.mean(norms)) if len(norms) > 0 else 0.0
-                ),
-                "defense-detect-max-update-norm": (
-                    float(np.max(norms)) if len(norms) > 0 else 0.0
-                ),
-                "defense-detect-mean-norm-z": (
-                    float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0
-                ),
-                "defense-detect-max-norm-z": (
-                    float(np.max(norm_z)) if len(norm_z) > 0 else 0.0
-                ),
-                "defense-detect-mean-cosine": (
-                    float(np.mean(cosine)) if len(cosine) > 0 else 0.0
-                ),
-                "defense-detect-min-cosine": (
-                    float(np.min(cosine)) if len(cosine) > 0 else 0.0
-                ),
-                "defense-detect-mean-score": (
-                    float(np.mean(score)) if len(score) > 0 else 0.0
-                ),
-                "defense-detect-max-score": (
-                    float(np.max(score)) if len(score) > 0 else 0.0
-                ),
-                "defense-detect-skip-count": int(skipped),
-                "defense-detect-enable-filter": int(enable_filter),
-            }
-        )
+        extra_metrics = {
+            "defense-detect-type": detection_type,
+            "defense-detect-round": int(server_round),
+            "defense-detect-total-clients": int(total),
+            "defense-detect-kept-clients": int(len(filtered_replies)),
+            "defense-detect-filtered-clients": int(total - len(filtered_replies)),
+            "defense-detect-filter-ratio": (
+                float((total - len(filtered_replies)) / total) if total > 0 else 0.0
+            ),
+            "defense-detect-suspicious-clients": int(np.sum(suspicious)),
+            "defense-detect-cosine-floor": float(cosine_floor),
+            "defense-detect-min-clients": int(min_clients),
+            "defense-detect-min-kept-clients": int(min_kept_clients),
+            "defense-detect-max-reject-count": int(max_rejects),
+            "defense-detect-mean-update-norm": (
+                float(np.mean(norms)) if len(norms) > 0 else 0.0
+            ),
+            "defense-detect-max-update-norm": (
+                float(np.max(norms)) if len(norms) > 0 else 0.0
+            ),
+            "defense-detect-mean-cosine": (
+                float(np.mean(cosine_scores)) if len(cosine_scores) > 0 else 0.0
+            ),
+            "defense-detect-min-cosine": (
+                float(np.min(cosine_scores)) if len(cosine_scores) > 0 else 0.0
+            ),
+            "defense-detect-max-cosine": (
+                float(np.max(cosine_scores)) if len(cosine_scores) > 0 else 0.0
+            ),
+            "defense-detect-mean-score": (
+                float(np.mean(score)) if len(score) > 0 else 0.0
+            ),
+            "defense-detect-max-score": (
+                float(np.max(score)) if len(score) > 0 else 0.0
+            ),
+            "defense-detect-skip-count": int(skipped),
+            "defense-detect-enable-filter": int(enable_filter),
+        }
 
-        return filtered_replies, metrics
+        if metrics is None:
+            metrics = MetricRecord()
+        return arrays, _merge_metrics(metrics, MetricRecord(extra_metrics))
+
+    # -------------------------------------------------
+    # Original anomaly-detection branch
+    # -------------------------------------------------
+    norm_z_threshold = float(
+        extra.get("norm_z_threshold", extra.get("z_threshold", 3.5))
+    )
+
+    suspicious = (norm_z > norm_z_threshold) | (cosine < cosine_floor)
+
+    if top_k is not None:
+        max_rejects = int(top_k)
+    else:
+        max_rejects = int(np.floor(total * max_reject_fraction))
+
+    max_rejects = max(0, min(max_rejects, total))
+    max_rejects = min(max_rejects, max(0, total - min_kept_clients))
+    target_keep = max(min_kept_clients, total - max_rejects)
+    target_keep = min(target_keep, total)
+
+    if enable_filter:
+        keep_indices = np.where(~suspicious)[0].tolist()
+        if len(keep_indices) < target_keep:
+            keep_indices = np.argsort(score)[:target_keep].tolist()
+        keep_indices = sorted(set(int(i) for i in keep_indices))
+    else:
+        keep_indices = list(range(total))
+
+    filtered_replies = [scored_replies[i] for i in keep_indices]
+
+    metrics = MetricRecord(
+        {
+            "defense-detect-type": detection_type,
+            "defense-detect-round": int(server_round),
+            "defense-detect-total-clients": int(total),
+            "defense-detect-kept-clients": int(len(filtered_replies)),
+            "defense-detect-filtered-clients": int(total - len(filtered_replies)),
+            "defense-detect-filter-ratio": (
+                float((total - len(filtered_replies)) / total) if total > 0 else 0.0
+            ),
+            "defense-detect-suspicious-clients": int(np.sum(suspicious)),
+            "defense-detect-norm-z-threshold": float(norm_z_threshold),
+            "defense-detect-cosine-floor": float(cosine_floor),
+            "defense-detect-min-clients": int(min_clients),
+            "defense-detect-min-kept-clients": int(min_kept_clients),
+            "defense-detect-max-reject-count": int(max_rejects),
+            "defense-detect-mean-update-norm": (
+                float(np.mean(norms)) if len(norms) > 0 else 0.0
+            ),
+            "defense-detect-max-update-norm": (
+                float(np.max(norms)) if len(norms) > 0 else 0.0
+            ),
+            "defense-detect-mean-norm-z": (
+                float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0
+            ),
+            "defense-detect-max-norm-z": (
+                float(np.max(norm_z)) if len(norm_z) > 0 else 0.0
+            ),
+            "defense-detect-mean-cosine": (
+                float(np.mean(cosine)) if len(cosine) > 0 else 0.0
+            ),
+            "defense-detect-min-cosine": (
+                float(np.min(cosine)) if len(cosine) > 0 else 0.0
+            ),
+            "defense-detect-mean-score": (
+                float(np.mean(score)) if len(score) > 0 else 0.0
+            ),
+            "defense-detect-max-score": (
+                float(np.max(score)) if len(score) > 0 else 0.0
+            ),
+            "defense-detect-skip-count": int(skipped),
+            "defense-detect-enable-filter": int(enable_filter),
+        }
+    )
+
+    arrays, agg_metrics = super().aggregate_train(server_round, filtered_replies)
+    if agg_metrics is None:
+        agg_metrics = MetricRecord()
+
+    return arrays, _merge_metrics(agg_metrics, metrics)
 
     def _apply_aggregation(
         self, replies: list[Message]
