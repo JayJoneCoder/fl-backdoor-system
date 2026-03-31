@@ -8,6 +8,8 @@ from fl_backdoor.task import Net, load_data
 from fl_backdoor.task import test as test_fn
 from fl_backdoor.task import train as train_fn
 from fl_backdoor.attacks import build_attack
+from fl_backdoor.defenses import build_client_defense
+
 # Flower ClientApp
 app = ClientApp()
 
@@ -63,6 +65,39 @@ def train(msg: Message, context: Context):
     else:
         print(f"[Client {partition_id}] benign client")
 
+    # ------------------------
+    # Client-side defense
+    # ------------------------
+    client_defense_type = str(
+        context.run_config.get(
+            "client-defense",
+            context.run_config.get("client_defense", "none"),
+        )
+    ).lower()
+
+    client_defense_kwargs = {}
+    for key, value in dict(context.run_config).items():
+        if key.startswith("client-defense-"):
+            defense_key = key.removeprefix("client-defense-").replace("-", "_")
+            client_defense_kwargs[defense_key] = value
+
+    print(f">>> [DEBUG] client_defense_type = {client_defense_type}")
+    print(f">>> [DEBUG] client_defense_kwargs = {client_defense_kwargs}")
+
+    client_defense = build_client_defense(
+        client_defense_type,
+        seed=seed,
+        **client_defense_kwargs,
+    )
+
+    trainloader, defense_stats = client_defense.apply(
+        model=model,
+        trainloader=trainloader,
+        device=device,
+    )
+
+    print(f">>> [DEBUG] client defense applied: {defense_stats}")
+
     # Train
     train_loss = train_fn(
         model,
@@ -78,6 +113,7 @@ def train(msg: Message, context: Context):
         "train_loss": train_loss,
         "num-examples": len(trainloader.dataset),
         "is_malicious": int(is_malicious),
+        **defense_stats,
     }
     metric_record = MetricRecord(metrics)
     content = RecordDict({"arrays": model_record, "metrics": metric_record})

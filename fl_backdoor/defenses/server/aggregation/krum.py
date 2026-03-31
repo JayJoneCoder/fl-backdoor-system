@@ -9,7 +9,7 @@ from flwr.app import Array, ArrayRecord, ConfigRecord, Message, MetricRecord, Re
 from flwr.serverapp import Grid
 from flwr.serverapp.strategy import FedAvg
 
-from .base import DefenseBase, DefenseConfig
+from ...base import DefenseBase, DefenseConfig
 
 
 def _flatten_update(

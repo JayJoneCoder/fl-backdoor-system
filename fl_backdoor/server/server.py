@@ -207,6 +207,17 @@ def main(grid: Grid, context: Context) -> None:
             defense_kwargs["clip_norm"] = context.run_config["clip-norm"]
 
         # ========================
+        # Detection config
+        # ========================
+        detection_type = str(context.run_config.get("detection", "none")).lower()
+        detection_kwargs = {}
+
+        for key, value in dict(context.run_config).items():
+            if key.startswith("detection-") and key != "detection":
+                detection_key = key.removeprefix("detection-").replace("-", "_")
+                detection_kwargs[detection_key] = value
+
+        # ========================
         # Experiment naming (VERY IMPORTANT)
         # ========================
         results_dir = str(context.run_config.get("results-dir", "results"))
@@ -258,6 +269,19 @@ def main(grid: Grid, context: Context) -> None:
         )
 
         print(">>> [DEBUG] Strategy ready")
+
+        # ========================
+        # Build detection
+        # ========================
+        from fl_backdoor.defenses.server.detection import build_detection
+
+        detection = build_detection(
+            detection_type=detection_type,
+            seed=seed,
+            **detection_kwargs,
+        )
+
+        strategy = detection.apply(strategy)
 
         # ========================
         # Start FL

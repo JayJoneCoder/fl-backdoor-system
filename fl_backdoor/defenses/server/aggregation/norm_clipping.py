@@ -10,7 +10,7 @@ from flwr.serverapp import Grid
 from flwr.serverapp.strategy import FedAvg
 from flwr.serverapp.strategy.strategy_utils import aggregate_arrayrecords
 
-from .base import DefenseBase, DefenseConfig
+from ...base import DefenseBase, DefenseConfig
 
 
 def _clip_client_update(

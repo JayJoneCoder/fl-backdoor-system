@@ -25,60 +25,91 @@ serverapp = "fl_backdoor.server.server:app"
 clientapp = "fl_backdoor.client.client:app"
 
 [tool.flwr.app.config]
-# ========================
-# Attack / Defense 选择
-# ========================
 
-attack = "badnets"          # 使用的攻击类型（none / badnets / wanet）
-defense = "krum"    # 使用的防御类型（none / norm_clipping / trimmed_mean / krum）
+# =========================================================
+# 实验核心开关（最高层）
+# =========================================================
 
+attack = "badnets"              # none / badnets / wanet
 
-# ========================
-# 联邦学习基础参数
-# ========================
+client-defense = "feature_filter"   # none / identity / feature_filter
+detection = "none"      # none / anomaly_detection /
 
-num-server-rounds = 10      # 联邦学习总通信轮数（全局训练轮数）
-fraction-evaluate = 0.2     # 每轮参与评估的客户端比例（0~1）
-local-epochs = 2            # 每个客户端本地训练的epoch数
-learning-rate = 0.01        # 本地训练学习率
-batch-size = 32             # 本地训练的batch大小
+defense = "krum"               # none / norm_clipping / trimmed_mean / krum
 
 
-# ========================
-# 攻击相关参数
-# ========================
+# =========================================================
+# 联邦学习基础参数（与安全无关）
+# =========================================================
 
-malicious-ratio = 0.2       # 恶意客户端比例（例如0.2表示20%客户端为攻击者）
-poison-rate = 0.3           # 恶意客户端中毒数据比例（多少训练数据被注入后门）
-target-label = 0            # 攻击目标标签（所有触发样本被误分类为该标签）
-trigger-size = 4            # BadNets触发器大小（例如4x4像素块）
-seed = 42                   # 随机种子（保证实验可复现）
-wanet-noise = 0.2           # WaNet攻击的形变噪声强度（越大越明显）
-
-
-# ========================
-# 防御参数（Norm Clipping）
-# ========================
-
-defense-clip-norm = 3.0     # 范数裁剪阈值（限制每个客户端更新的L2范数）
+num-server-rounds = 5
+fraction-evaluate = 0.2
+local-epochs = 2
+learning-rate = 0.01
+batch-size = 32
+seed = 42
 
 
-# ========================
-# 防御参数（Trimmed Mean）
-# ========================
+# =========================================================
+# 攻击参数（Attack）
+# =========================================================
 
-# defense-trim-ratio = 0.2  # 按比例裁剪（自动计算 trim_k = ratio * num_clients）
-defense-trim-k = 2          # 每一维去掉最大/最小的k个值（推荐直接用这个，更可控）
+malicious-ratio = 0.2
+poison-rate = 0.3
+target-label = 0
+trigger-size = 4
 
-# ========================
-# 防御参数（Krum）
-# ========================
+# --- WaNet ---
+wanet-noise = 0.2
 
-defense-num-malicious = 2   # 估计恶意客户端数量 f
-defense-krum-k = 1          # Multi-Krum 选几个（1=标准Krum，大于1为Multi-Krum）
 
-# ========================
-# 实验管理
-# ========================
-results-dir = "results"     # 实验结果保存路径
-run-name = "badnets_krum"   # 实验结果保存名称
+# =========================================================
+# 客户端防御（Client Defense）
+# =========================================================
+
+client-defense-filter-ratio = 0.1
+client-defense-min-keep = 16
+client-defense-scoring-batch-size = 128
+client-defense-use-label-centroids = true
+client-defense-label-blend-alpha = 0.5
+client-defense-min-class-samples = 8
+
+
+# =========================================================
+# 服务端检测（Detection） 
+# =========================================================
+
+# detection = "anomaly_detection"   # ← 用这个开启测试
+
+detection-z-threshold = 2.5     # 异常检测阈值（z-score）
+detection-top-k = 2             # 最多剔除多少客户端
+detection-min-clients = 3       # 至少参与检测的客户端数（防止小样本误判）
+
+
+# =========================================================
+# 服务端聚合防御（Aggregation Defense）
+# =========================================================
+
+# --- Norm Clipping ---
+defense-clip-norm = 3.0
+
+# --- Trimmed Mean ---
+# defense-trim-ratio = 0.2
+defense-trim-k = 2
+
+# --- Krum ---
+defense-num-malicious = 2
+defense-krum-k = 1
+
+
+# =========================================================
+# 实验管理（Logging / Naming）
+# =========================================================
+
+results-dir = "results"
+
+run-name = "badnets_featfilter_krum"
+# 推荐格式：
+# attack + client-defense + detection + aggregation
+# 例如：
+# badnets_featfilter_normdetect_krum
