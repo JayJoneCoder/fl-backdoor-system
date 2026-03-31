@@ -37,7 +37,7 @@ defense = "krum"    # 使用的防御类型（none / norm_clipping / trimmed_mea
 # 联邦学习基础参数
 # ========================
 
-num-server-rounds = 20      # 联邦学习总通信轮数（全局训练轮数）
+num-server-rounds = 10      # 联邦学习总通信轮数（全局训练轮数）
 fraction-evaluate = 0.2     # 每轮参与评估的客户端比例（0~1）
 local-epochs = 2            # 每个客户端本地训练的epoch数
 learning-rate = 0.01        # 本地训练学习率
@@ -76,3 +76,9 @@ defense-trim-k = 2          # 每一维去掉最大/最小的k个值（推荐直
 
 defense-num-malicious = 2   # 估计恶意客户端数量 f
 defense-krum-k = 1          # Multi-Krum 选几个（1=标准Krum，大于1为Multi-Krum）
+
+# ========================
+# 实验管理
+# ========================
+results-dir = "results"     # 实验结果保存路径
+run-name = "badnets_krum"   # 实验结果保存名称

@@ -10,34 +10,47 @@ from flwr.serverapp.strategy import FedAvg
 from fl_backdoor.attacks import build_attack
 from fl_backdoor.defenses import build_defended_strategy
 from fl_backdoor.task import Net, load_centralized_dataset, test
+from fl_backdoor.utils.logger import CSVLogger
 
 # Create ServerApp
 app = ServerApp()
 
 
-def get_global_evaluate_fn(attack):
-    """Build server-side evaluation function with debug."""
+# =========================================================
+# Evaluation (Server-side)
+# =========================================================
+def get_global_evaluate_fn(
+    attack,
+    *,
+    results_dir: str = "results",
+    run_name: str = "experiment",
+):
+    """Build server-side evaluation function with debug and CSV logging."""
 
     print(">>> [DEBUG] Enter get_global_evaluate_fn")
 
+    # Load dataset ONCE (important)
     try:
         clean_testloader = load_centralized_dataset()
         print(">>> [DEBUG] Loaded clean_testloader")
-
-        triggered_testloader = attack.get_triggered_loader(clean_testloader)
-        print(">>> [DEBUG] Built triggered_testloader")
-
     except Exception as e:
-        print("!!! ERROR in get_global_evaluate_fn:", e)
+        print("!!! ERROR while loading clean_testloader:", e)
         import traceback
         traceback.print_exc()
         raise
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # Logger
+    logger = CSVLogger(
+        save_dir=results_dir,
+        filename=f"{run_name}.csv",
+    )
+    print(f">>> [DEBUG] Logger initialized: {results_dir}/{run_name}.csv")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     target_label = getattr(attack.config, "target_label", 0)
 
     def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
-        """Evaluate model on central data."""
+        """Evaluate global model each round."""
 
         print(f">>> [DEBUG] global_evaluate called (round={server_round})")
 
@@ -46,29 +59,53 @@ def get_global_evaluate_fn(attack):
             model.load_state_dict(arrays.to_torch_state_dict())
             model.to(device)
 
-            # Clean evaluation
+            # ------------------------
+            # Clean Accuracy
+            # ------------------------
             print(">>> [DEBUG] Running clean test")
             test_loss, test_acc = test(model, clean_testloader, device)
             print(">>> [DEBUG] Clean test done")
-            
-            # Triggered evaluation for ASR
+
+            # ------------------------
+            # ASR (Attack Success Rate)
+            # ------------------------
             if attack.name == "none":
                 asr = 0.0
+                print(">>> [DEBUG] attack.name == none → skip ASR")
             else:
-                asr = evaluate_asr(model, triggered_testloader, device, target_label)
+                print(">>> [DEBUG] Building triggered_testloader")
+                triggered_testloader = attack.get_triggered_loader(clean_testloader)
+                print(">>> [DEBUG] Built triggered_testloader")
 
+                print(">>> [DEBUG] Running ASR evaluation")
+                asr = evaluate_asr(model, triggered_testloader, device, target_label)
+                print(">>> [DEBUG] ASR evaluation done")
+
+            # ------------------------
+            # Print
+            # ------------------------
             print(
                 f"[Round {server_round:02d}] "
-                f"ACC={test_acc*100:.2f}% | "
-                f"ASR={asr*100:.2f}% | "
+                f"ACC={test_acc * 100:.2f}% | "
+                f"ASR={asr * 100:.2f}% | "
                 f"LOSS={test_loss:.4f}"
+            )
+
+            # ------------------------
+            # Log
+            # ------------------------
+            logger.log(
+                round=server_round,
+                accuracy=float(test_acc),
+                asr=float(asr),
+                loss=float(test_loss),
             )
 
             return MetricRecord(
                 {
-                    "accuracy": round(float(test_acc), 4),
-                    "loss": round(float(test_loss), 4),
-                    "asr": round(float(asr), 4),
+                    "accuracy": float(test_acc),
+                    "loss": float(test_loss),
+                    "asr": float(asr),
                 }
             )
 
@@ -82,6 +119,8 @@ def get_global_evaluate_fn(attack):
 
 
 def evaluate_asr(model, triggered_testloader, device, target_label: int) -> float:
+    """Compute Attack Success Rate (ASR)."""
+
     print(">>> [DEBUG] Enter evaluate_asr")
 
     model.eval()
@@ -90,14 +129,11 @@ def evaluate_asr(model, triggered_testloader, device, target_label: int) -> floa
 
     try:
         with torch.no_grad():
-            for i, batch in enumerate(triggered_testloader):
+            for batch in triggered_testloader:
+                images = batch["img"].to(device)
+                labels = batch["label"].to(device)
 
-                images = batch["img"]
-                labels = batch["label"]
-
-                images = images.to(device)
-                labels = labels.to(device)
-
+                # ignore already target-label samples
                 mask = labels != target_label
                 if mask.sum().item() == 0:
                     continue
@@ -120,22 +156,26 @@ def evaluate_asr(model, triggered_testloader, device, target_label: int) -> floa
     return success / total if total > 0 else 0.0
 
 
+# =========================================================
+# Main
+# =========================================================
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
+
     try:
         print(">>> [DEBUG] Server main() START")
         print(">>> run_config =", dict(context.run_config))
 
         # ========================
-        # Read run config
+        # Basic config
         # ========================
         fraction_evaluate: float = context.run_config["fraction-evaluate"]
         num_rounds: int = context.run_config["num-server-rounds"]
         lr: float = context.run_config["learning-rate"]
 
         # ========================
-        # Attack-related config
+        # Attack config
         # ========================
         attack_type = str(
             context.run_config.get(
@@ -153,28 +193,38 @@ def main(grid: Grid, context: Context) -> None:
         noise_scale = float(context.run_config.get("wanet-noise", 0.05))
 
         # ========================
-        # Defense-related config
+        # Defense config
         # ========================
         defense_type = str(context.run_config.get("defense", "none")).lower()
         defense_kwargs = {}
 
-        # Recommended new style: defense-clip-norm, defense-anything-else
         for key, value in dict(context.run_config).items():
             if key.startswith("defense-") and key != "defense":
                 defense_key = key.removeprefix("defense-").replace("-", "_")
                 defense_kwargs[defense_key] = value
 
-        # Backward compatibility with the earlier key name
         if "clip-norm" in context.run_config and "clip_norm" not in defense_kwargs:
             defense_kwargs["clip_norm"] = context.run_config["clip-norm"]
-        
+
+        # ========================
+        # Experiment naming (VERY IMPORTANT)
+        # ========================
+        results_dir = str(context.run_config.get("results-dir", "results"))
+
+        run_name = str(
+            context.run_config.get(
+                "run-name",
+                f"{attack_type}_{defense_type}_seed{seed}",
+            )
+        )
+
+        print(f">>> [DEBUG] results_dir = {results_dir}")
+        print(f">>> [DEBUG] run_name = {run_name}")
+
         # ========================
         # Build attack
         # ========================
-
-
         print(">>> [DEBUG] Building attack...")
-
 
         attack = build_attack(
             attack_type=attack_type,
@@ -187,11 +237,10 @@ def main(grid: Grid, context: Context) -> None:
             noise_scale=noise_scale,
         )
 
-
         print(">>> [DEBUG] Attack built:", attack)
 
         # ========================
-        # Load global model
+        # Model init
         # ========================
         global_model = Net()
         arrays = ArrayRecord(global_model.state_dict())
@@ -200,6 +249,7 @@ def main(grid: Grid, context: Context) -> None:
         # Strategy
         # ========================
         base_strategy = FedAvg(fraction_evaluate=fraction_evaluate)
+
         strategy = build_defended_strategy(
             base_strategy,
             defense_type=defense_type,
@@ -207,7 +257,7 @@ def main(grid: Grid, context: Context) -> None:
             **defense_kwargs,
         )
 
-        print(">>> [DEBUG] Starting strategy...")
+        print(">>> [DEBUG] Strategy ready")
 
         # ========================
         # Start FL
@@ -217,7 +267,11 @@ def main(grid: Grid, context: Context) -> None:
             initial_arrays=arrays,
             train_config=ConfigRecord({"lr": lr}),
             num_rounds=num_rounds,
-            evaluate_fn=get_global_evaluate_fn(attack),
+            evaluate_fn=get_global_evaluate_fn(
+                attack,
+                results_dir=results_dir,
+                run_name=run_name,
+            ),
         )
 
         print(">>> [DEBUG] Strategy finished")
@@ -228,6 +282,8 @@ def main(grid: Grid, context: Context) -> None:
         print("\nSaving final model to disk...")
         state_dict = result.arrays.to_torch_state_dict()
         torch.save(state_dict, "final_model.pt")
+
+        print(">>> [DEBUG] Done.")
 
     except Exception as e:
         print("!!! FATAL ERROR in server main:", e)
