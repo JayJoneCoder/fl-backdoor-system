@@ -32,10 +32,10 @@ clientapp = "fl_backdoor.client.client:app"
 
 attack = "badnets"              # none / badnets / wanet
 
-client-defense = "feature_filter"   # none / identity / feature_filter
-detection = "none"      # none / anomaly_detection /
+client-defense = "none"   # none / identity / feature_filter
+detection = "anomaly_detection"      # none / anomaly_detection / cosine_detection
 
-defense = "krum"               # none / norm_clipping / trimmed_mean / krum
+defense = "none"               # none / norm_clipping / trimmed_mean / krum
 
 
 # =========================================================
@@ -79,7 +79,7 @@ client-defense-min-class-samples = 8
 # 服务端检测（Detection） 
 # =========================================================
 
-# detection = "anomaly_detection"   # ← 用这个开启测试
+# detection = "cosine_detection"   # ← 用这个开启测试
 
 # --- Anomaly Detection ---
 detection-z-threshold = 2.5     # 异常检测阈值（z-score）
@@ -87,9 +87,9 @@ detection-top-k = 2             # 最多剔除多少客户端
 detection-min-clients = 3       # 至少参与检测的客户端数（防止小样本误判）
 
 # --- Cosine Detection ---
-detection-cosine-floor = 0.2
-detection-min-kept-clients = 2
-detection-max-reject-fraction = 0.5
+detection-cosine-floor = 0.5
+detection-min-kept-clients = 5
+detection-max-reject-fraction = 0.3
 detection-enable-filter = true
 
 

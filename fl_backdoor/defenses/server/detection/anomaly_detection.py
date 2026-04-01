@@ -207,7 +207,52 @@ class AnomalyDetectionFedAvg(FedAvg):
         }
 
         if metrics is None:
-            metrics = MetricRecord()
+            metrics = MetricRecord({
+                # ===== 核心统一字段（pipeline兼容）=====
+                "defense-detect-round": int(server_round),
+
+                "defense-detect-total-clients": int(total),
+                "defense-detect-kept-clients": int(len(filtered_replies)),
+                "defense-detect-filtered-clients": int(total - len(filtered_replies)),
+
+                "defense-detect-filter-ratio": (
+                    float((total - len(filtered_replies)) / total) if total > 0 else 0.0
+                ),
+
+                "defense-detect-suspicious-clients": int(np.sum(suspicious)),
+
+                # ===== 阈值信息（可解释性关键）=====
+                "defense-detect-norm-z-threshold": float(self.norm_z_threshold),
+                "defense-detect-cosine-floor": float(self.cosine_floor),
+
+                "defense-detect-min-kept-clients": int(self.min_kept_clients),
+                "defense-detect-max-reject-fraction": float(self.max_reject_fraction),
+
+                # ===== 分布统计（论文级别指标）=====
+                "defense-detect-mean-update-norm": (
+                    float(np.mean(norms)) if len(norms) > 0 else 0.0
+                ),
+                "defense-detect-max-update-norm": (
+                    float(np.max(norms)) if len(norms) > 0 else 0.0
+                ),
+
+                "defense-detect-mean-norm-z": (
+                    float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0
+                ),
+                "defense-detect-max-norm-z": (
+                    float(np.max(norm_z)) if len(norm_z) > 0 else 0.0
+                ),
+
+                "defense-detect-mean-cosine": (
+                    float(np.mean(cosine)) if len(cosine) > 0 else 0.0
+                ),
+                "defense-detect-min-cosine": (
+                    float(np.min(cosine)) if len(cosine) > 0 else 0.0
+                ),
+
+                # ===== 控制参数记录 =====
+                "defense-detect-enable-filter": int(self.enable_filter),
+            })
         return arrays, _merge_metrics(metrics, extra_metrics)
 
 

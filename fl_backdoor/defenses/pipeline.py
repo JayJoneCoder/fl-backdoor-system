@@ -22,10 +22,11 @@ from flwr.serverapp.strategy.strategy_utils import aggregate_arrayrecords
 
 from .base import DefenseBase, DefenseConfig, IdentityDefense
 from .client import build_client_defense
-from .server.detection import build_detection
+from .server.aggregation.krum import KrumDefense
 from .server.aggregation.norm_clipping import NormClippingDefense
 from .server.aggregation.trimmed_mean import TrimmedMeanDefense
-from .server.aggregation.krum import KrumDefense
+from .server.detection import build_detection
+from .server.detection.base import DetectionReport
 
 _EPS = 1e-12
 
@@ -263,6 +264,8 @@ class DefensePipelineConfig:
     detection_kwargs: dict[str, Any] = field(default_factory=dict)
     aggregation_kwargs: dict[str, Any] = field(default_factory=dict)
 
+    diagnostics_logger: Any | None = None
+
     def validate(self) -> None:
         if int(self.seed) < 0:
             raise ValueError("seed must be non-negative.")
@@ -308,6 +311,7 @@ class DefensePipelineFedAvg(FedAvg):
 
         self.pipeline_config = pipeline_config
         self.current_arrays: ArrayRecord | None = None
+        self.diagnostics_logger = pipeline_config.diagnostics_logger
 
     @classmethod
     def from_strategy(
@@ -339,313 +343,199 @@ class DefensePipelineFedAvg(FedAvg):
         log(INFO, "\t│\t├── detection: %s", self.pipeline_config.detection_type)
         log(INFO, "\t│\t└── aggregation: %s", self.pipeline_config.aggregation_type)
 
+    def _log_diagnostics(
+        self,
+        server_round: int,
+        component: str,
+        metrics: MetricRecord | None,
+    ) -> None:
+        if self.diagnostics_logger is None or metrics is None:
+            return
+
+        try:
+            self.diagnostics_logger.log_metrics(
+                round=server_round,
+                component=component,
+                metrics=dict(metrics),
+            )
+        except Exception:
+            from traceback import print_exc
+
+            print("!!! WARNING: failed to write diagnostics metrics")
+            print_exc()
+
     def configure_train(
         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         self.current_arrays = arrays.copy()
         return super().configure_train(server_round, arrays, config, grid)
 
-def _apply_detection(
-    self, server_round: int, replies: list[Message]
-) -> tuple[list[Message], MetricRecord]:
-    detection_type = _normalize_name(self.pipeline_config.detection_type)
-    extra = _normalize_kwargs(self.pipeline_config.detection_kwargs)
+    def _apply_detection(
+        self, server_round: int, replies: list[Message]
+    ) -> tuple[list[Message], MetricRecord]:
+        detection_type = _normalize_name(self.pipeline_config.detection_type)
+        extra = _normalize_kwargs(self.pipeline_config.detection_kwargs)
 
-    if detection_type in {"", "none", "identity"}:
-        return replies, MetricRecord()
+        if detection_type in {"", "none", "identity"}:
+            return replies, MetricRecord()
 
-    supported_detection_types = {
-        "anomaly_detection",
-        "anomaly_detection_defense",
-        "update_anomaly",
-        "update_detector",
-        "anomaly-detection",
-        "cosine_detection",
-        "cosine_detection_defense",
-        "cosine-detection",
-        "cosine_anomaly",
-        "cosine-anomaly",
-        "cosine_detector",
-    }
-    if detection_type not in supported_detection_types:
-        raise ValueError(
-            f"Combined pipeline currently supports anomaly_detection and cosine_detection, got "
-            f"{self.pipeline_config.detection_type!r}."
-        )
-
-    # Shared params
-    cosine_floor = float(extra.get("cosine_floor", 0.0))
-    min_clients = int(extra.get("min_clients", extra.get("min_total_clients", 2)))
-    min_kept_clients = int(extra.get("min_kept_clients", min_clients))
-    top_k = extra.get("top_k", extra.get("max_reject_count", None))
-    max_reject_fraction = float(extra.get("max_reject_fraction", 0.5))
-    enable_filter = bool(extra.get("enable_filter", True))
-    warmup_rounds = int(extra.get("warmup_rounds", 0))
-
-    # Warmup: do not detect in early rounds
-    if server_round < warmup_rounds:
-        return replies, MetricRecord(
-            {
-                "defense-detect-skipped": 1,
-                "defense-detect-skip-reason": "warmup",
-                "defense-detect-warmup-rounds": int(warmup_rounds),
-                "defense-detect-round": int(server_round),
-            }
-        )
-
-    if self.current_arrays is None:
-        return replies, MetricRecord(
-            {
-                "defense-detect-skipped": 1,
-                "defense-detect-skip-reason": "current_arrays_missing",
-                "defense-detect-round": int(server_round),
-            }
-        )
-
-    if len(replies) < min_clients:
-        return replies, MetricRecord(
-            {
-                "defense-detect-skipped": 1,
-                "defense-detect-skip-reason": "too_few_clients",
-                "defense-detect-total-clients": int(len(replies)),
-                "defense-detect-min-clients": int(min_clients),
-                "defense-detect-round": int(server_round),
-            }
-        )
-
-    global_vector = _state_dict_to_vector(self.current_arrays.to_torch_state_dict())
-    if global_vector.size == 0:
-        return replies, MetricRecord(
-            {
-                "defense-detect-skipped": 1,
-                "defense-detect-skip-reason": "empty_global_vector",
-                "defense-detect-round": int(server_round),
-            }
-        )
-
-    scored_replies: list[Message] = []
-    vectors: list[np.ndarray] = []
-    skipped = 0
-
-    for msg in replies:
-        try:
-            content = RecordDict(msg.content)
-            local_arrays = content[self.arrayrecord_key]
-            local_vector = _state_dict_to_vector(local_arrays.to_torch_state_dict())
-        except Exception:
-            skipped += 1
-            continue
-
-        if local_vector.shape != global_vector.shape:
-            skipped += 1
-            continue
-
-        scored_replies.append(msg)
-        vectors.append(local_vector)
-
-    if not scored_replies:
-        return replies, MetricRecord(
-            {
-                "defense-detect-skipped": 1,
-                "defense-detect-skip-reason": "no_valid_vectors",
-                "defense-detect-skip-count": int(skipped),
-                "defense-detect-round": int(server_round),
-            }
-        )
-
-    stacked = np.stack(vectors, axis=0)
-    deltas = stacked - global_vector.reshape(1, -1)
-
-    norms = np.linalg.norm(deltas, axis=1)
-    median_norm = float(np.median(norms)) if len(norms) > 0 else 0.0
-    mad = float(np.median(np.abs(norms - median_norm))) if len(norms) > 0 else 0.0
-    robust_scale = 1.4826 * mad + _EPS
-    norm_z = np.abs(norms - median_norm) / robust_scale
-
-    center = np.mean(deltas, axis=0)
-    cosine = np.array(
-        [_cosine_similarity(delta, center) for delta in deltas],
-        dtype=np.float64,
-    )
-    score = norm_z + np.clip(1.0 - cosine, 0.0, 2.0)
-
-    total = len(scored_replies)
-
-    # -------------------------------------------------
-    # Cosine-based detection branch
-    # -------------------------------------------------
-    if detection_type in {
-        "cosine_detection",
-        "cosine_detection_defense",
-        "cosine-detection",
-        "cosine_anomaly",
-        "cosine-anomaly",
-        "cosine_detector",
-    }:
-        if total == 1:
-            return scored_replies, MetricRecord(
-                {
-                    "defense-detect-type": detection_type,
-                    "defense-detect-round": int(server_round),
-                    "defense-detect-total-clients": 1,
-                    "defense-detect-kept-clients": 1,
-                    "defense-detect-filtered-clients": 0,
-                    "defense-detect-filter-ratio": 0.0,
-                    "defense-detect-suspicious-clients": 0,
-                    "defense-detect-skip-count": int(skipped),
-                    "defense-detect-mean-cosine": 1.0,
-                    "defense-detect-min-cosine": 1.0,
-                    "defense-detect-max-cosine": 1.0,
-                }
+        supported_detection_types = {
+            "anomaly_detection",
+            "anomaly_detection_defense",
+            "update_anomaly",
+            "update_detector",
+            "anomaly-detection",
+            "cosine_detection",
+            "cosine_detection_defense",
+            "cosine-detection",
+            "cosine_anomaly",
+            "cosine-anomaly",
+            "cosine_detector",
+        }
+        if detection_type not in supported_detection_types:
+            raise ValueError(
+                f"Combined pipeline currently supports anomaly_detection and cosine_detection, got "
+                f"{self.pipeline_config.detection_type!r}."
             )
 
-        cosine_scores = (cosine if cosine.ndim > 0 else np.asarray([float(cosine)]))
-        suspicious = cosine_scores < cosine_floor
+        cosine_floor = float(extra.get("cosine_floor", 0.0))
+        min_clients = int(extra.get("min_clients", extra.get("min_total_clients", 2)))
+        min_kept_clients = int(extra.get("min_kept_clients", min_clients))
+        top_k = extra.get("top_k", extra.get("max_reject_count", None))
+        max_reject_fraction = float(extra.get("max_reject_fraction", 0.5))
+        enable_filter = bool(extra.get("enable_filter", True))
+        warmup_rounds = int(extra.get("warmup_rounds", 0))
 
-        if top_k is not None:
-            max_rejects = int(top_k)
+        # =========================
+        # Warmup / skip cases
+        # =========================
+        if server_round < warmup_rounds or self.current_arrays is None or len(replies) < min_clients:
+            report = DetectionReport(
+                detection_type=detection_type,
+                server_round=server_round,
+                total_clients=len(replies),
+                kept_indices=list(range(len(replies))),
+                scores=[],
+                threshold=None,
+                suspicious_mask=[False] * len(replies),
+                suspicious_count=0,
+                skip_count=0,
+                extra={
+                    "defense-detect-skipped": 1,
+                    "defense-detect-skip-reason": "warmup_or_invalid",
+                },
+            )
+            return replies, report.to_metric_record()
+
+        global_vector = _state_dict_to_vector(self.current_arrays.to_torch_state_dict())
+        if global_vector.size == 0:
+            return replies, MetricRecord()
+
+        # =========================
+        # Extract vectors
+        # =========================
+        scored_replies = []
+        vectors = []
+        skipped = 0
+
+        for msg in replies:
+            try:
+                content = RecordDict(msg.content)
+                local_arrays = content[self.arrayrecord_key]
+                local_vector = _state_dict_to_vector(local_arrays.to_torch_state_dict())
+            except Exception:
+                skipped += 1
+                continue
+
+            if local_vector.shape != global_vector.shape:
+                skipped += 1
+                continue
+
+            scored_replies.append(msg)
+            vectors.append(local_vector)
+
+        if not scored_replies:
+            return replies, MetricRecord()
+
+        stacked = np.stack(vectors, axis=0)
+        deltas = stacked - global_vector.reshape(1, -1)
+
+        norms = np.linalg.norm(deltas, axis=1)
+        median_norm = float(np.median(norms)) if len(norms) > 0 else 0.0
+        mad = float(np.median(np.abs(norms - median_norm))) if len(norms) > 0 else 0.0
+        robust_scale = 1.4826 * mad + _EPS
+        norm_z = np.abs(norms - median_norm) / robust_scale
+
+        center = np.mean(deltas, axis=0)
+        cosine = np.array(
+            [_cosine_similarity(delta, center) for delta in deltas],
+            dtype=np.float64,
+        )
+
+        score = norm_z + np.clip(1.0 - cosine, 0.0, 2.0)
+        total = len(scored_replies)
+
+        # =========================
+        # Cosine detection
+        # =========================
+        if "cosine" in detection_type:
+            cosine_scores = cosine
+            suspicious = cosine_scores < cosine_floor
+
+            max_rejects = int(top_k) if top_k is not None else int(total * max_reject_fraction)
+            max_rejects = min(max_rejects, total - min_kept_clients)
+
+            if enable_filter:
+                keep_indices = np.where(~suspicious)[0].tolist()
+                if len(keep_indices) < min_kept_clients:
+                    keep_indices = np.argsort(-cosine_scores)[:min_kept_clients].tolist()
+            else:
+                keep_indices = list(range(total))
+
+        # =========================
+        # Anomaly detection
+        # =========================
         else:
-            max_rejects = int(np.floor(total * max_reject_fraction))
+            norm_z_threshold = float(extra.get("norm_z_threshold", 3.5))
+            suspicious = (norm_z > norm_z_threshold) | (cosine < cosine_floor)
 
-        max_rejects = max(0, min(max_rejects, total))
-        max_rejects = min(max_rejects, max(0, total - min_kept_clients))
-        target_keep = max(min_kept_clients, total - max_rejects)
-        target_keep = min(target_keep, total)
+            max_rejects = int(top_k) if top_k is not None else int(total * max_reject_fraction)
+            max_rejects = min(max_rejects, total - min_kept_clients)
 
-        if enable_filter:
-            keep_indices = np.where(~suspicious)[0].tolist()
-            if len(keep_indices) < target_keep:
-                keep_indices = np.argsort(-cosine_scores)[:target_keep].tolist()
-            keep_indices = sorted(set(int(i) for i in keep_indices))
-        else:
-            keep_indices = list(range(total))
+            if enable_filter:
+                keep_indices = np.where(~suspicious)[0].tolist()
+                if len(keep_indices) < min_kept_clients:
+                    keep_indices = np.argsort(score)[:min_kept_clients].tolist()
+            else:
+                keep_indices = list(range(total))
 
-        filtered_replies = [scored_replies[i] for i in keep_indices]
-        arrays, metrics = super().aggregate_train(server_round, filtered_replies)
-
-        extra_metrics = {
-            "defense-detect-type": detection_type,
-            "defense-detect-round": int(server_round),
-            "defense-detect-total-clients": int(total),
-            "defense-detect-kept-clients": int(len(filtered_replies)),
-            "defense-detect-filtered-clients": int(total - len(filtered_replies)),
-            "defense-detect-filter-ratio": (
-                float((total - len(filtered_replies)) / total) if total > 0 else 0.0
-            ),
-            "defense-detect-suspicious-clients": int(np.sum(suspicious)),
-            "defense-detect-cosine-floor": float(cosine_floor),
-            "defense-detect-min-clients": int(min_clients),
-            "defense-detect-min-kept-clients": int(min_kept_clients),
-            "defense-detect-max-reject-count": int(max_rejects),
-            "defense-detect-mean-update-norm": (
-                float(np.mean(norms)) if len(norms) > 0 else 0.0
-            ),
-            "defense-detect-max-update-norm": (
-                float(np.max(norms)) if len(norms) > 0 else 0.0
-            ),
-            "defense-detect-mean-cosine": (
-                float(np.mean(cosine_scores)) if len(cosine_scores) > 0 else 0.0
-            ),
-            "defense-detect-min-cosine": (
-                float(np.min(cosine_scores)) if len(cosine_scores) > 0 else 0.0
-            ),
-            "defense-detect-max-cosine": (
-                float(np.max(cosine_scores)) if len(cosine_scores) > 0 else 0.0
-            ),
-            "defense-detect-mean-score": (
-                float(np.mean(score)) if len(score) > 0 else 0.0
-            ),
-            "defense-detect-max-score": (
-                float(np.max(score)) if len(score) > 0 else 0.0
-            ),
-            "defense-detect-skip-count": int(skipped),
-            "defense-detect-enable-filter": int(enable_filter),
-        }
-
-        if metrics is None:
-            metrics = MetricRecord()
-        return arrays, _merge_metrics(metrics, MetricRecord(extra_metrics))
-
-    # -------------------------------------------------
-    # Original anomaly-detection branch
-    # -------------------------------------------------
-    norm_z_threshold = float(
-        extra.get("norm_z_threshold", extra.get("z_threshold", 3.5))
-    )
-
-    suspicious = (norm_z > norm_z_threshold) | (cosine < cosine_floor)
-
-    if top_k is not None:
-        max_rejects = int(top_k)
-    else:
-        max_rejects = int(np.floor(total * max_reject_fraction))
-
-    max_rejects = max(0, min(max_rejects, total))
-    max_rejects = min(max_rejects, max(0, total - min_kept_clients))
-    target_keep = max(min_kept_clients, total - max_rejects)
-    target_keep = min(target_keep, total)
-
-    if enable_filter:
-        keep_indices = np.where(~suspicious)[0].tolist()
-        if len(keep_indices) < target_keep:
-            keep_indices = np.argsort(score)[:target_keep].tolist()
         keep_indices = sorted(set(int(i) for i in keep_indices))
-    else:
-        keep_indices = list(range(total))
+        filtered_replies = [scored_replies[i] for i in keep_indices]
 
-    filtered_replies = [scored_replies[i] for i in keep_indices]
+        # =========================
+        # Build report
+        # =========================
+        report = DetectionReport(
+            detection_type=detection_type,
+            server_round=server_round,
+            total_clients=total,
+            kept_indices=keep_indices,
+            scores=[float(x) for x in score.tolist()],
+            threshold=float(cosine_floor),
+            suspicious_mask=[bool(x) for x in suspicious.tolist()],
+            suspicious_count=int(np.sum(suspicious)),
+            skip_count=int(skipped),
+            extra={
+                "defense-detect-mean-update-norm": float(np.mean(norms)),
+                "defense-detect-max-update-norm": float(np.max(norms)),
+                "defense-detect-mean-cosine": float(np.mean(cosine)),
+                "defense-detect-min-cosine": float(np.min(cosine)),
+                "defense-detect-enable-filter": int(enable_filter),
+                "defense-detect-skip-count": int(skipped),
+            },
+        )
 
-    metrics = MetricRecord(
-        {
-            "defense-detect-type": detection_type,
-            "defense-detect-round": int(server_round),
-            "defense-detect-total-clients": int(total),
-            "defense-detect-kept-clients": int(len(filtered_replies)),
-            "defense-detect-filtered-clients": int(total - len(filtered_replies)),
-            "defense-detect-filter-ratio": (
-                float((total - len(filtered_replies)) / total) if total > 0 else 0.0
-            ),
-            "defense-detect-suspicious-clients": int(np.sum(suspicious)),
-            "defense-detect-norm-z-threshold": float(norm_z_threshold),
-            "defense-detect-cosine-floor": float(cosine_floor),
-            "defense-detect-min-clients": int(min_clients),
-            "defense-detect-min-kept-clients": int(min_kept_clients),
-            "defense-detect-max-reject-count": int(max_rejects),
-            "defense-detect-mean-update-norm": (
-                float(np.mean(norms)) if len(norms) > 0 else 0.0
-            ),
-            "defense-detect-max-update-norm": (
-                float(np.max(norms)) if len(norms) > 0 else 0.0
-            ),
-            "defense-detect-mean-norm-z": (
-                float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0
-            ),
-            "defense-detect-max-norm-z": (
-                float(np.max(norm_z)) if len(norm_z) > 0 else 0.0
-            ),
-            "defense-detect-mean-cosine": (
-                float(np.mean(cosine)) if len(cosine) > 0 else 0.0
-            ),
-            "defense-detect-min-cosine": (
-                float(np.min(cosine)) if len(cosine) > 0 else 0.0
-            ),
-            "defense-detect-mean-score": (
-                float(np.mean(score)) if len(score) > 0 else 0.0
-            ),
-            "defense-detect-max-score": (
-                float(np.max(score)) if len(score) > 0 else 0.0
-            ),
-            "defense-detect-skip-count": int(skipped),
-            "defense-detect-enable-filter": int(enable_filter),
-        }
-    )
-
-    arrays, agg_metrics = super().aggregate_train(server_round, filtered_replies)
-    if agg_metrics is None:
-        agg_metrics = MetricRecord()
-
-    return arrays, _merge_metrics(agg_metrics, metrics)
-
+        return filtered_replies, report.to_metric_record()
     def _apply_aggregation(
         self, replies: list[Message]
     ) -> tuple[ArrayRecord | None, MetricRecord]:
@@ -675,7 +565,15 @@ def _apply_detection(
             if metrics is None:
                 metrics = MetricRecord()
 
-            metrics["defense-agg-type"] = "fedavg"
+            AGG_TYPE_MAP = {
+                "fedavg": 0,
+                "krum": 1,
+                "trimmed_mean": 2,
+                "norm_clipping": 3,
+            }
+
+            agg_type = self.pipeline_config.aggregation_type.lower()
+            metrics["defense-agg-type"] = AGG_TYPE_MAP.get(agg_type, -1)
             metrics["defense-agg-total-clients"] = int(len(replies))
             return arrays, metrics
 
@@ -915,8 +813,11 @@ def _apply_detection(
         if not valid_replies:
             return None, None
 
-        filtered_replies, detection_metrics = self._apply_detection(valid_replies)
+        filtered_replies, detection_metrics = self._apply_detection(server_round, valid_replies)
         arrays, aggregation_metrics = self._apply_aggregation(filtered_replies)
+
+        self._log_diagnostics(server_round, "detection", detection_metrics)
+        self._log_diagnostics(server_round, "aggregation", aggregation_metrics)
 
         return arrays, _merge_metrics(detection_metrics, aggregation_metrics)
 
@@ -974,25 +875,12 @@ class DefensePipeline:
         detection_is_none = detection_type in {"", "none", "identity"}
         aggregation_is_none = aggregation_type in {"", "none", "identity"}
 
+        # Only the completely no-defense case bypasses the pipeline.
         if detection_is_none and aggregation_is_none:
             return strategy
 
-        if not detection_is_none and aggregation_is_none:
-            detection = build_detection(
-                detection_type=detection_type,
-                seed=self.config.seed,
-                **self.config.detection_kwargs,
-            )
-            return detection.apply(strategy)
-
-        if detection_is_none and not aggregation_is_none:
-            defense = _build_aggregation_defense(
-                aggregation_type,
-                seed=self.config.seed,
-                kwargs=self.config.aggregation_kwargs,
-            )
-            return defense.apply(strategy)
-
+        # Any enabled defense goes through the unified pipeline so that
+        # detection / aggregation / diagnostics stay consistent.
         return DefensePipelineFedAvg.from_strategy(
             strategy,
             pipeline_config=self.config,
@@ -1014,6 +902,7 @@ def build_defense_pipeline(
     detection_kwargs: Mapping[str, Any] | None = None,
     aggregation_kwargs: Mapping[str, Any] | None = None,
     defense_kwargs: Mapping[str, Any] | None = None,
+    diagnostics_logger: Any | None = None,
 ) -> DefensePipeline:
     """Unified pipeline factory.
 
@@ -1038,6 +927,7 @@ def build_defense_pipeline(
         client_defense_kwargs=dict(client_defense_kwargs or {}),
         detection_kwargs=dict(detection_kwargs or {}),
         aggregation_kwargs=dict(resolved_aggregation_kwargs or {}),
+        diagnostics_logger=diagnostics_logger,
     )
     return DefensePipeline(config)
 
@@ -1046,6 +936,7 @@ def build_defense_pipeline_from_run_config(
     run_config: Mapping[str, Any],
     *,
     seed: int | None = None,
+    diagnostics_logger: Any | None = None,
 ) -> DefensePipeline:
     """Convenience helper for server.py / client.py.
 
@@ -1078,6 +969,7 @@ def build_defense_pipeline_from_run_config(
         client_defense_kwargs=client_defense_kwargs,
         detection_kwargs=detection_kwargs,
         aggregation_kwargs=aggregation_kwargs,
+        diagnostics_logger=diagnostics_logger,
     )
 
 

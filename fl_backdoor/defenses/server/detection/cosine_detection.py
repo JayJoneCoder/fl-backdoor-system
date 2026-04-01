@@ -141,17 +141,17 @@ class CosineDetectionFedAvg(FedAvg):
         stacked = np.stack(deltas, axis=0)
         norms = np.linalg.norm(stacked, axis=1)
 
-        # Normalize each client update vector
+        # 单位向量
         unit_vectors = stacked / (norms[:, None] + _EPS)
 
-        # Pairwise cosine similarity matrix
+        # 相似度矩阵
         sim_matrix = unit_vectors @ unit_vectors.T
 
         total = len(scored_replies)
         if total == 1:
             return super().aggregate_train(server_round, scored_replies)
 
-        # Mean similarity to other clients (exclude self)
+        # 每个客户端与其他客户端的平均 cosine
         cosine_scores = (sim_matrix.sum(axis=1) - 1.0) / float(total - 1)
 
         suspicious = cosine_scores < self.cosine_floor
@@ -173,27 +173,50 @@ class CosineDetectionFedAvg(FedAvg):
         filtered_replies = [scored_replies[i] for i in keep_indices]
         arrays, metrics = super().aggregate_train(server_round, filtered_replies)
 
-        extra_metrics = {
-            "defense-total-clients": int(total),
-            "defense-kept-clients": int(len(filtered_replies)),
-            "defense-filtered-clients": int(total - len(filtered_replies)),
-            "defense-filter-ratio": (
+        # 统一 detection 指标（和 pipeline 完全对齐）
+        detect_metrics = {
+            "defense-detect-round": int(server_round),
+
+            "defense-detect-total-clients": int(total),
+            "defense-detect-kept-clients": int(len(filtered_replies)),
+            "defense-detect-filtered-clients": int(total - len(filtered_replies)),
+
+            "defense-detect-filter-ratio": (
                 float((total - len(filtered_replies)) / total) if total > 0 else 0.0
             ),
-            "defense-suspicious-clients": int(np.sum(suspicious)),
-            "defense-cosine-floor": float(self.cosine_floor),
-            "defense-mean-update-norm": float(np.mean(norms)) if len(norms) > 0 else 0.0,
-            "defense-max-update-norm": float(np.max(norms)) if len(norms) > 0 else 0.0,
-            "defense-mean-cosine": float(np.mean(cosine_scores)) if len(cosine_scores) > 0 else 0.0,
-            "defense-min-cosine": float(np.min(cosine_scores)) if len(cosine_scores) > 0 else 0.0,
-            "defense-max-cosine": float(np.max(cosine_scores)) if len(cosine_scores) > 0 else 0.0,
-            "defense-skip-count": int(skipped),
+
+            "defense-detect-suspicious-clients": int(np.sum(suspicious)),
+
+            "defense-detect-cosine-floor": float(self.cosine_floor),
+            "defense-detect-min-kept-clients": int(self.min_kept_clients),
+            "defense-detect-max-reject-fraction": float(self.max_reject_fraction),
+
+            "defense-detect-mean-update-norm": (
+                float(np.mean(norms)) if len(norms) > 0 else 0.0
+            ),
+            "defense-detect-max-update-norm": (
+                float(np.max(norms)) if len(norms) > 0 else 0.0
+            ),
+
+            # 关键修复：用 cosine_scores
+            "defense-detect-mean-cosine": (
+                float(np.mean(cosine_scores)) if len(cosine_scores) > 0 else 0.0
+            ),
+            "defense-detect-min-cosine": (
+                float(np.min(cosine_scores)) if len(cosine_scores) > 0 else 0.0
+            ),
+            "defense-detect-max-cosine": (
+                float(np.max(cosine_scores)) if len(cosine_scores) > 0 else 0.0
+            ),
+
+            "defense-detect-skip-count": int(skipped),
+            "defense-detect-enable-filter": int(self.enable_filter),
         }
 
         if metrics is None:
             metrics = MetricRecord()
 
-        return arrays, _merge_metrics(metrics, extra_metrics)
+        return arrays, _merge_metrics(metrics, MetricRecord(detect_metrics))
 
 
 class CosineDetectionDefense(DetectionBase):

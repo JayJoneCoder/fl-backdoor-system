@@ -22,8 +22,7 @@ app = ServerApp()
 def get_global_evaluate_fn(
     attack,
     *,
-    results_dir: str = "results",
-    run_name: str = "experiment",
+    logger: CSVLogger,
 ):
     print(">>> [DEBUG] Enter get_global_evaluate_fn")
 
@@ -35,12 +34,6 @@ def get_global_evaluate_fn(
         import traceback
         traceback.print_exc()
         raise
-
-    logger = CSVLogger(
-        save_dir=results_dir,
-        filename=f"{run_name}.csv",
-    )
-    print(f">>> [DEBUG] Logger initialized: {results_dir}/{run_name}.csv")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     target_label = getattr(attack.config, "target_label", 0)
@@ -204,6 +197,15 @@ def main(grid: Grid, context: Context) -> None:
         print(f">>> [DEBUG] run_name = {run_name}")
 
         # ========================
+        # Logger
+        # ========================
+        experiment_logger = CSVLogger(
+            save_dir=results_dir,
+            filename=f"{run_name}.csv",
+        )
+        print(f">>> [DEBUG] Logger initialized: {results_dir}/{run_name}.csv")
+
+        # ========================
         # Model init
         # ========================
         global_model = Net()
@@ -222,6 +224,7 @@ def main(grid: Grid, context: Context) -> None:
             client_defense_kwargs=client_defense_kwargs,
             detection_kwargs=detection_kwargs,
             aggregation_kwargs=aggregation_kwargs,
+            diagnostics_logger=experiment_logger,
         )
 
         print(">>> [DEBUG] Pipeline ready:", pipeline)
@@ -240,8 +243,7 @@ def main(grid: Grid, context: Context) -> None:
             num_rounds=num_rounds,
             evaluate_fn=get_global_evaluate_fn(
                 attack,
-                results_dir=results_dir,
-                run_name=run_name,
+                logger=experiment_logger,
             ),
         )
 
