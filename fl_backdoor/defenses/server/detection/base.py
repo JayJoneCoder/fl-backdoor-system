@@ -71,9 +71,11 @@ class DetectionReport:
 
         payload: dict[str, Any] = {
             # 数值化类型标识，避免字符串
-            f"{prefix}-type-id": (
+           f"{prefix}-type-id": (
                 1 if self.detection_type.startswith("anomaly") else
                 2 if self.detection_type.startswith("cosine") else
+                3 if ("cluster" in self.detection_type or "kmeans" in self.detection_type) else
+                4 if "score" in self.detection_type else
                 0
             ),
 

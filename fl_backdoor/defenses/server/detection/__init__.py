@@ -1,7 +1,7 @@
 from .base import DetectionBase, DetectionConfig, IdentityDetection
 from .anomaly_detection import AnomalyDetectionDefense, AnomalyDetectionFedAvg
 from .cosine_detection import CosineDetectionDefense, CosineDetectionFedAvg
-
+from .clustering_detection import ClusteringDetectionDefense, ClusteringDetectionFedAvg
 
 def build_detection(
     detection_type: str = "none",
@@ -38,6 +38,16 @@ def build_detection(
         "cosine_detector",
     }:
         return CosineDetectionDefense(config)
+    
+    if normalized in {
+        "clustering_detection",
+        "clustering-detection",
+        "cluster_detection",
+        "cluster-detection",
+        "kmeans_detection",
+        "kmeans-detection",
+    }:
+        return ClusteringDetectionDefense(config)
 
     raise ValueError(
         f"Unsupported detection_type={detection_type!r}. "
@@ -54,4 +64,6 @@ __all__ = [
     "CosineDetectionDefense",
     "CosineDetectionFedAvg",
     "build_detection",
+    "ClusteringDetectionDefense",
+    "ClusteringDetectionFedAvg",
 ]

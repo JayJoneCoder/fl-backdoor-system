@@ -33,7 +33,7 @@ clientapp = "fl_backdoor.client.client:app"
 attack = "badnets"              # none / badnets / wanet
 
 client-defense = "none"   # none / identity / feature_filter
-detection = "anomaly_detection"      # none / anomaly_detection / cosine_detection
+detection = "clustering_detection"      # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
 
 defense = "none"               # none / norm_clipping / trimmed_mean / krum
 
@@ -42,7 +42,7 @@ defense = "none"               # none / norm_clipping / trimmed_mean / krum
 # 联邦学习基础参数（与安全无关）
 # =========================================================
 
-num-server-rounds = 5
+num-server-rounds = 10
 fraction-evaluate = 0.2
 local-epochs = 2
 learning-rate = 0.01
@@ -91,6 +91,17 @@ detection-cosine-floor = 0.5
 detection-min-kept-clients = 5
 detection-max-reject-fraction = 0.3
 detection-enable-filter = true
+
+# --- Score Detection ---
+detection-percentile = 80
+detection-weight-norm = 1.0
+detection-weight-cosine = 1.0
+# detection-enable-filter = true
+# detection-min-kept-clients = 2
+
+# --- Clustering Detection --
+detection-min-silhouette = 0.05
+detection-cluster-score-gap = 0.15
 
 
 # =========================================================
