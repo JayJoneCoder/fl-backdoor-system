@@ -30,10 +30,10 @@ clientapp = "fl_backdoor.client.client:app"
 # 实验核心开关（最高层）
 # =========================================================
 
-attack = "badnets"              # none / badnets / wanet
+attack = "frequency"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft
 
 client-defense = "none"   # none / identity / feature_filter
-detection = "clustering_detection"      # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
+detection = "none"      # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
 
 defense = "none"               # none / norm_clipping / trimmed_mean / krum
 
@@ -61,6 +61,13 @@ trigger-size = 4
 
 # --- WaNet ---
 wanet-noise = 0.2
+
+# --- Frequency Attack ---
+frequency-mode = "fft"            # dct / fft
+frequency-band = "high"            # low / high
+frequency-window-size = 6
+frequency-intensity = 0.35
+frequency-mix-alpha = 1.0
 
 
 # =========================================================

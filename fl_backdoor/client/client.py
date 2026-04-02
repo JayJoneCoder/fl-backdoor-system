@@ -34,15 +34,24 @@ def train(msg: Message, context: Context):
     attack_type = str(
         context.run_config.get("attack-type", context.run_config.get("attack", "badnets"))
     ).lower()
+
     malicious_ratio = float(context.run_config.get("malicious-ratio", 0.2))
     poison_rate = float(context.run_config.get("poison-rate", 0.05))
     target_label = int(context.run_config.get("target-label", 0))
     trigger_size = int(context.run_config.get("trigger-size", 4))
     seed = int(context.run_config.get("seed", 42))
+
     grid_size = context.run_config.get("wanet-grid-size", None)
     noise_scale = float(context.run_config.get("wanet-noise", 0.05))
+
+    frequency_mode = str(context.run_config.get("frequency-mode", "dct"))
+    frequency_band = str(context.run_config.get("frequency-band", "low"))
+    frequency_window_size = context.run_config.get("frequency-window-size", None)
+    frequency_intensity = float(context.run_config.get("frequency-intensity", 0.10))
+    frequency_mix_alpha = float(context.run_config.get("frequency-mix-alpha", 1.0))
+
     print(f">>> [DEBUG] attack_type = {attack_type}")
-    
+
     attack = build_attack(
         attack_type=attack_type,
         malicious_ratio=malicious_ratio,
@@ -52,6 +61,11 @@ def train(msg: Message, context: Context):
         seed=seed,
         grid_size=None if grid_size is None else int(grid_size),
         noise_scale=noise_scale,
+        frequency_mode=frequency_mode,
+        frequency_band=frequency_band,
+        frequency_window_size=None if frequency_window_size is None else int(frequency_window_size),
+        frequency_intensity=frequency_intensity,
+        frequency_mix_alpha=frequency_mix_alpha,
     )
 
     is_malicious = attack.is_malicious_client(

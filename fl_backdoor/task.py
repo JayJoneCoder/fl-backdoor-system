@@ -58,12 +58,26 @@ class Net(nn.Module):
 
 fds = None  # Cache FederatedDataset
 
-pytorch_transforms = Compose([ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+# Keep both raw and normalized transforms.
+raw_to_tensor = ToTensor()
+normalize_only = Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+pytorch_transforms = Compose([ToTensor(), normalize_only])
 
 
 def apply_transforms(batch):
-    """Apply transforms to the partition from FederatedDataset."""
-    batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
+    """Apply transforms to the partition from FederatedDataset.
+
+    We preserve:
+    - batch["img_raw"]: tensor in [0, 1]
+    - batch["img"]: normalized tensor in [-1, 1]
+
+    This allows frequency attacks to work in the raw image domain without
+    changing the rest of the training / evaluation code, which still uses
+    batch["img"].
+    """
+    raw_imgs = [raw_to_tensor(img) for img in batch["img"]]
+    batch["img_raw"] = raw_imgs
+    batch["img"] = [normalize_only(img) for img in raw_imgs]
     return batch
 
 
