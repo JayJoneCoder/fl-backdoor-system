@@ -5,8 +5,25 @@ framework: [pytorch, flwr]
 ---
 
 # 面向联邦学习的后门攻击与防御系统
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.8.0-red.svg)](https://pytorch.org/)
+[![Flower](https://img.shields.io/badge/Flower-1.26+-green.svg)](https://flower.ai/)
+## 项目简介
 
-当前项目架构：
+本项目实现了一个**面向联邦学习的后门攻击与防御系统**，目前支持：
+
+- **3 种后门攻击**：BadNets、WaNet、Frequency Attack（频域，dct / fft）
+- **3 层防御机制**：
+  - 客户端防御（数据层）：Feature Filter
+  - 服务端检测（更新层）：Anomaly、Cosine、Score、Clustering Detection
+  - 服务端聚合（模型层）：Norm Clipping、Trimmed Mean、Krum
+- **完整的评估体系**：ACC、ASR、Precision、Recall、FPR、混淆矩阵、客户端级异常分数
+- **Ground Truth 追踪**：支持 random/fixed 恶意客户端选择，实现检测性能的精确评估
+
+> 适用于联邦学习安全研究、后门攻击防御对比实验、鲁棒聚合算法验证。
+
+## 当前项目架构：
 ```shell
 fl-backdoor-system/
 ├── fl_backdoor/
@@ -81,7 +98,7 @@ fl-backdoor-system/
 
 ```
 
-### 安装依赖和运行项目
+## 安装依赖和运行项目
 
 参考 [flower 官网](https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html)。
 
@@ -123,7 +140,7 @@ flwr run . --stream
 # 我未来可能会加个 setup_env.py 一类的脚本，实现检测 cuda，安装 torch 一类的功能。
 ```
 
-# 画图
+## 画图
 
 系统会将日志信息存储在 fl-backdoor-system/results 下。
 用此命令画图：
