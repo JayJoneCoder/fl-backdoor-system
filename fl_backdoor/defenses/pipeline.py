@@ -29,6 +29,10 @@ from .server.detection import build_detection
 from .server.detection.base import DetectionReport
 from .server.detection.score_detection import score_based_filter
 from .server.detection.clustering_detection import build_clustering_report
+from .server.detection.features import (
+    state_dict_to_vector,
+    extract_features,
+)
 
 _EPS = 1e-12
 
@@ -218,6 +222,29 @@ def _merge_metrics(*records: MetricRecord | None) -> MetricRecord:
             merged.update(dict(rec))
     return MetricRecord(merged)
 
+def _finalize_keep_indices(
+    *,
+    score: np.ndarray,
+    suspicious: np.ndarray,
+    total: int,
+    min_kept_clients: int,
+    enable_filter: bool,
+) -> tuple[list[int], np.ndarray]:
+    """Turn a suspicious mask into final keep_indices + final suspicious_mask."""
+    effective_min_kept = max(1, min(int(min_kept_clients), int(total)))
+
+    if enable_filter:
+        keep_indices = np.where(~suspicious)[0].tolist()
+        if len(keep_indices) < effective_min_kept:
+            keep_indices = np.argsort(score)[:effective_min_kept].tolist()
+    else:
+        keep_indices = list(range(total))
+
+    keep_indices = sorted(set(int(i) for i in keep_indices))
+    final_suspicious = np.ones(total, dtype=bool)
+    final_suspicious[keep_indices] = False
+    return keep_indices, final_suspicious
+
 
 def _build_aggregation_defense(
     aggregation_type: str,
@@ -382,44 +409,47 @@ class DefensePipelineFedAvg(FedAvg):
             return replies, MetricRecord()
 
         supported_detection_types = {
+            "anomaly",
             "anomaly_detection",
             "anomaly_detection_defense",
             "update_anomaly",
             "update_detector",
-            "anomaly-detection",
+            "cosine",
             "cosine_detection",
             "cosine_detection_defense",
-            "cosine-detection",
             "cosine_anomaly",
-            "cosine-anomaly",
             "cosine_detector",
+            "score",
             "score_detection",
             "score_based",
             "clustering_detection",
             "clustering-detection",
             "cluster_detection",
-            "cluster-detection",
             "kmeans_detection",
             "kmeans-detection",
         }
         if detection_type not in supported_detection_types:
             raise ValueError(
-                f"Combined pipeline currently supports anomaly_detection and cosine_detection, got "
-                f"{self.pipeline_config.detection_type!r}."
+                f"Unsupported detection_type={self.pipeline_config.detection_type!r}. "
+                "Supported: 'none', 'anomaly', 'cosine', 'score', 'clustering_detection'."
             )
 
         cosine_floor = float(extra.get("cosine_floor", 0.0))
         min_clients = int(extra.get("min_clients", extra.get("min_total_clients", 2)))
         min_kept_clients = int(extra.get("min_kept_clients", min_clients))
-        top_k = extra.get("top_k", extra.get("max_reject_count", None))
-        max_reject_fraction = float(extra.get("max_reject_fraction", 0.5))
         enable_filter = bool(extra.get("enable_filter", True))
         warmup_rounds = int(extra.get("warmup_rounds", 0))
 
-        # =========================
-        # Warmup / skip cases
-        # =========================
-        if server_round < warmup_rounds or self.current_arrays is None or len(replies) < min_clients:
+        percentile = float(extra.get("percentile", 80.0))
+        norm_z_threshold = float(extra.get("norm_z_threshold", 3.5))
+        min_silhouette = float(extra.get("min_silhouette", 0.05))
+        cluster_score_gap = float(extra.get("cluster_score_gap", 0.15))
+
+        if (
+            server_round < warmup_rounds
+            or self.current_arrays is None
+            or len(replies) < min_clients
+        ):
             report = DetectionReport(
                 detection_type=detection_type,
                 server_round=server_round,
@@ -437,22 +467,19 @@ class DefensePipelineFedAvg(FedAvg):
             )
             return replies, report.to_metric_record()
 
-        global_vector = _state_dict_to_vector(self.current_arrays.to_torch_state_dict())
+        global_vector = state_dict_to_vector(self.current_arrays.to_torch_state_dict())
         if global_vector.size == 0:
             return replies, MetricRecord()
 
-        # =========================
-        # Extract vectors
-        # =========================
-        scored_replies = []
-        vectors = []
+        scored_replies: list[Message] = []
+        local_vectors: list[np.ndarray] = []
         skipped = 0
 
         for msg in replies:
             try:
                 content = RecordDict(msg.content)
                 local_arrays = content[self.arrayrecord_key]
-                local_vector = _state_dict_to_vector(local_arrays.to_torch_state_dict())
+                local_vector = state_dict_to_vector(local_arrays.to_torch_state_dict())
             except Exception:
                 skipped += 1
                 continue
@@ -462,48 +489,29 @@ class DefensePipelineFedAvg(FedAvg):
                 continue
 
             scored_replies.append(msg)
-            vectors.append(local_vector)
+            local_vectors.append(local_vector)
 
-        if not scored_replies:
+        if not local_vectors:
             return replies, MetricRecord()
 
-        stacked = np.stack(vectors, axis=0)
-        deltas = stacked - global_vector.reshape(1, -1)
+        features = extract_features(global_vector, local_vectors)
+        norms = features["norms"]
+        norm_z = features["norm_z"]
+        cosine = features["cosine"]
+        score = features["score"]
+        deltas = features["deltas"]
 
-        norms = np.linalg.norm(deltas, axis=1)
-        median_norm = float(np.median(norms)) if len(norms) > 0 else 0.0
-        mad = float(np.median(np.abs(norms - median_norm))) if len(norms) > 0 else 0.0
-        robust_scale = 1.4826 * mad + _EPS
-        norm_z = np.abs(norms - median_norm) / robust_scale
-
-        center = np.mean(deltas, axis=0)
-        cosine = np.array(
-            [_cosine_similarity(delta, center) for delta in deltas],
-            dtype=np.float64,
-        )
-
-        score = norm_z + np.clip(1.0 - cosine, 0.0, 2.0)
         total = len(scored_replies)
 
         # =========================
-        # Precompute (统一特征)
-        # =========================
-        score = norm_z + np.clip(1.0 - cosine, 0.0, 2.0)
-
-        max_rejects = int(top_k) if top_k is not None else int(total * max_reject_fraction)
-        max_rejects = min(max_rejects, total - min_kept_clients)
-
-        threshold = None  # 默认
-
-
-        # =========================
-        # Detection (mutually exclusive)
+        # Per-client logging
         # =========================
 
         report: DetectionReport | None = None
+        threshold_value: float | None = None
+        raw_suspicious: np.ndarray | None = None
 
         if "cluster" in detection_type or "kmeans" in detection_type:
-            # ===== Clustering =====
             report = build_clustering_report(
                 detection_type=detection_type,
                 server_round=server_round,
@@ -512,105 +520,59 @@ class DefensePipelineFedAvg(FedAvg):
                 cosine=cosine,
                 score=score,
                 deltas=deltas,
-                percentile=float(extra.get("percentile", 80.0)),
+                percentile=percentile,
                 min_kept_clients=min_kept_clients,
-                max_reject_fraction=max_reject_fraction,
+                max_reject_fraction=float(extra.get("max_reject_fraction", 0.5)),
                 enable_filter=enable_filter,
                 seed=int(self.pipeline_config.seed),
                 skipped=int(skipped),
-                min_silhouette=float(extra.get("min_silhouette", 0.05)),
-                cluster_score_gap=float(extra.get("cluster_score_gap", 0.15)),
+                min_silhouette=min_silhouette,
+                cluster_score_gap=cluster_score_gap,
             )
 
             keep_indices = report.kept_indices
-            suspicious = np.asarray(report.suspicious_mask, dtype=bool)
-
+            suspicious_mask = np.asarray(report.suspicious_mask, dtype=bool)
+            threshold_value = report.threshold
 
         elif "score" in detection_type:
-            # ===== Score-based =====
-            keep_indices, score, threshold, suspicious = score_based_filter(
-                norm_z,
-                cosine,
-                total,
-                percentile=float(extra.get("percentile", 80.0)),
-                weight_norm=float(extra.get("weight_norm", 1.0)),
-                weight_cosine=float(extra.get("weight_cosine", 1.0)),
+            threshold_value, raw_suspicious = score_based_filter(
+                score,
+                percentile=percentile,
+            )
+            keep_indices, suspicious_mask = _finalize_keep_indices(
+                score=score,
+                suspicious=raw_suspicious,
+                total=total,
                 min_kept_clients=min_kept_clients,
                 enable_filter=enable_filter,
             )
 
-
         elif "anomaly" in detection_type:
-            # ===== Anomaly =====
-            norm_z_threshold = float(extra.get("norm_z_threshold", 3.5))
-
-            suspicious = (norm_z > norm_z_threshold) | (cosine < cosine_floor)
-
-            ranking = np.argsort(score)
-
-            # 统一选取逻辑（补全）
-            keep_indices = np.where(~suspicious)[0].tolist()
-            if len(keep_indices) < min_kept_clients:
-                keep_indices = ranking[:min_kept_clients].tolist()
-
-            threshold = norm_z_threshold
-
+            raw_suspicious = (norm_z > norm_z_threshold) | (cosine < cosine_floor)
+            threshold_value = norm_z_threshold
+            keep_indices, suspicious_mask = _finalize_keep_indices(
+                score=score,
+                suspicious=raw_suspicious,
+                total=total,
+                min_kept_clients=min_kept_clients,
+                enable_filter=enable_filter,
+            )
 
         elif "cosine" in detection_type:
-            # ===== Cosine =====
-            suspicious = cosine < cosine_floor
-
-            ranking = np.argsort(-cosine)  # 大 → 正常
-
-            keep_indices = np.where(~suspicious)[0].tolist()
-            if len(keep_indices) < min_kept_clients:
-                keep_indices = ranking[:min_kept_clients].tolist()
-
-            threshold = float(cosine_floor)
-
+            raw_suspicious = cosine < cosine_floor
+            threshold_value = float(cosine_floor)
+            keep_indices, suspicious_mask = _finalize_keep_indices(
+                score=score,
+                suspicious=raw_suspicious,
+                total=total,
+                min_kept_clients=min_kept_clients,
+                enable_filter=enable_filter,
+            )
 
         else:
-            raise ValueError(f"Unsupported detection_type={detection_type}")
+            raise ValueError(f"Unsupported detection_type={detection_type!r}")
 
-        # =========================
-        # Filtering (统一逻辑)
-        # =========================
-        if enable_filter:
-            keep_indices = np.where(~suspicious)[0].tolist()
-
-            # fallback：保证最少客户端
-            if len(keep_indices) < min_kept_clients:
-                keep_indices = ranking[:min_kept_clients].tolist()
-        else:
-            keep_indices = list(range(total))
-
-        keep_indices = sorted(set(int(i) for i in keep_indices))
-        filtered_replies = [scored_replies[i] for i in keep_indices]
-
-        # =========================
-        # Build report
-        # =========================
-
-        # 统一 threshold
-        # =========================
-        # Build report (统一出口)
-        # =========================
-
-        # 如果某些 detection（例如 clustering）已经构造了 report
         if report is None:
-
-            # ===== threshold 统一逻辑 =====
-            if threshold is not None:
-                threshold_value = float(threshold)
-            elif "cosine" in detection_type:
-                threshold_value = float(cosine_floor)
-            elif "anomaly" in detection_type:
-                threshold_value = float(extra.get("norm_z_threshold", 3.5))
-            elif "score" in detection_type:
-                threshold_value = float(extra.get("percentile", 0.0))
-            else:
-                threshold_value = 0.0
-
             report = DetectionReport(
                 detection_type=detection_type,
                 server_round=server_round,
@@ -618,29 +580,69 @@ class DefensePipelineFedAvg(FedAvg):
                 kept_indices=keep_indices,
                 scores=[float(x) for x in score.tolist()],
                 threshold=threshold_value,
-                suspicious_mask=[bool(x) for x in suspicious.tolist()],
-                suspicious_count=int(np.sum(suspicious)),
+                suspicious_mask=[bool(x) for x in suspicious_mask.tolist()],
+                suspicious_count=int(np.sum(suspicious_mask)),
                 skip_count=int(skipped),
                 extra={
-                    # ===== 基础统计 =====
-                    "defense-detect-mean-update-norm": float(np.mean(norms)),
-                    "defense-detect-max-update-norm": float(np.max(norms)),
-
-                    "defense-detect-mean-cosine": float(np.mean(cosine)),
-                    "defense-detect-min-cosine": float(np.min(cosine)),
-
-                    # ===== score explainability =====
-                    "defense-detect-mean-score": float(np.mean(score)),
-                    "defense-detect-max-score": float(np.max(score)),
-                    "defense-detect-min-score": float(np.min(score)),
-
-                    # ===== 配置记录 =====
+                    "defense-detect-mean-update-norm": float(np.mean(norms))
+                    if len(norms) > 0
+                    else 0.0,
+                    "defense-detect-max-update-norm": float(np.max(norms))
+                    if len(norms) > 0
+                    else 0.0,
+                    "defense-detect-mean-norm-z": float(np.mean(norm_z))
+                    if len(norm_z) > 0
+                    else 0.0,
+                    "defense-detect-max-norm-z": float(np.max(norm_z))
+                    if len(norm_z) > 0
+                    else 0.0,
+                    "defense-detect-mean-cosine": float(np.mean(cosine))
+                    if len(cosine) > 0
+                    else 0.0,
+                    "defense-detect-min-cosine": float(np.min(cosine))
+                    if len(cosine) > 0
+                    else 0.0,
+                    "defense-detect-mean-score": float(np.mean(score))
+                    if len(score) > 0
+                    else 0.0,
+                    "defense-detect-max-score": float(np.max(score))
+                    if len(score) > 0
+                    else 0.0,
+                    "defense-detect-min-score": float(np.min(score))
+                    if len(score) > 0
+                    else 0.0,
+                    "defense-detect-raw-suspicious-count": int(
+                        np.sum(raw_suspicious) if raw_suspicious is not None else 0
+                    ),
                     "defense-detect-enable-filter": int(enable_filter),
                     "defense-detect-skip-count": int(skipped),
                 },
             )
 
+        filtered_replies = [scored_replies[i] for i in report.kept_indices]
+
+        if self.diagnostics_logger is not None:
+            try:
+                for i in range(total):
+                    self.diagnostics_logger.log_client_metrics(
+                        round=server_round,
+                        client_id=i,
+                        metrics={
+                            "score": float(score[i]),
+                            "norm": float(norms[i]),
+                            "norm_z": float(norm_z[i]),
+                            "cosine": float(cosine[i]),
+                            "suspicious": int(suspicious_mask[i]),
+                            "kept": int(not suspicious_mask[i]),
+                        },
+                    )
+            except Exception:
+                from traceback import print_exc
+                print("!!! WARNING: failed to log client metrics (final)")
+                print_exc()
+
         return filtered_replies, report.to_metric_record()
+    
     def _apply_aggregation(
         self, replies: list[Message]
     ) -> tuple[ArrayRecord | None, MetricRecord]:

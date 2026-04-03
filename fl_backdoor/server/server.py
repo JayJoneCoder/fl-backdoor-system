@@ -246,6 +246,7 @@ def main(grid: Grid, context: Context) -> None:
             diagnostics_logger=experiment_logger,
         )
 
+        
         print(">>> [DEBUG] Pipeline ready:", pipeline)
 
         strategy = pipeline.apply(base_strategy)

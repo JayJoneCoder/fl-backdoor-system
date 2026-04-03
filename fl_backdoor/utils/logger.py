@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -18,13 +19,15 @@ class CSVLogger:
     def __init__(self, save_dir: str = "results", filename: str | None = None):
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
-
+        
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"experiment_{timestamp}.csv"
 
         self.filepath = self.save_dir / filename
         self.metrics_filepath = self.save_dir / f"{self.filepath.stem}_metrics.csv"
+        self.client_metrics_filepath = self.save_dir / f"{self.filepath.stem}_clients.csv"
+
 
         with self.filepath.open(mode="w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -34,8 +37,13 @@ class CSVLogger:
             writer = csv.writer(f)
             writer.writerow(["round", "component", "key", "value"])
 
+        with self.client_metrics_filepath.open(mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["round", "client_id", "score", "norm", "norm_z", "cosine", "suspicious", "kept"])
+
         print(f">>> [LOGGER] Saving results to: {self.filepath}")
         print(f">>> [LOGGER] Saving metrics to: {self.metrics_filepath}")
+        print(f">>> [LOGGER] Saving client metrics to: {self.client_metrics_filepath}")
 
     @staticmethod
     def _to_csv_value(value: Any) -> str:
@@ -70,3 +78,22 @@ class CSVLogger:
                         self._to_csv_value(value),
                     ]
                 )
+    def log_client_metrics(
+        self,
+        round: int,
+        client_id: int,
+        metrics: Mapping[str, Any],
+    ) -> None:
+        with self.client_metrics_filepath.open(mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                round,
+                client_id,
+                metrics.get("score", 0.0),
+                metrics.get("norm", 0.0),
+                metrics.get("norm_z", 0.0),
+                metrics.get("cosine", 1.0),
+                int(metrics.get("suspicious", 0)),
+                int(metrics.get("kept", 1)),
+            ])
+

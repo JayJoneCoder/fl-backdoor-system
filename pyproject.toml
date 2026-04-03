@@ -33,7 +33,7 @@ clientapp = "fl_backdoor.client.client:app"
 attack = "frequency"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft
 
 client-defense = "none"   # none / identity / feature_filter
-detection = "none"      # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
+detection = "clustering_detection"      # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
 
 defense = "none"               # none / norm_clipping / trimmed_mean / krum
 
@@ -42,7 +42,7 @@ defense = "none"               # none / norm_clipping / trimmed_mean / krum
 # 联邦学习基础参数（与安全无关）
 # =========================================================
 
-num-server-rounds = 10
+num-server-rounds = 15
 fraction-evaluate = 0.2
 local-epochs = 2
 learning-rate = 0.01

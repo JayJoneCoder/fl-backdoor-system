@@ -112,4 +112,26 @@ flwr run . --stream
 ```bash
  python ./fl_backdoor/utils/plot.py ./results/name.csv
 ```
+如果是主日志：
+
+```
+*_acc.png                # Accuracy，准确率
+*_asr.png                # Attack Success Rate，后门攻击成功率
+*_acc_vs_asr.png         # 横轴 ASR，纵轴 ACC，理想防御情况下应在左上角
+*_loss.png               # 训练稳定性
+```
+
+如果是 per-client 日志：
+
+```
+*_score_by_round.png     # 每个 client 的 score 分布。x轴：client_id，y轴：score，不同 round 不同点，有离群点证明 detection 有效
+*_norm_by_round.png      # 每个 client update 的范数。恶意客户端的 norm 可能特别大，若无明显差别说明攻击隐蔽
+*_cosine_by_round.png    # client update 与“全局方向”的相似度。查看恶意客户端是否方向异常
+*_score_hist.png         # score 分布直方图。两个分布分开证明 detection 有效
+*_suspicious_count.png   # 每轮被判为恶意的 client 数量。越接近 malicious_ratio 通常越好
+```
+
+如果是 metrics 日志：
+
+*_metrics_summary.png    # 聚合统计指标
 
