@@ -35,7 +35,12 @@ from .server.detection.features import (
 )
 
 _EPS = 1e-12
-
+AGG_TYPE_MAP = {
+    "fedavg": 0,
+    "krum": 1,
+    "trimmed_mean": 2,
+    "norm_clipping": 3,
+}
 
 def _normalize_name(value: Any) -> str:
     return str(value).lower().strip().replace("-", "_")
@@ -393,12 +398,149 @@ class DefensePipelineFedAvg(FedAvg):
             print("!!! WARNING: failed to write diagnostics metrics")
             print_exc()
 
+    def _extract_client_meta(self, msg: Message, fallback_client_id: int) -> tuple[int, int]:
+        content = RecordDict(msg.content)
+        metrics = dict(content["metrics"]) if "metrics" in content else {}
+        client_id = int(metrics.get("client_id", fallback_client_id))
+        is_malicious = metrics.get("is_malicious", -1)
+        is_malicious = -1 if is_malicious is None else int(is_malicious)
+        return client_id, is_malicious
+
+    def _confusion_from_masks(
+        self,
+        pred: np.ndarray,
+        gt: np.ndarray,
+    ) -> dict[str, float]:
+        pred = np.asarray(pred, dtype=bool).reshape(-1)
+        gt = np.asarray(gt, dtype=int).reshape(-1)
+        known = gt >= 0
+
+        if not np.any(known):
+            return {
+                "defense-detect-gt-known-clients": 0,
+                "defense-detect-tp": 0,
+                "defense-detect-fp": 0,
+                "defense-detect-fn": 0,
+                "defense-detect-tn": 0,
+                "defense-detect-precision": 0.0,
+                "defense-detect-recall": 0.0,
+                "defense-detect-fpr": 0.0,
+            }
+
+        pred = pred[known]
+        gt = gt[known].astype(bool)
+
+        tp = int(np.sum(pred & gt))
+        fp = int(np.sum(pred & ~gt))
+        fn = int(np.sum(~pred & gt))
+        tn = int(np.sum(~pred & ~gt))
+
+        precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+        recall = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+        fpr = float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
+
+        return {
+            "defense-detect-gt-known-clients": int(np.sum(known)),
+            "defense-detect-tp": tp,
+            "defense-detect-fp": fp,
+            "defense-detect-fn": fn,
+            "defense-detect-tn": tn,
+            "defense-detect-precision": precision,
+            "defense-detect-recall": recall,
+            "defense-detect-fpr": fpr,
+        }
+
+    def _log_client_rows(
+        self,
+        server_round: int,
+        replies: list[Message],
+        *,
+        score: np.ndarray | None = None,
+        norms: np.ndarray | None = None,
+        norm_z: np.ndarray | None = None,
+        cosine: np.ndarray | None = None,
+        suspicious_mask: np.ndarray | None = None,
+        kept_mask: np.ndarray | None = None,
+    ) -> None:
+        if self.diagnostics_logger is None:
+            return
+
+        total = len(replies)
+        score = np.zeros(total, dtype=float) if score is None else np.asarray(score, dtype=float)
+        norms = np.zeros(total, dtype=float) if norms is None else np.asarray(norms, dtype=float)
+        norm_z = np.zeros(total, dtype=float) if norm_z is None else np.asarray(norm_z, dtype=float)
+        cosine = np.ones(total, dtype=float) if cosine is None else np.asarray(cosine, dtype=float)
+        suspicious_mask = (
+            np.zeros(total, dtype=bool)
+            if suspicious_mask is None
+            else np.asarray(suspicious_mask, dtype=bool)
+        )
+        kept_mask = (
+            np.ones(total, dtype=bool)
+            if kept_mask is None
+            else np.asarray(kept_mask, dtype=bool)
+        )
+        
+        # =========================
+        # 构建 client 数据（绑定顺序，避免错位）
+        # =========================
+        client_data = []
+
+        for i, (msg, s, n, nz, c, sus, keep) in enumerate(zip(
+            replies,
+            score,
+            norms,
+            norm_z,
+            cosine,
+            suspicious_mask,
+            kept_mask,
+        )):
+            client_id, is_malicious = self._extract_client_meta(msg, i)
+
+            client_data.append({
+                "client_id": int(client_id),
+                "is_malicious": int(is_malicious),
+                "suspicious": int(sus),
+                "kept": int(keep),
+                "score": float(s),
+                "norm": float(n),
+                "norm_z": float(nz),
+                "cosine": float(c),
+            })
+
+        # =========================
+        # 按 client_id 排序（解决乱序）
+        # =========================
+        client_data.sort(key=lambda x: x["client_id"])
+
+        # =========================
+        # 写入 logger
+        # =========================
+        for data in client_data:
+            self.diagnostics_logger.log_client_metrics(
+                round=server_round,
+                client_id=data["client_id"],
+                metrics={
+                    "is_malicious": data["is_malicious"],
+                    "suspicious": data["suspicious"],
+                    "kept": data["kept"],
+                    "score": data["score"],
+                    "norm": data["norm"],
+                    "norm_z": data["norm_z"],
+                    "cosine": data["cosine"],
+                },
+            )
+        
     def configure_train(
         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         self.current_arrays = arrays.copy()
-        return super().configure_train(server_round, arrays, config, grid)
 
+        config = ConfigRecord(dict(config))
+        config["server-round"] = int(server_round)
+
+        return super().configure_train(server_round, arrays, config, grid)
+    
     def _apply_detection(
         self, server_round: int, replies: list[Message]
     ) -> tuple[list[Message], MetricRecord]:
@@ -406,6 +548,7 @@ class DefensePipelineFedAvg(FedAvg):
         extra = _normalize_kwargs(self.pipeline_config.detection_kwargs)
 
         if detection_type in {"", "none", "identity"}:
+            self._log_client_rows(server_round, replies)
             return replies, MetricRecord()
 
         supported_detection_types = {
@@ -619,8 +762,32 @@ class DefensePipelineFedAvg(FedAvg):
                 },
             )
 
+        gt_labels: list[int] = []
+        for i, msg in enumerate(scored_replies):
+            _, is_malicious = self._extract_client_meta(msg, i)
+            gt_labels.append(is_malicious)
+
+        gt_metrics = self._confusion_from_masks(
+            suspicious_mask,
+            np.asarray(gt_labels, dtype=int),
+        )
+
+        report.extra.update(gt_metrics)
+
         filtered_replies = [scored_replies[i] for i in report.kept_indices]
 
+        self._log_client_rows(
+            server_round,
+            scored_replies,
+            score=score,
+            norms=norms,
+            norm_z=norm_z,
+            cosine=cosine,
+            suspicious_mask=suspicious_mask,
+            kept_mask=~suspicious_mask,
+        )
+
+        '''
         if self.diagnostics_logger is not None:
             try:
                 for i in range(total):
@@ -640,9 +807,9 @@ class DefensePipelineFedAvg(FedAvg):
                 from traceback import print_exc
                 print("!!! WARNING: failed to log client metrics (final)")
                 print_exc()
-
+        '''
         return filtered_replies, report.to_metric_record()
-    
+        
     def _apply_aggregation(
         self, replies: list[Message]
     ) -> tuple[ArrayRecord | None, MetricRecord]:
@@ -671,13 +838,6 @@ class DefensePipelineFedAvg(FedAvg):
             )
             if metrics is None:
                 metrics = MetricRecord()
-
-            AGG_TYPE_MAP = {
-                "fedavg": 0,
-                "krum": 1,
-                "trimmed_mean": 2,
-                "norm_clipping": 3,
-            }
 
             agg_type = self.pipeline_config.aggregation_type.lower()
             metrics["defense-agg-type"] = AGG_TYPE_MAP.get(agg_type, -1)
@@ -898,7 +1058,7 @@ class DefensePipelineFedAvg(FedAvg):
             if metrics is None:
                 metrics = MetricRecord()
 
-            metrics["defense-agg-type"] = "krum"
+            metrics["defense-agg-type"] = AGG_TYPE_MAP["krum"]
             metrics["defense-agg-total-clients"] = int(n)
             metrics["defense-agg-selected-clients"] = int(len(selected_indices))
             metrics["defense-agg-krum-f"] = int(f)

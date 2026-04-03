@@ -1,14 +1,7 @@
 from .base import AttackBase, AttackConfig, IdentityAttack
-from .badnets import (
-    BadNetsAttack,
-    add_trigger,
-    build_badnets_attack,
-    get_poisoned_loader,
-    get_triggered_loader,
-    is_malicious_client,
-    select_malicious_clients,
-)
+from .badnets import BadNetsAttack, add_trigger, build_badnets_attack, get_poisoned_loader, get_triggered_loader
 from .frequency import FrequencyAttack, build_frequency_attack
+from .selection import is_malicious_client, normalize_fixed_malicious_clients, select_malicious_clients
 from .wanet import WanetAttack, build_wanet_attack
 
 
@@ -20,6 +13,8 @@ def build_attack(
     target_label: int = 0,
     trigger_size: int = 4,
     seed: int = 42,
+    malicious_mode: str = "random",
+    fixed_malicious_clients: list[int] | None = None,
     grid_size: int | None = None,
     noise_scale: float = 0.05,
     frequency_mode: str = "dct",
@@ -59,6 +54,8 @@ def build_attack(
             target_label=target_label,
             trigger_size=trigger_size,
             seed=seed,
+            malicious_mode=malicious_mode,
+            fixed_malicious_clients=fixed_malicious_clients,
         )
 
     # ========================
@@ -73,6 +70,8 @@ def build_attack(
             seed=seed,
             grid_size=grid_size,
             noise_scale=noise_scale,
+            malicious_mode=malicious_mode,
+            fixed_malicious_clients=fixed_malicious_clients,
         )
 
     # ========================
@@ -90,6 +89,8 @@ def build_attack(
             frequency_window_size=frequency_window_size,
             frequency_intensity=frequency_intensity,
             mix_alpha=frequency_mix_alpha,
+            malicious_mode=malicious_mode,
+            fixed_malicious_clients=fixed_malicious_clients,
         )
 
     if attack_type in {"frequency_dct", "dct"}:
@@ -104,6 +105,8 @@ def build_attack(
             frequency_window_size=frequency_window_size,
             frequency_intensity=frequency_intensity,
             mix_alpha=frequency_mix_alpha,
+            malicious_mode=malicious_mode,
+            fixed_malicious_clients=fixed_malicious_clients,
         )
 
     if attack_type in {"frequency_fft", "fft"}:
@@ -118,6 +121,8 @@ def build_attack(
             frequency_window_size=frequency_window_size,
             frequency_intensity=frequency_intensity,
             mix_alpha=frequency_mix_alpha,
+            malicious_mode=malicious_mode,
+            fixed_malicious_clients=fixed_malicious_clients,
         )
 
     # ========================

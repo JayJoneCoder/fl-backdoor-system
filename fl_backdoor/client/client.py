@@ -9,6 +9,7 @@ from fl_backdoor.task import test as test_fn
 from fl_backdoor.task import train as train_fn
 from fl_backdoor.attacks import build_attack
 from fl_backdoor.defenses import build_defense_pipeline_from_run_config
+from fl_backdoor.attacks.selection import normalize_fixed_malicious_clients
 
 # Flower ClientApp
 app = ClientApp()
@@ -30,10 +31,12 @@ def train(msg: Message, context: Context):
 
     trainloader, _ = load_data(partition_id, num_partitions, batch_size)
 
+    server_round = int(msg.content["config"].get("server-round", 0))
+
     # Attack config
     attack_type = str(
         context.run_config.get("attack-type", context.run_config.get("attack", "badnets"))
-    ).lower()
+    ).lower().strip()
 
     malicious_ratio = float(context.run_config.get("malicious-ratio", 0.2))
     poison_rate = float(context.run_config.get("poison-rate", 0.05))
@@ -52,6 +55,15 @@ def train(msg: Message, context: Context):
 
     print(f">>> [DEBUG] attack_type = {attack_type}")
 
+    malicious_mode = str(context.run_config.get("attack-malicious-mode", "random")).lower().strip()
+
+    fixed_malicious_clients_raw = context.run_config.get("attack-fixed-clients", None)
+    fixed_malicious_clients = (
+        list(normalize_fixed_malicious_clients(fixed_malicious_clients_raw))
+        if fixed_malicious_clients_raw is not None
+        else None
+    )
+
     attack = build_attack(
         attack_type=attack_type,
         malicious_ratio=malicious_ratio,
@@ -59,6 +71,8 @@ def train(msg: Message, context: Context):
         target_label=target_label,
         trigger_size=trigger_size,
         seed=seed,
+        malicious_mode=malicious_mode,
+        fixed_malicious_clients=fixed_malicious_clients,
         grid_size=None if grid_size is None else int(grid_size),
         noise_scale=noise_scale,
         frequency_mode=frequency_mode,
@@ -71,6 +85,7 @@ def train(msg: Message, context: Context):
     is_malicious = attack.is_malicious_client(
         partition_id,
         num_partitions,
+        server_round=server_round,
     )
 
     if is_malicious:
@@ -111,6 +126,8 @@ def train(msg: Message, context: Context):
     # Return
     model_record = ArrayRecord(model.state_dict())
     metrics = {
+        "client_id": int(partition_id),
+        "server_round": int(server_round),
         "train_loss": train_loss,
         "num-examples": len(trainloader.dataset),
         "is_malicious": int(is_malicious),

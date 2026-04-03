@@ -49,52 +49,46 @@ def extract_features(
     global_vector: np.ndarray,
     local_vectors: list[np.ndarray],
 ) -> dict[str, np.ndarray]:
-    """Extract detection features from client updates.
 
-    Returns a dict containing:
-        - deltas
-        - norms
-        - norm_z
-        - cosine
-        - center
-        - score (default combined score)
-    """
     if not local_vectors:
         return {}
 
-    stacked = np.stack(local_vectors, axis=0)
+    # =========================
+    # stack
+    # =========================
+    stacked = np.stack(local_vectors, axis=0).astype(np.float32)
 
     # =========================
-    # Delta
+    # delta
     # =========================
     deltas = stacked - global_vector.reshape(1, -1)
 
     # =========================
-    # Norm
+    # norm
     # =========================
     norms = np.linalg.norm(deltas, axis=1)
 
     # =========================
-    # Robust Z-score (MAD)
+    # robust z-score
     # =========================
-    median_norm = float(np.median(norms))
-    mad = float(np.median(np.abs(norms - median_norm)))
-    robust_scale = 1.4826 * mad + _EPS
+    median = np.median(norms)
+    mad = np.median(np.abs(norms - median))
+    scale = 1.4826 * mad + 1e-12
 
-    norm_z = np.abs(norms - median_norm) / robust_scale
+    norm_z = np.abs(norms - median) / scale
 
     # =========================
-    # Cosine similarity to center
+    # cosine to center
     # =========================
     center = np.mean(deltas, axis=0)
 
     cosine = np.array(
-        [cosine_similarity(delta, center) for delta in deltas],
-        dtype=np.float64,
+        [cosine_similarity(d, center) for d in deltas],
+        dtype=np.float32
     )
 
     # =========================
-    # Default score（统一评分）
+    # score
     # =========================
     score = norm_z + np.clip(1.0 - cosine, 0.0, 2.0)
 

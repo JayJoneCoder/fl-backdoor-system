@@ -39,7 +39,7 @@ class CSVLogger:
 
         with self.client_metrics_filepath.open(mode="w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["round", "client_id", "score", "norm", "norm_z", "cosine", "suspicious", "kept"])
+            writer.writerow(["round", "client_id", "is_malicious", "suspicious", "kept", "score", "norm", "norm_z", "cosine"])
 
         print(f">>> [LOGGER] Saving results to: {self.filepath}")
         print(f">>> [LOGGER] Saving metrics to: {self.metrics_filepath}")
@@ -89,11 +89,12 @@ class CSVLogger:
             writer.writerow([
                 round,
                 client_id,
+                int(metrics.get("is_malicious", -1)),
+                int(metrics.get("suspicious", 0)),
+                int(metrics.get("kept", 1)),
                 metrics.get("score", 0.0),
                 metrics.get("norm", 0.0),
                 metrics.get("norm_z", 0.0),
                 metrics.get("cosine", 1.0),
-                int(metrics.get("suspicious", 0)),
-                int(metrics.get("kept", 1)),
             ])
 

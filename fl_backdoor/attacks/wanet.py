@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from .base import AttackBase, AttackConfig
-from .badnets import select_malicious_clients
+from .selection import normalize_fixed_malicious_clients, select_malicious_clients
 
 
 def _get_image_hw(image: torch.Tensor) -> tuple[int, int]:
@@ -241,13 +241,25 @@ class WanetAttack(AttackBase):
             raise ValueError("grid_size must be a positive integer.")
         if self.noise_scale <= 0.0:
             raise ValueError("noise_scale must be positive.")
-
-    def select_malicious_clients(self, num_clients: int) -> set[int]:
-        return select_malicious_clients(
-            num_clients=num_clients,
+        
+    def get_malicious_clients(self, total_clients: int, server_round: int = 0) -> set[int]:
+        malicious_clients = select_malicious_clients(
+            num_clients=total_clients,
             malicious_ratio=self.config.malicious_ratio,
             seed=self.config.seed,
+            malicious_mode=self.config.extra.get("malicious_mode", "random"),
+            fixed_malicious_clients=self.config.extra.get("fixed_malicious_clients", None),
+            server_round=server_round,
         )
+
+        print(
+            f"[Attack:{self.name}] "
+            f"mode={self.config.extra.get('malicious_mode')} "
+            f"round={server_round} "
+            f"selected={sorted(malicious_clients)}"
+        )
+
+        return malicious_clients
 
     def get_poisoned_loader(self, trainloader: DataLoader) -> DataLoader:
         poisoned_dataset = PoisonedWanetDataset(
@@ -295,6 +307,8 @@ def build_wanet_attack(
     seed: int = 42,
     grid_size: int | None = None,
     noise_scale: float = 0.05,
+    malicious_mode: str = "random",
+    fixed_malicious_clients: list[int] | tuple[int, ...] | None = None,
 ) -> WanetAttack:
     """Convenience factory for WaNet."""
     resolved_grid_size = int(trigger_size if grid_size is None else grid_size)
@@ -309,6 +323,8 @@ def build_wanet_attack(
         extra={
             "grid_size": resolved_grid_size,
             "noise_scale": float(noise_scale),
+            "malicious_mode": malicious_mode,
+            "fixed_malicious_clients": normalize_fixed_malicious_clients(fixed_malicious_clients),
         },
     )
     return WanetAttack(config)

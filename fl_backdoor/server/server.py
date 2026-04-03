@@ -165,6 +165,9 @@ def main(grid: Grid, context: Context) -> None:
         frequency_intensity = float(context.run_config.get("frequency-intensity", 0.10))
         frequency_mix_alpha = float(context.run_config.get("frequency-mix-alpha", 1.0))
 
+        malicious_mode = str(context.run_config.get("attack-malicious-mode", "random"))
+        fixed_malicious_clients = context.run_config.get("attack-fixed-clients", None)
+
         attack = build_attack(
             attack_type=attack_type,
             malicious_ratio=malicious_ratio,
@@ -172,6 +175,8 @@ def main(grid: Grid, context: Context) -> None:
             target_label=target_label,
             trigger_size=trigger_size,
             seed=seed,
+            malicious_mode=malicious_mode,
+            fixed_malicious_clients=fixed_malicious_clients,
             grid_size=None if grid_size is None else int(grid_size),
             noise_scale=noise_scale,
             frequency_mode=frequency_mode,

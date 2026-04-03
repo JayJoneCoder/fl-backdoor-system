@@ -1,71 +1,89 @@
 ---
-tags: [vision, fds]
+tags: [fl, backdoor-attack, backdoor-defense, federated-learning, security, privacy]
 dataset: [CIFAR-10]
-framework: [torch, torchvision]
+framework: [pytorch, flwr]
 ---
 
 # 面向联邦学习的后门攻击与防御系统
 
 当前项目架构：
 ```shell
-fl-backdoor-system/ 
-├── fl_backdoor/ 
-│ ├── attacks/ 
-│ │ ├── __init__.py 
-│ │ ├── badnets.py 
-│ │ ├── base.py 
-│ │ ├── wanet.py 
-│ │ ├── frequency.py 
-│ │ └── 未完待续，支持 attack="none"（IdentityAttack） 
-
-│ ├── defenses/                      # 防御系统（核心）（允许任何一层的防御为none，目前已实现的都可以为none）
-│ │ ├── base.py                    # DefenseBase / DefenseConfig（聚合层基类）
-│ │ ├── init__.py                # build_defense / build_defended_strategy
-│ │ ├── pipeline.py
-│ │ ├── client/                    # 客户端防御（数据层）
-│ │ │ ├── base.py
-│ │ │ ├── feature_filter.py
-│ │ │ └── __init__.py            # build_client_defense()
-│ │ └── server/                    # 服务端防御
-│ │    ├── aggregation/           # 聚合层防御（已完成）
-│ │    │ ├── norm_clipping.py
-│ │    │ ├── trimmed_mean.py
-│ │    │ ├── krum.py
-│ │    │ └── __init__.py
-│ │    └── detection/             # 检测层（刚完成）
-│ │       ├── base.py
-│ │       ├── anomaly_detection.py
-│ │       ├── cosine_detection.py
-│ │       └── __init__.py        # build_detection()
-
-│ ├── client/ 
-│ │ ├── __init__.py 
-│ │ └── client.py 
-
-│ ├── server/ 
-│ │ ├── __init__.py 
-│ │ └── server.py 
-
-│ ├── utils/ 
-│ │ ├── __init__.py 
-│ │ ├── logger.py
-│ │ └── plot.py 
-
-│ ├── __init__.py 
-│ └── task.py 
-
-├── results/    # 项目运行后自动生成
+fl-backdoor-system/
+├── fl_backdoor/
+│   ├── attacks/                           # 后门攻击实现（BadNets / WaNet / Frequency）
+│   │   ├── __init__.py                    # build_attack() 工厂，支持 attack="none"
+│   │   ├── base.py                        # AttackBase + AttackConfig，定义恶意客户端选择接口
+│   │   ├── badnets.py                     # 像素级贴片触发器（正方形白块）
+│   │   ├── wanet.py                       # 弹性扭曲 + 噪声，隐形后门
+│   │   ├── frequency.py                   # 频域攻击（FFT/DCT），篡改高频/低频分量
+│   │   └── selection.py                   # 恶意客户端选择（random / fixed），支持 round‑level 确定性采样
+│   │
+│   ├── defenses/                          # 防御系统（核心）
+│   │   ├── base.py                        # DefenseBase + DefenseConfig，聚合防御基类
+│   │   ├── __init__.py                    # build_defense_pipeline() 工厂入口
+│   │   ├── pipeline.py                    # DefensePipelineFedAvg，统一调度：client 防御 → detection → 聚合防御
+│   │   │
+│   │   ├── client/                        # 客户端防御（数据层预处理）
+│   │   │   ├── base.py                    # ClientDefenseBase
+│   │   │   ├── feature_filter.py          # 基于特征激活值的样本过滤（可疑样本剔除）
+│   │   │   └── __init__.py                # build_client_defense()
+│   │   │
+│   │   └── server/                        # 服务端防御
+│   │       ├── aggregation/               # 聚合层防御（拜占庭鲁棒聚合）
+│   │       │   ├── norm_clipping.py       # 梯度裁剪：限制单个 client 更新范数
+│   │       │   ├── trimmed_mean.py        # 修剪平均：去掉最大/最小更新后平均
+│   │       │   ├── krum.py                # Krum：选择距离其他更新最近的 k 个更新
+│   │       │   └── __init__.py
+│   │       │
+│   │       └── detection/                 # 检测层（聚合前过滤恶意更新）
+│   │           ├── base.py                # DetectionBase + DetectionReport
+│   │           ├── anomaly_detection.py   # 基于 z‑score 的范数异常检测
+│   │           ├── cosine_detection.py    # 余弦相似度检测（方向异常）
+│   │           ├── score_detection.py     # 百分位数阈值过滤
+│   │           ├── clustering_detection.py # K‑means 聚类 + 轮廓系数自动分组
+│   │           ├── features.py            # 特征提取（范数、余弦、z‑score、deltas）
+│   │           └── __init__.py            # build_detection()
+│   │
+│   ├── client/
+│   │   ├── __init__.py
+│   │   └── client.py                      # Flower ClientApp，执行本地训练 + 攻击注入 + 客户端防御
+│   │
+│   ├── server/
+│   │   ├── __init__.py
+│   │   └── server.py                      # Flower ServerApp，初始化攻击 + 防御 pipeline + 全局评估（ACC/ASR）
+│   │
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── logger.py                      # CSVLogger：记录主实验指标 + 检测指标 + 客户端级指标
+│   │   └── plot.py                        # 绘图脚本：自动生成 ACC/ASR、检测率、混淆矩阵、客户端分布图
+│   │
+│   ├── __init__.py
+│   └── task.py                            # 模型定义（Net）、数据加载（CIFAR‑10）、训练/测试函数
+│
+├── results/                               # 实验输出目录（自动生成）
+│   ├── *_acc.png                          # 准确率曲线
+│   ├── *_asr.png                          # 后门攻击成功率曲线
+│   ├── *_detection_rates.png              # Precision / Recall / FPR 曲线（论文核心）
+│   ├── *_detection_confusion.png          # TP / FP / FN / TN 混淆矩阵计数
+│   ├── *_suspicious_vs_malicious.png      # 检测出的可疑数 vs 真实恶意数（红实线 vs 蓝虚线）
+│   ├── *_score_by_round.png               # 每个 client 异常分数分布（离群点 = 疑似恶意）
+│   ├── *_score_hist.png                   # 异常分数直方图（按可疑/良性分层）
+│   ├── *_score_vs_norm.png                # 异常分数 vs 更新范数（颜色表示可疑状态）
+│   ├── *_score_vs_cosine.png              # 异常分数 vs 余弦相似度
+│   ├── *.csv                              # 原始日志（主实验 + 检测指标 + 客户端级指标）
+│   └── ...                                # 等等
+│
+├── pyproject.toml                         # 项目配置 + 实验参数（攻击类型、防御类型、联邦学习超参数）
+├── final_model.pt                         # 训练完成的全局模型
 ├── .gitignore
-├── final_model.pt 
 ├── LICENSE
-├── pyproject.toml
 └── README.md
 
 ```
 
 ### 安装依赖和运行项目
 
-参考[flower 官网](https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html)。
+参考 [flower 官网](https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html)。
 
 ```bash
 # 1. 克隆项目
@@ -110,28 +128,43 @@ flwr run . --stream
 系统会将日志信息存储在 fl-backdoor-system/results 下。
 用此命令画图：
 ```bash
+# 指定文件
  python ./fl_backdoor/utils/plot.py ./results/name.csv
-```
-如果是主日志：
 
+# 全部文件
+ python fl_backdoor/utils/plot.py results/
 ```
-*_acc.png                # Accuracy，准确率
-*_asr.png                # Attack Success Rate，后门攻击成功率
-*_acc_vs_asr.png         # 横轴 ASR，纵轴 ACC，理想防御情况下应在左上角
-*_loss.png               # 训练稳定性
-```
-
-如果是 per-client 日志：
+主日志：
 
 ```
-*_score_by_round.png     # 每个 client 的 score 分布。x轴：client_id，y轴：score，不同 round 不同点，有离群点证明 detection 有效
-*_norm_by_round.png      # 每个 client update 的范数。恶意客户端的 norm 可能特别大，若无明显差别说明攻击隐蔽
-*_cosine_by_round.png    # client update 与“全局方向”的相似度。查看恶意客户端是否方向异常
-*_score_hist.png         # score 分布直方图。两个分布分开证明 detection 有效
-*_suspicious_count.png   # 每轮被判为恶意的 client 数量。越接近 malicious_ratio 通常越好
+*_acc.png                # Accuracy，模型在主任务上的准确率。防御应保持高 ACC
+*_asr.png                # Attack Success Rate，后门攻击成功率。防御应使 ASR 趋近 0
+*_acc_vs_asr.png         # 横轴 ASR，纵轴 ACC。理想防御应在左上角（高 ACC + 低 ASR）
+*_loss.png               # 训练损失曲线。反映训练稳定性，异常波动可能提示攻击或防御失效
 ```
 
-如果是 metrics 日志：
+per-client 日志：
 
-*_metrics_summary.png    # 聚合统计指标
+```
+*_score_by_round.png          # 每个 client 的异常分数分布。x轴：client_id，y轴：score，不同 round 用不同颜色/形状标记。恶意 client 分数显著偏高则 detection 有效
+*_norm_by_round.png           # 每个 client 模型更新的 L2 范数。恶意 client 的 norm 可能异常大或小（取决于攻击），若无差别说明攻击隐蔽性强
+*_cosine_by_round.png         # client 更新与全局更新方向的余弦相似度。恶意 client 的余弦值偏低（方向偏离），理想情况下与良性明显分离
+*_score_hist.png              # 异常分数的直方图，按 suspicious（预测）分层。两个分布分离越清晰，检测性能越好
+*_suspicious_vs_malicious.png   # 每轮被检测为恶意的 client 数量（红色实线）vs 真实恶意 client 数量（蓝色虚线）。两条线越接近说明检测越准确；红线高于蓝线表示误报过高，低于蓝线表示漏报过多
+*_score_box.png               # 异常分数的箱线图，按 suspicious 分组。直观显示两组的中位数、四分位距和离群值
+*_score_vs_norm.png           # 异常分数 vs 更新范数，颜色表示 suspicious。高分数 + 高范数区域若集中恶意 client，说明检测特征有效
+*_score_vs_cosine.png         # 异常分数 vs 余弦相似度，颜色表示 suspicious。恶意 client 倾向于低余弦 + 高分数
+*_score_by_gt.png             # 异常分数按真实标签（is_malicious）着色。验证 GT 与预测的一致性
+```
 
+metrics 日志：
+
+```
+*_detection_confusion.png     # 混淆矩阵计数（TP, FP, FN, TN）随轮次变化。直观展示检测的绝对数量
+*_detection_rates.png         # 检测率曲线：Precision, Recall, FPR。论文核心指标
+*_detection_summary.png       # 检测汇总统计：总客户端数、保留数、过滤数、可疑数、跳过数
+*_detection_scores.png        # 异常分数的统计量（均值、最大值、最小值）+ 余弦相似度均值/最小值 + 更新范数均值/最大值
+*_aggregation_metrics.png     # 聚合层防御指标：Krum 保留数、Trimmed Mean 修剪数、Norm Clipping 裁剪比例、更新范数统计等
+*_client_defense_metrics.png  # 客户端防御指标：过滤样本数、保留比例、平均分数等
+*_detection_overview.png      # 检测总览图：合并 TP/FP/FN + Precision/Recall/FPR + suspicious/kept/filtered 在一张图上（紧凑版）
+```

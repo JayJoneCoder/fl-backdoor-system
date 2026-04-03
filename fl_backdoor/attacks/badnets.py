@@ -4,53 +4,16 @@ This module is intentionally independent from client/server logic so that
 future attacks (e.g. WaNet, frequency-domain attacks) can follow the same API.
 """
 
-from __future__ import annotations
-
-from functools import lru_cache
-
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .base import AttackBase, AttackConfig
-
-
-@lru_cache(maxsize=None)
-def select_malicious_clients(
-    num_clients: int,
-    malicious_ratio: float,
-    seed: int = 42,
-) -> set[int]:
-    """Select a fixed set of malicious clients.
-
-    Why this way:
-    - reproducible across runs
-    - stable malicious set across all rounds
-    - easy to control attack strength by ratio
-    """
-    num_clients = int(num_clients)
-    if num_clients <= 0:
-        return set()
-
-    num_malicious = max(1, int(round(num_clients * float(malicious_ratio))))
-    num_malicious = min(num_malicious, num_clients)
-
-    rng = np.random.default_rng(seed)
-    client_ids = np.arange(num_clients)
-    rng.shuffle(client_ids)
-
-    return set(int(cid) for cid in client_ids[:num_malicious])
-
-
-def is_malicious_client(
-    cid: int | str,
-    num_clients: int,
-    malicious_ratio: float,
-    seed: int = 42,
-) -> bool:
-    """Check whether one client is malicious."""
-    return int(cid) in select_malicious_clients(num_clients, malicious_ratio, seed)
-
+from .selection import (
+    is_malicious_client,
+    normalize_fixed_malicious_clients,
+    select_malicious_clients,
+)
 
 def add_trigger(
     image: torch.Tensor,
@@ -78,14 +41,7 @@ def add_trigger(
 
 
 class PoisonedDataset(Dataset):
-    """Wrap a sample-level dataset and poison a subset of samples on the fly.
-
-    Standard BadNets behavior:
-    - choose a subset of local samples
-    - stamp the trigger
-    - flip labels to the target label
-    - keep this subset fixed for the whole local training process
-    """
+    """Wrap a sample-level dataset and poison a subset of samples on the fly."""
 
     def __init__(
         self,
@@ -151,7 +107,6 @@ def get_poisoned_loader(
     seed: int = 42,
     exclude_target_label: bool = True,
 ) -> DataLoader:
-    """Build a poisoned training loader without changing batch shape."""
     poisoned_dataset = PoisonedDataset(
         base_dataset=trainloader.dataset,
         poison_rate=poison_rate,
@@ -175,7 +130,6 @@ def get_triggered_loader(
     testloader: DataLoader,
     trigger_size: int,
 ) -> DataLoader:
-    """Build a triggered test loader for ASR evaluation."""
     triggered_dataset = TriggeredDataset(
         base_dataset=testloader.dataset,
         trigger_size=trigger_size,
@@ -194,12 +148,24 @@ def get_triggered_loader(
 class BadNetsAttack(AttackBase):
     """BadNets attack implementation following the common AttackBase API."""
 
-    def select_malicious_clients(self, num_clients: int) -> set[int]:
-        return select_malicious_clients(
-            num_clients=num_clients,
+    def get_malicious_clients(self, total_clients: int, server_round: int = 0) -> set[int]:
+        mode = self.config.extra.get("malicious_mode", "random")
+        fixed_clients = self.config.extra.get("fixed_malicious_clients", None)
+
+        malicious_clients = select_malicious_clients(
+            num_clients=total_clients,
             malicious_ratio=self.config.malicious_ratio,
             seed=self.config.seed,
+            malicious_mode=mode,
+            fixed_malicious_clients=fixed_clients,
+            server_round=server_round,
         )
+
+        print(
+            f"[Attack][BadNets] round={server_round}, "
+            f"mode={mode}, selected={sorted(malicious_clients)}"
+        )
+        return malicious_clients
 
     def get_poisoned_loader(self, trainloader: DataLoader) -> DataLoader:
         return get_poisoned_loader(
@@ -224,8 +190,9 @@ def build_badnets_attack(
     target_label: int = 0,
     trigger_size: int = 4,
     seed: int = 42,
+    malicious_mode: str = "random",
+    fixed_malicious_clients: list[int] | tuple[int, ...] | None = None,
 ) -> BadNetsAttack:
-    """Convenience factory for BadNets."""
     config = AttackConfig(
         attack_type="badnets",
         malicious_ratio=malicious_ratio,
@@ -233,5 +200,9 @@ def build_badnets_attack(
         target_label=target_label,
         trigger_size=trigger_size,
         seed=seed,
+        extra={
+            "malicious_mode": malicious_mode,
+            "fixed_malicious_clients": normalize_fixed_malicious_clients(fixed_malicious_clients),
+        },
     )
     return BadNetsAttack(config)

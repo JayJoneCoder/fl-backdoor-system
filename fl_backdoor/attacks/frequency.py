@@ -32,7 +32,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .base import AttackBase, AttackConfig
-from .badnets import select_malicious_clients
+from .selection import normalize_fixed_malicious_clients, select_malicious_clients
 
 FrequencyMode = Literal["dct", "fft"]
 FrequencyBand = Literal["low", "high"]
@@ -585,12 +585,16 @@ class FrequencyAttack(AttackBase):
         if not (0.0 < self.mix_alpha <= 1.0):
             raise ValueError("mix_alpha must be in (0.0, 1.0].")
 
-    def select_malicious_clients(self, num_clients: int) -> set[int]:
+    def get_malicious_clients(self, total_clients: int, server_round: int = 0) -> set[int]:
         return select_malicious_clients(
-            num_clients=num_clients,
+            num_clients=total_clients,
             malicious_ratio=self.config.malicious_ratio,
             seed=self.config.seed,
+            malicious_mode=self.config.extra.get("malicious_mode", "random"),
+            fixed_malicious_clients=self.config.extra.get("fixed_malicious_clients", None),
+            server_round=server_round,
         )
+
 
     def get_poisoned_loader(self, trainloader: DataLoader) -> DataLoader:
         return get_poisoned_loader(
@@ -632,6 +636,8 @@ def build_frequency_attack(
     frequency_intensity: float = 0.35,
     mix_alpha: float = 1.0,
     trigger_style: str = "structured",
+    malicious_mode: str = "random",
+    fixed_malicious_clients: list[int] | tuple[int, ...] | None = None,
 ) -> FrequencyAttack:
     """Convenience factory for the frequency attack."""
     resolved_window_size = _resolve_window_size(frequency_window_size, trigger_size)
@@ -650,6 +656,8 @@ def build_frequency_attack(
             "frequency_intensity": float(frequency_intensity),
             "mix_alpha": float(mix_alpha),
             "trigger_style": _resolve_style(trigger_style),
+            "malicious_mode": malicious_mode,
+            "fixed_malicious_clients": normalize_fixed_malicious_clients(fixed_malicious_clients),
         },
     )
     return FrequencyAttack(config)
