@@ -26,7 +26,7 @@ framework: [pytorch, flwr]
 ## 当前项目架构：
 ```shell
 fl-backdoor-system/
-├── fl_backdoor/
+├── fl_backdoor/                           # 核心源码
 │   ├── attacks/                           # 后门攻击实现（BadNets / WaNet / Frequency）
 │   │   ├── __init__.py                    # build_attack() 工厂，支持 attack="none"
 │   │   ├── base.py                        # AttackBase + AttackConfig，定义恶意客户端选择接口
@@ -72,23 +72,31 @@ fl-backdoor-system/
 │   ├── utils/
 │   │   ├── __init__.py
 │   │   ├── logger.py                      # CSVLogger：记录主实验指标 + 检测指标 + 客户端级指标
-│   │   └── plot.py                        # 绘图脚本：自动生成 ACC/ASR、检测率、混淆矩阵、客户端分布图
+│   │   └── plot.py                        # 绘图脚本：自动生成 ACC/ASR、检测率、混淆矩阵、客户端分布图、多实验对比图
 │   │
 │   ├── __init__.py
 │   └── task.py                            # 模型定义（Net）、数据加载（CIFAR‑10）、训练/测试函数
 │
+├── scripts/                               # 辅助脚本（批量实验、结果汇总）
+│   ├── batch_runner.py                    # 批量运行实验（自动修改 pyproject.toml，串行执行）
+│   └── summarize_results.py               # 汇总所有实验结果，生成 summary.csv 和 LaTeX 表格
+│
 ├── results/                               # 实验输出目录（自动生成）
-│   ├── *_acc.png                          # 准确率曲线
-│   ├── *_asr.png                          # 后门攻击成功率曲线
-│   ├── *_detection_rates.png              # Precision / Recall / FPR 曲线（论文核心）
-│   ├── *_detection_confusion.png          # TP / FP / FN / TN 混淆矩阵计数
-│   ├── *_suspicious_vs_malicious.png      # 检测出的可疑数 vs 真实恶意数（红实线 vs 蓝虚线）
-│   ├── *_score_by_round.png               # 每个 client 异常分数分布（离群点 = 疑似恶意）
-│   ├── *_score_hist.png                   # 异常分数直方图（按可疑/良性分层）
-│   ├── *_score_vs_norm.png                # 异常分数 vs 更新范数（颜色表示可疑状态）
-│   ├── *_score_vs_cosine.png              # 异常分数 vs 余弦相似度
-│   ├── *.csv                              # 原始日志（主实验 + 检测指标 + 客户端级指标）
-│   └── ...                                # 等等
+│   ├── <experiment_name>/                 # 每个实验一个子目录
+│   │   ├── *_acc.png                      # 准确率曲线
+│   │   ├── *_asr.png                      # 后门攻击成功率曲线
+│   │   ├── *_detection_rates.png          # Precision / Recall / FPR 曲线（论文核心）
+│   │   ├── *_detection_confusion.png      # TP / FP / FN / TN 混淆矩阵计数
+│   │   ├── *_suspicious_vs_malicious.png  # 检测出的可疑数 vs 真实恶意数
+│   │   ├── *_score_*.png                  # 客户端异常分数相关图
+│   │   ├── ...等等。详见“画图”部分
+│   │   └── *.csv                          # 原始日志
+│   ├── comparison_accuracy.png            # 多实验 ACC 曲线叠加对比
+│   ├── comparison_asr.png                 # 多实验 ASR 曲线叠加对比
+│   ├── summary_acc_vs_asr.png             # 最终 ACC vs ASR 散点图（防御有效性）
+│   ├── summary_detection_metrics.png      # 检测器性能柱状图（Precision/Recall/FPR/AUC）
+│   ├── summary.csv                        # 汇总表格（CSV）
+│   └── summary_table.tex                  # 汇总表格（LaTeX，可直接用于论文）
 │
 ├── pyproject.toml                         # 项目配置 + 实验参数（攻击类型、防御类型、联邦学习超参数）
 ├── final_model.pt                         # 训练完成的全局模型
@@ -140,18 +148,40 @@ flwr run . --stream
 # 我未来可能会加个 setup_env.py 一类的脚本，实现检测 cuda，安装 torch 一类的功能。
 ```
 
+## 批量实验与结果汇总
+### 批量运行多个实验
+编辑 `scripts/batch_runner.py` 中的 `DEFAULT_EXPERIMENTS` 列表，或提供 JSON 配置文件，然后运行：
+
+```bash
+python scripts/batch_runner.py
+# 或使用自定义配置
+python scripts/batch_runner.py --config my_experiments.json
+```
+
+### 汇总试验结果
+
+```bash
+python scripts/summarize_results.py
+```
+
+该脚本会扫描 results/ 下所有子目录，提取最后一轮的 ACC、ASR、检测指标等，生成：
+
+    results/summary.csv：所有实验的汇总表
+
+    results/summary_table.tex：LaTeX 表格代码，可直接粘贴到论文中
+
 ## 画图
 
 系统会将日志信息存储在 fl-backdoor-system/results 下。
 用此命令画图：
 ```bash
-# 指定文件
- python ./fl_backdoor/utils/plot.py ./results/name.csv
+# 画单个实验的所有图
+python fl_backdoor/utils/plot.py results/<实验名>/<实验名>.csv
 
-# 全部文件
- python fl_backdoor/utils/plot.py results/
+# 画所有实验的单图 + 多实验对比图（推荐）
+python fl_backdoor/utils/plot.py results/
 ```
-主日志：
+### 主日志
 
 ```
 *_acc.png                # Accuracy，模型在主任务上的准确率。防御应保持高 ACC
@@ -160,7 +190,7 @@ flwr run . --stream
 *_loss.png               # 训练损失曲线。反映训练稳定性，异常波动可能提示攻击或防御失效
 ```
 
-per-client 日志：
+### per-client 日志：
 
 ```
 *_score_by_round.png          # 每个 client 的异常分数分布。x轴：client_id，y轴：score，不同 round 用不同颜色/形状标记。恶意 client 分数显著偏高则 detection 有效
@@ -174,7 +204,7 @@ per-client 日志：
 *_score_by_gt.png             # 异常分数按真实标签（is_malicious）着色。验证 GT 与预测的一致性
 ```
 
-metrics 日志：
+### metrics 日志：
 
 ```
 *_detection_confusion.png     # 混淆矩阵计数（TP, FP, FN, TN）随轮次变化。直观展示检测的绝对数量
@@ -185,3 +215,17 @@ metrics 日志：
 *_client_defense_metrics.png  # 客户端防御指标：过滤样本数、保留比例、平均分数等
 *_detection_overview.png      # 检测总览图：合并 TP/FP/FN + Precision/Recall/FPR + suspicious/kept/filtered 在一张图上（紧凑版）
 ```
+
+### 多实验对比图（自动生成）
+
+当运行 python fl_backdoor/utils/plot.py results/ 且 results/ 下存在多个实验子目录时，会自动生成：
+
+```
+comparison_accuracy.png       # 所有实验的 ACC 曲线叠加对比
+comparison_asr.png            # 所有实验的 ASR 曲线叠加对比
+summary_acc_vs_asr.png        # 最终 ACC vs ASR 散点图（每个实验一个点）
+summary_detection_metrics.png # 检测器性能柱状图（仅对有检测的实验）
+```
+
+## 许可证
+本项目采用 GPL-3.0 许可证，详见 [LICENSE](./LICENSE) 文件。
