@@ -11,6 +11,7 @@ from fl_backdoor.attacks import build_attack
 from fl_backdoor.defenses.pipeline import build_defense_pipeline
 from fl_backdoor.task import Net, load_centralized_dataset, test
 from fl_backdoor.utils.logger import CSVLogger
+from pathlib import Path
 
 # Create ServerApp
 app = ServerApp()
@@ -211,12 +212,11 @@ def main(grid: Grid, context: Context) -> None:
         # Naming
         # ========================
         results_dir = str(context.run_config.get("results-dir", "results"))
-        run_name = str(
-            context.run_config.get(
-                "run-name",
-                f"{attack_type}_{client_defense_type}_{detection_type}_{aggregation_type}",
-            )
-        )
+        run_name = str(context.run_config.get("run-name", "experiment"))
+
+        # 创建子目录
+        experiment_dir = Path(results_dir) / run_name
+        experiment_dir.mkdir(parents=True, exist_ok=True)
 
         print(f">>> [DEBUG] run_name = {run_name}")
 
@@ -224,8 +224,8 @@ def main(grid: Grid, context: Context) -> None:
         # Logger
         # ========================
         experiment_logger = CSVLogger(
-            save_dir=results_dir,
-            filename=f"{run_name}.csv",
+            save_dir=str(experiment_dir),
+            filename=f"{run_name}.csv"
         )
         print(f">>> [DEBUG] Logger initialized: {results_dir}/{run_name}.csv")
 

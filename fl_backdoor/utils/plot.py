@@ -16,6 +16,7 @@ Usage:
     python plot.py results/baseline.csv results/badnets.csv
     python plot.py results/*_clients.csv
     python plot.py results/*_metrics.csv
+    python plot.py results/                # 自动生成多实验对比图
 """
 
 from __future__ import annotations
@@ -63,79 +64,80 @@ def _legend_outside(ax: plt.Axes, *, title: str | None = None, ncol: int = 1) ->
         ncol=ncol,
     )
 
+
 # -----------------------------
 # ROC and AUC (pure numpy, no sklearn)
 # -----------------------------
 def _roc_curve(y_true, y_score):
     """Compute ROC curve using numpy.
-    
+
     Args:
         y_true: 1D array of true labels (0 or 1)
         y_score: 1D array of scores (higher = more suspicious)
-    
+
     Returns:
         fpr, tpr, thresholds
     """
     y_true = np.asarray(y_true)
     y_score = np.asarray(y_score)
-    
+
     # Sort by score descending
     desc_idx = np.argsort(y_score)[::-1]
     y_true_sorted = y_true[desc_idx]
-    
+
     # Unique thresholds (scores)
     thresholds = np.unique(y_score)[::-1]
-    
+
     tpr_list = []
     fpr_list = []
-    
+
     total_pos = np.sum(y_true == 1)
     total_neg = np.sum(y_true == 0)
-    
+
     if total_pos == 0 or total_neg == 0:
         return np.array([0, 1]), np.array([0, 1]), np.array([np.inf, -np.inf])
-    
+
     tp = 0
     fp = 0
     prev_score = None
-    
+
     for i, score in enumerate(y_score[desc_idx]):
         if prev_score is not None and score != prev_score:
             tpr_list.append(tp / total_pos)
             fpr_list.append(fp / total_neg)
-        
+
         if y_true_sorted[i] == 1:
             tp += 1
         else:
             fp += 1
         prev_score = score
-    
+
     tpr_list.append(tp / total_pos)
     fpr_list.append(fp / total_neg)
-    
+
     fpr = np.array([0] + fpr_list)
     tpr = np.array([0] + tpr_list)
     thresholds = np.array([np.inf] + list(thresholds) + [-np.inf])
-    
+
     fpr = np.clip(fpr, 0, 1)
     tpr = np.clip(tpr, 0, 1)
-    
+
     return fpr, tpr, thresholds
 
 
 def _auc(fpr, tpr):
     """Compute AUC using trapezoidal rule (pure numpy, no trapz/trapezoid)."""
-    # Sort by fpr (ascending)
     order = np.argsort(fpr)
     fpr_sorted = fpr[order]
     tpr_sorted = tpr[order]
-    
+
     auc_value = 0.0
     for i in range(1, len(fpr_sorted)):
         width = fpr_sorted[i] - fpr_sorted[i-1]
         height = (tpr_sorted[i] + tpr_sorted[i-1]) / 2.0
         auc_value += width * height
     return auc_value
+
 
 def _to_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     out = df.copy()
@@ -391,25 +393,25 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
         _legend_outside(ax)
     _savefig(out_score_hist)
 
-    # 5) Suspicious vs Malicious count by round (合并图)
+    # 5) Suspicious vs Malicious count by round (merged)
     fig, ax = plt.subplots(figsize=(8.0, 5.2))
-    
+
     suspicious_by_round = df.groupby("round", as_index=False)["suspicious"].sum()
     malicious_by_round = (
         df.loc[df["is_malicious"] >= 0]
         .groupby("round", as_index=False)["is_malicious"]
         .sum()
     )
-    
-    ax.plot(suspicious_by_round["round"], suspicious_by_round["suspicious"], 
-            marker="o", linestyle="-", linewidth=2, markersize=6, 
+
+    ax.plot(suspicious_by_round["round"], suspicious_by_round["suspicious"],
+            marker="o", linestyle="-", linewidth=2, markersize=6,
             label="Suspicious (detected)", color="red")
-    
+
     if not malicious_by_round.empty:
-        ax.plot(malicious_by_round["round"], malicious_by_round["is_malicious"], 
-                marker="s", linestyle="--", linewidth=2, markersize=6, 
+        ax.plot(malicious_by_round["round"], malicious_by_round["is_malicious"],
+                marker="s", linestyle="--", linewidth=2, markersize=6,
                 label="Malicious (ground truth)", color="blue")
-    
+
     ax.set_xlabel("Round")
     ax.set_ylabel("Count")
     ax.set_title(f"Suspicious vs Malicious Clients by Round ({csv_path.stem})")
@@ -418,7 +420,7 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
     _force_integer_axis(ax)
     _savefig(csv_path.with_name(csv_path.stem + "_suspicious_vs_malicious.png"))
 
-    # 7) Boxplot: score grouped by suspicious label
+    # 6) Boxplot: score grouped by suspicious label
     fig, ax = plt.subplots(figsize=(7.0, 5.0))
     benign_scores = df.loc[df["suspicious"] == 0, "score"].to_list()
     suspicious_scores = df.loc[df["suspicious"] == 1, "score"].to_list()
@@ -431,7 +433,7 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
         groups.append(suspicious_scores)
         labels.append("suspicious")
     if groups:
-        ax.boxplot(groups, labels=labels, showfliers=False)
+        ax.boxplot(groups, tick_labels=labels, showfliers=False)
         ax.set_ylabel("Score")
         ax.set_title(f"Score Boxplot by Detection Label ({csv_path.stem})")
         ax.grid(True, axis="y", alpha=0.3)
@@ -439,7 +441,7 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
     else:
         plt.close(fig)
 
-    # 8) Score vs norm scatter
+    # 7) Score vs norm scatter
     fig, ax = plt.subplots(figsize=(7.5, 5.2))
     sc = ax.scatter(
         df["norm"],
@@ -457,7 +459,7 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
     cbar.set_label("Suspicious (0=benign, 1=suspicious)")
     _savefig(out_score_norm_scatter)
 
-    # 9) Score vs cosine scatter
+    # 8) Score vs cosine scatter
     fig, ax = plt.subplots(figsize=(7.5, 5.2))
     sc = ax.scatter(
         df["cosine"],
@@ -475,7 +477,7 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
     cbar.set_label("Suspicious (0=benign, 1=suspicious)")
     _savefig(out_score_cosine_scatter)
 
-    # 10) Score colored by GT malicious label
+    # 9) Score colored by GT malicious label
     fig, ax = plt.subplots(figsize=(7.5, 5.2))
     plot_df = df.loc[df["is_malicious"] >= 0].copy()
     if not plot_df.empty:
@@ -500,24 +502,25 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     print(f"[OK] client log plotted: {csv_path}")
 
+
 def plot_roc_from_clients_csv(csv_path: Path, df: pd.DataFrame) -> None:
     """Plot ROC curve and compute AUC from client-level predictions."""
     required = {"suspicious", "is_malicious", "score"}
     if not required.issubset(df.columns):
         print(f"[SKIP] {csv_path}: missing columns for ROC {sorted(required - set(df.columns))}")
         return
-    
+
     df_valid = df[df["is_malicious"] >= 0].copy()
     if df_valid.empty:
         print(f"[SKIP] {csv_path}: no valid ground truth for ROC")
         return
-    
+
     y_true = df_valid["is_malicious"].astype(int).values
     y_score = df_valid["score"].values
-    
+
     fpr, tpr, _ = _roc_curve(y_true, y_score)
     roc_auc = _auc(fpr, tpr)
-    
+
     fig, ax = plt.subplots(figsize=(7.0, 6.0))
     ax.plot(fpr, tpr, lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
     ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random (AUC=0.5)')
@@ -528,10 +531,11 @@ def plot_roc_from_clients_csv(csv_path: Path, df: pd.DataFrame) -> None:
     ax.set_title(f'ROC Curve - {csv_path.stem}')
     ax.legend(loc="lower right")
     ax.grid(alpha=0.3)
-    
+
     out_path = csv_path.with_name(csv_path.stem + "_roc.png")
     _savefig(out_path)
     print(f"[OK] ROC curve saved: {out_path} (AUC={roc_auc:.3f})")
+
 
 # -----------------------------
 # Metrics log plots
@@ -741,6 +745,101 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 
 
 # -----------------------------
+# Multi-experiment comparison plots
+# -----------------------------
+def plot_multi_experiment_curves(results_dir: Path, metric: str = "accuracy") -> None:
+    """
+    Scan results_dir for experiment subdirectories, find main CSV in each,
+    and plot the specified metric (accuracy or asr) across all experiments.
+    """
+    exp_data = []  # list of (exp_name, df)
+    for exp_dir in results_dir.iterdir():
+        if not exp_dir.is_dir():
+            continue
+        # Find main CSV (does not contain '_metrics' or '_clients')
+        main_csv = None
+        for f in exp_dir.glob("*.csv"):
+            if "_metrics" not in f.name and "_clients" not in f.name:
+                main_csv = f
+                break
+        if main_csv is None:
+            continue
+        df = pd.read_csv(main_csv)
+        if df.empty or "round" not in df.columns or metric not in df.columns:
+            continue
+        exp_data.append((exp_dir.name, df))
+
+    if not exp_data:
+        print(f"No valid experiment data found in {results_dir} for metric {metric}.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.2))
+    for exp_name, df in exp_data:
+        ax.plot(df["round"], df[metric], marker='o', label=exp_name)
+
+    ax.set_xlabel("Round")
+    ylabel = "Accuracy" if metric == "accuracy" else "Attack Success Rate (ASR)"
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{ylabel} Comparison Across Experiments")
+    ax.grid(True, alpha=0.3)
+    _force_integer_axis(ax)
+    _legend_outside(ax, ncol=1)
+    out_path = results_dir / f"comparison_{metric}.png"
+    _savefig(out_path)
+    print(f"Saved {metric} comparison plot to {out_path}")
+
+def plot_multi_experiment_summary(summary_csv: Path) -> None:
+    """Generate summary comparison plots from summary.csv."""
+    if not summary_csv.exists():
+        print(f"[SKIP] {summary_csv} not found, cannot generate summary plots.")
+        return
+    df = pd.read_csv(summary_csv)
+    if df.empty:
+        return
+    
+    # 1) ACC vs ASR scatter plot
+    fig, ax = plt.subplots(figsize=(7.0, 6.0))
+    # 区分是否有检测
+    has_detection = df["precision"].notna() if "precision" in df.columns else [False]*len(df)
+    colors = ["red" if d else "blue" for d in has_detection]
+    ax.scatter(df["asr"], df["accuracy"], c=colors, s=80, alpha=0.7)
+    # 添加标签
+    for _, row in df.iterrows():
+        ax.annotate(row["experiment"], (row["asr"], row["accuracy"]), fontsize=8)
+    ax.set_xlabel("ASR (final round)")
+    ax.set_ylabel("Accuracy (final round)")
+    ax.set_title("Defense Effectiveness: ACC vs ASR")
+    ax.grid(alpha=0.3)
+    # 添加理想区域标记
+    ax.axhline(y=0.6, color='gray', linestyle='--', alpha=0.5)
+    ax.axvline(x=0.1, color='gray', linestyle='--', alpha=0.5)
+    out_path = summary_csv.parent / "summary_acc_vs_asr.png"
+    _savefig(out_path)
+    print(f"Saved ACC vs ASR summary plot to {out_path}")
+    
+    # 2) Detection metrics bar chart (if precision column exists)
+    if "precision" in df.columns and df["precision"].notna().any():
+        det_df = df[df["precision"].notna()].copy()
+        if not det_df.empty:
+            metrics = ["precision", "recall", "fpr", "auc"]
+            present = [m for m in metrics if m in det_df.columns]
+            if present:
+                fig, ax = plt.subplots(figsize=(8.0, 5.0))
+                x = np.arange(len(det_df))
+                width = 0.2
+                for i, m in enumerate(present):
+                    ax.bar(x + i*width, det_df[m], width, label=m)
+                ax.set_xticks(x + width*(len(present)-1)/2)
+                ax.set_xticklabels(det_df["experiment"], rotation=45, ha="right")
+                ax.set_ylabel("Score")
+                ax.set_title("Detection Performance Comparison")
+                ax.legend()
+                ax.grid(axis='y', alpha=0.3)
+                out_path = summary_csv.parent / "summary_detection_metrics.png"
+                _savefig(out_path)
+                print(f"Saved detection metrics bar chart to {out_path}")
+
+# -----------------------------
 # Dispatcher
 # -----------------------------
 def plot_csv(csv_path: Path) -> None:
@@ -778,7 +877,8 @@ def main(argv: list[str]) -> int:
         if any(ch in arg for ch in ["*", "?", "["]):
             paths.extend(sorted(Path().glob(arg)))
         elif p.is_dir():
-            paths.extend(sorted(p.glob("*.csv")))
+            # If argument is a directory, collect all CSV files inside it (recursively)
+            paths.extend(sorted(p.rglob("*.csv")))
         else:
             paths.append(p)
 
@@ -801,6 +901,21 @@ def main(argv: list[str]) -> int:
             print(f"[SKIP] {csv_path}: not found")
             continue
         plot_csv(csv_path)
+
+    # Multi-experiment comparison: if the first argument is a directory named "results"
+    # and it contains multiple subdirectories with main CSV files.
+    first_arg = Path(argv[1])
+    if first_arg.is_dir() and first_arg.name == "results":
+        # Check if there are at least two experiment subdirectories
+        subdirs = [d for d in first_arg.iterdir() if d.is_dir()]
+        if len(subdirs) >= 2:
+            plot_multi_experiment_curves(first_arg, metric="accuracy")
+            plot_multi_experiment_curves(first_arg, metric="asr")
+            summary_csv = first_arg / "summary.csv"
+            if summary_csv.exists():
+                plot_multi_experiment_summary(summary_csv)
+        else:
+            print("[INFO] Not enough experiment subdirectories for multi-experiment plots (need at least 2).")
 
     return 0
 
