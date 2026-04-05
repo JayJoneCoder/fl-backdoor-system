@@ -3,6 +3,7 @@ from .badnets import BadNetsAttack, add_trigger, build_badnets_attack, get_poiso
 from .frequency import FrequencyAttack, build_frequency_attack
 from .selection import is_malicious_client, normalize_fixed_malicious_clients, select_malicious_clients
 from .wanet import WanetAttack, build_wanet_attack
+from .dba import DBAAttack, build_dba_attack
 
 
 def build_attack(
@@ -22,6 +23,11 @@ def build_attack(
     frequency_window_size: int | None = None,
     frequency_intensity: float = 0.10,
     frequency_mix_alpha: float = 1.0,
+    # DBA parameters
+    dba_num_sub_patterns: int = 4,
+    dba_sub_pattern_size: int | None = None,
+    dba_global_trigger_value: float = 1.0,
+    dba_split_strategy: str = "grid",
 ):
     """Generic attack factory.
 
@@ -124,11 +130,31 @@ def build_attack(
             malicious_mode=malicious_mode,
             fixed_malicious_clients=fixed_malicious_clients,
         )
+    
+    # ========================
+    # Distributed Backdoor Attacks
+    # ========================
+
+    if attack_type == "dba":
+        from .dba import build_dba_attack
+        return build_dba_attack(
+            malicious_ratio=malicious_ratio,
+            poison_rate=poison_rate,
+            target_label=target_label,
+            trigger_size=trigger_size,
+            seed=seed,
+            malicious_mode=malicious_mode,
+            fixed_malicious_clients=fixed_malicious_clients,
+            num_sub_patterns=dba_num_sub_patterns,
+            sub_pattern_size=dba_sub_pattern_size,
+            global_trigger_value=dba_global_trigger_value,
+            split_strategy=dba_split_strategy,
+        )
 
     # ========================
     # Unsupported
     # ========================
     raise ValueError(
         f"Unsupported attack_type={attack_type!r}. "
-        f"Supported: 'none', 'identity', 'badnets', 'wanet', 'frequency', 'frequency_dct', 'frequency_fft'."
+        f"Supported: 'none', 'identity', 'badnets', 'wanet', 'frequency', 'frequency_dct', 'frequency_fft', 'dba'."
     )

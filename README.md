@@ -13,7 +13,7 @@ framework: [pytorch, flwr]
 
 本项目实现了一个**面向联邦学习的后门攻击与防御系统**，目前支持：
 
-- **3 种后门攻击**：BadNets、WaNet、Frequency Attack（频域，dct / fft）
+- **4 种后门攻击**：BadNets、WaNet、Frequency Attack（频域，dct / fft）、Distributed Backdoor Attack
 - **3 层防御机制**：
   - 客户端防御（数据层）：Feature Filter
   - 服务端检测（更新层）：Anomaly、Cosine、Score、Clustering Detection
@@ -33,6 +33,7 @@ fl-backdoor-system/
 │   │   ├── badnets.py                     # 像素级贴片触发器（正方形白块）
 │   │   ├── wanet.py                       # 弹性扭曲 + 噪声，隐形后门
 │   │   ├── frequency.py                   # 频域攻击（FFT/DCT），篡改高频/低频分量
+│   │   ├── dba.py                        # 分布式后门攻击（DBA），将全局触发器拆分为多个局部子模式，由不同恶意客户端协同注入
 │   │   └── selection.py                   # 恶意客户端选择（random / fixed），支持 round‑level 确定性采样
 │   │
 │   ├── defenses/                          # 防御系统（核心）
@@ -153,8 +154,10 @@ flwr run . --stream
 编辑 `scripts/batch_runner.py` 中的 `DEFAULT_EXPERIMENTS` 列表，或提供 JSON 配置文件，然后运行：
 
 ```bash
+# 默认配置，或手动修改该脚本中的配置
 python scripts/batch_runner.py
-# 或使用自定义配置
+
+# 或使用 json 文件自定义配置
 python scripts/batch_runner.py --config my_experiments.json
 ```
 

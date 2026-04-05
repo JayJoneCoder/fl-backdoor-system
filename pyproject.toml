@@ -39,14 +39,14 @@ attack-malicious-mode = "fixed"   # random / fixed
 
 # 固定恶意客户端 ID 列表（仅在 attack-malicious-mode = "fixed" 时生效）
 # 格式：逗号分隔或数组，如 [0,1,2] 或 "0,1,2"
-attack-fixed-clients = "0,1,2"
+attack-fixed-clients = "0,1,2,3"
 
 # 攻击类型（全局开关）
 # - none: 无攻击（基线）
 # - badnets: 像素级贴片触发器
 # - wanet: 弹性扭曲 + 噪声隐形后门
 # - frequency / frequency_dct / frequency_fft: 频域攻击（三者等价，通过 frequency-mode 区分 DCT/FFT）
-attack = "frequency"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft
+attack = "dba"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft / dba
 
 # 客户端防御类型（数据层预处理，训练前执行）
 # - none: 无客户端防御
@@ -60,7 +60,7 @@ client-defense = "none"           # none / identity / feature_filter
 # - cosine_detection: 基于余弦相似度的方向异常检测
 # - score_detection: 基于百分位数的分数阈值过滤
 # - clustering_detection: K-means 聚类 + 轮廓系数自动分组（推荐）
-detection = "clustering_detection"  # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
+detection = "none"  # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
 
 # 服务端聚合防御类型（拜占庭鲁棒聚合）
 # - none: FedAvg（无防御）
@@ -75,7 +75,7 @@ defense = "krum"                  # none / norm_clipping / trimmed_mean / krum
 # =========================================================
 
 # 总训练轮数
-num-server-rounds = 2
+num-server-rounds = 10
 
 # 每轮参与评估的客户端比例（0~1）
 fraction-evaluate = 0.2
@@ -95,7 +95,7 @@ seed = 42
 
 # =========================================================
 # 攻击参数（Attack）
-# 适用范围：badnets / wanet / frequency
+# 适用范围：badnets / wanet / frequency / dba
 # =========================================================
 
 # 恶意客户端比例（attack-malicious-mode 为 fix 时会被覆盖，仅在 random 模式使用）
@@ -137,6 +137,21 @@ frequency-intensity = 0.35
 # 频域混合系数（原始图像与频域篡改的混合比例，1.0 表示完全替换）
 frequency-mix-alpha = 1.0
 
+# --- DBA (Distributed Backdoor Attack) 专用参数---
+# 将触发器分成多少个子块（必须是完全平方数，如4,9,16）
+dba-num-sub-patterns = 4          
+
+# 每个子块的大小（像素），若不指定则自动计算
+# dba-sub-pattern-size = 2        
+
+# 触发器像素值（通常1.0为白色）
+dba-global-trigger-value = 1.0    
+
+# 分割策略：grid 或 random
+dba-split-strategy = "grid"      
+
+# 触发器的左上角坐标（行，列）（可选）
+# dba-global-trigger-location = [28, 28]   
 
 # =========================================================
 # 客户端防御参数（Client Defense）

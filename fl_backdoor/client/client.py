@@ -64,6 +64,14 @@ def train(msg: Message, context: Context):
         else None
     )
 
+    # DBA specific parameters
+    dba_num_sub_patterns = int(context.run_config.get("dba-num-sub-patterns", 4))
+    dba_sub_pattern_size = context.run_config.get("dba-sub-pattern-size", None)
+    if dba_sub_pattern_size is not None:
+        dba_sub_pattern_size = int(dba_sub_pattern_size)
+    dba_global_trigger_value = float(context.run_config.get("dba-global-trigger-value", 1.0))
+    dba_split_strategy = str(context.run_config.get("dba-split-strategy", "grid"))
+
     attack = build_attack(
         attack_type=attack_type,
         malicious_ratio=malicious_ratio,
@@ -80,7 +88,15 @@ def train(msg: Message, context: Context):
         frequency_window_size=None if frequency_window_size is None else int(frequency_window_size),
         frequency_intensity=frequency_intensity,
         frequency_mix_alpha=frequency_mix_alpha,
+        dba_num_sub_patterns=dba_num_sub_patterns,
+        dba_sub_pattern_size=dba_sub_pattern_size,
+        dba_global_trigger_value=dba_global_trigger_value,
+        dba_split_strategy=dba_split_strategy,
     )
+
+    # For DBA, attach current client ID to attack instance
+    if attack.name == "dba":
+        attack._current_client_id = partition_id
 
     is_malicious = attack.is_malicious_client(
         partition_id,

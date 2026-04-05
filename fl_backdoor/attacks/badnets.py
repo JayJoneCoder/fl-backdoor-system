@@ -19,24 +19,52 @@ def add_trigger(
     image: torch.Tensor,
     trigger_size: int = 4,
     value: float = 1.0,
+    location: tuple[int, int] | None = None,
 ) -> torch.Tensor:
-    """Add a fixed square trigger in the bottom-right corner.
+    """Add a fixed square trigger at specified location (top-left corner).
 
     Supports:
     - [C, H, W]
-    - [H, W]  (fallback)
+    - [H, W] (fallback)
+
+    Args:
+        image: Input image tensor.
+        trigger_size: Size of the square trigger.
+        value: Pixel value to fill.
+        location: (row, col) of top-left corner. If None, place at bottom-right.
     """
     image = image.clone()
-
     if image.dim() == 3:
         _, h, w = image.shape
-        image[:, h - trigger_size : h, w - trigger_size : w] = value
+        if location is None:
+            row_start = h - trigger_size
+            col_start = w - trigger_size
+        else:
+            row_start, col_start = location
+        row_end = row_start + trigger_size
+        col_end = col_start + trigger_size
+        # Clamp to image boundaries
+        row_start = max(0, row_start)
+        col_start = max(0, col_start)
+        row_end = min(h, row_end)
+        col_end = min(w, col_end)
+        image[:, row_start:row_end, col_start:col_end] = value
     elif image.dim() == 2:
         h, w = image.shape
-        image[h - trigger_size : h, w - trigger_size : w] = value
+        if location is None:
+            row_start = h - trigger_size
+            col_start = w - trigger_size
+        else:
+            row_start, col_start = location
+        row_end = row_start + trigger_size
+        col_end = col_start + trigger_size
+        row_start = max(0, row_start)
+        col_start = max(0, col_start)
+        row_end = min(h, row_end)
+        col_end = min(w, col_end)
+        image[row_start:row_end, col_start:col_end] = value
     else:
         raise ValueError(f"Unsupported image shape for trigger: {tuple(image.shape)}")
-
     return image
 
 
