@@ -46,7 +46,7 @@ attack-fixed-clients = "0,1,2,3"
 # - badnets: 像素级贴片触发器
 # - wanet: 弹性扭曲 + 噪声隐形后门
 # - frequency / frequency_dct / frequency_fft: 频域攻击（三者等价，通过 frequency-mode 区分 DCT/FFT）
-attack = "dba"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft / dba
+attack = "fcba"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft / dba
 
 # 客户端防御类型（数据层预处理，训练前执行）
 # - none: 无客户端防御
@@ -151,7 +151,23 @@ dba-global-trigger-value = 1.0
 dba-split-strategy = "grid"      
 
 # 触发器的左上角坐标（行，列）（可选）
-# dba-global-trigger-location = [28, 28]   
+# dba-global-trigger-location = [28, 28] 
+
+# --- FCBA (Full Combination Backdoor Attack) ---
+# 子块数量 m (>=2)
+fcba-num-sub-blocks = 4 
+
+# 每个子块大小（像素），若不指定则自动计算
+# fcba-sub-block-size = 2        
+
+# 触发器像素值     
+fcba-global-trigger-value = 1.0       
+
+# grid 或 random
+fcba-split-strategy = "grid"          
+
+# 全局触发器左上角坐标（行，列）
+# fcba-global-trigger-location = [28, 28]  
 
 # =========================================================
 # 客户端防御参数（Client Defense）

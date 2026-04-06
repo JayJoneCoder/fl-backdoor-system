@@ -842,6 +842,21 @@ class DefensePipelineFedAvg(FedAvg):
             agg_type = self.pipeline_config.aggregation_type.lower()
             metrics["defense-agg-type"] = AGG_TYPE_MAP.get(agg_type, -1)
             metrics["defense-agg-total-clients"] = int(len(replies))
+
+            gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
+            total_mal = sum(1 for l in gt_labels if l == 1)
+            total_ben = sum(1 for l in gt_labels if l == 0)
+            kept_indices = list(range(len(replies)))
+            kept_mal = sum(1 for i in kept_indices if gt_labels[i] == 1)
+            kept_ben = sum(1 for i in kept_indices if gt_labels[i] == 0)
+            metrics["defense-agg-total-malicious"] = total_mal
+            metrics["defense-agg-total-benign"] = total_ben
+            metrics["defense-agg-kept-malicious"] = kept_mal
+            metrics["defense-agg-kept-benign"] = kept_ben
+            metrics["defense-agg-removed-malicious"] = total_mal - kept_mal
+            metrics["defense-agg-removed-benign"] = total_ben - kept_ben
+            metrics["defense-agg-malicious-removal-rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
+            metrics["defense-agg-benign-removal-rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
             return arrays, metrics
 
         if aggregation_type in {"norm_clipping", "normclipping"}:
@@ -904,6 +919,22 @@ class DefensePipelineFedAvg(FedAvg):
             metrics["defense-agg-avg-post-norm"] = (
                 float(np.mean(post_norms)) if post_norms else 0.0
             )
+
+            gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
+            total_mal = sum(1 for l in gt_labels if l == 1)
+            total_ben = sum(1 for l in gt_labels if l == 0)
+            kept_indices = list(range(len(replies)))
+            kept_mal = sum(1 for i in kept_indices if gt_labels[i] == 1)
+            kept_ben = sum(1 for i in kept_indices if gt_labels[i] == 0)
+            metrics["defense-agg-total-malicious"] = total_mal
+            metrics["defense-agg-total-benign"] = total_ben
+            metrics["defense-agg-kept-malicious"] = kept_mal
+            metrics["defense-agg-kept-benign"] = kept_ben
+            metrics["defense-agg-removed-malicious"] = total_mal - kept_mal
+            metrics["defense-agg-removed-benign"] = total_ben - kept_ben
+            metrics["defense-agg-malicious-removal-rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
+            metrics["defense-agg-benign-removal-rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
+            
             return arrays, metrics
 
         if aggregation_type in {"trimmed_mean", "trimmedmean"}:
@@ -1003,6 +1034,20 @@ class DefensePipelineFedAvg(FedAvg):
                 float(np.max(client_update_norms)) if client_update_norms else 0.0
             )
 
+                        # 添加统计
+            gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
+            total_mal = sum(1 for l in gt_labels if l == 1)
+            total_ben = sum(1 for l in gt_labels if l == 0)
+            # trimmed_mean 剔除 2*trim_k 个客户端
+            removed_count = 2 * trim_k_int
+            # 注意：我们不知道具体哪些客户端被剔除，所以无法计算 kept_mal/kept_ben
+            # 只记录总剔除数
+            metrics["defense-agg-total-malicious"] = total_mal
+            metrics["defense-agg-total-benign"] = total_ben
+            metrics["defense-agg-removed-clients"] = removed_count
+            metrics["defense-agg-kept-clients"] = len(replies) - removed_count
+            # 比率暂不计算（因为缺少标签信息）
+
             return aggregated_arrays, metrics
 
         if aggregation_type in {"krum"}:
@@ -1063,6 +1108,21 @@ class DefensePipelineFedAvg(FedAvg):
             metrics["defense-agg-selected-clients"] = int(len(selected_indices))
             metrics["defense-agg-krum-f"] = int(f)
             metrics["defense-agg-krum-k"] = int(k)
+
+            gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
+            total_mal = sum(1 for l in gt_labels if l == 1)
+            total_ben = sum(1 for l in gt_labels if l == 0)
+            kept_indices = selected_indices
+            kept_mal = sum(1 for i in kept_indices if gt_labels[i] == 1)
+            kept_ben = sum(1 for i in kept_indices if gt_labels[i] == 0)
+            metrics["defense-agg-total-malicious"] = total_mal
+            metrics["defense-agg-total-benign"] = total_ben
+            metrics["defense-agg-kept-malicious"] = kept_mal
+            metrics["defense-agg-kept-benign"] = kept_ben
+            metrics["defense-agg-removed-malicious"] = total_mal - kept_mal
+            metrics["defense-agg-removed-benign"] = total_ben - kept_ben
+            metrics["defense-agg-malicious-removal-rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
+            metrics["defense-agg-benign-removal-rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
 
             return aggregated_arrays, metrics
 

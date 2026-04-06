@@ -53,8 +53,6 @@ def train(msg: Message, context: Context):
     frequency_intensity = float(context.run_config.get("frequency-intensity", 0.10))
     frequency_mix_alpha = float(context.run_config.get("frequency-mix-alpha", 1.0))
 
-    print(f">>> [DEBUG] attack_type = {attack_type}")
-
     malicious_mode = str(context.run_config.get("attack-malicious-mode", "random")).lower().strip()
 
     fixed_malicious_clients_raw = context.run_config.get("attack-fixed-clients", None)
@@ -72,6 +70,18 @@ def train(msg: Message, context: Context):
     dba_global_trigger_value = float(context.run_config.get("dba-global-trigger-value", 1.0))
     dba_split_strategy = str(context.run_config.get("dba-split-strategy", "grid"))
 
+    # FCBA specific parameters
+    fcba_num_sub_blocks = int(context.run_config.get("fcba-num-sub-blocks", 4))
+    fcba_sub_block_size = context.run_config.get("fcba-sub-block-size", None)
+    if fcba_sub_block_size is not None:
+        fcba_sub_block_size = int(fcba_sub_block_size)
+    fcba_global_trigger_value = float(context.run_config.get("fcba-global-trigger-value", 1.0))
+    fcba_split_strategy = str(context.run_config.get("fcba-split-strategy", "grid"))
+    fcba_global_trigger_location = context.run_config.get("fcba-global-trigger-location", None)
+    # If needed, parse tuple from string like "[28,28]"
+
+    print(f">>> [DEBUG] attack_type = {attack_type}")
+
     attack = build_attack(
         attack_type=attack_type,
         malicious_ratio=malicious_ratio,
@@ -88,14 +98,21 @@ def train(msg: Message, context: Context):
         frequency_window_size=None if frequency_window_size is None else int(frequency_window_size),
         frequency_intensity=frequency_intensity,
         frequency_mix_alpha=frequency_mix_alpha,
+        # DBA parameters
         dba_num_sub_patterns=dba_num_sub_patterns,
         dba_sub_pattern_size=dba_sub_pattern_size,
         dba_global_trigger_value=dba_global_trigger_value,
         dba_split_strategy=dba_split_strategy,
+        # FCBA parameters
+        fcba_num_sub_blocks=fcba_num_sub_blocks,
+        fcba_sub_block_size=fcba_sub_block_size,
+        fcba_global_trigger_value=fcba_global_trigger_value,
+        fcba_split_strategy=fcba_split_strategy,
+        fcba_global_trigger_location=fcba_global_trigger_location,  # 可选，默认为 None
     )
 
-    # For DBA, attach current client ID to attack instance
-    if attack.name == "dba":
+    # For attacks that need client ID (DBA, FCBA)
+    if attack.name in ("dba", "fcba"):
         attack._current_client_id = partition_id
 
     is_malicious = attack.is_malicious_client(

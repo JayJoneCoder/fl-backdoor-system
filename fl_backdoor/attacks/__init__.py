@@ -4,6 +4,7 @@ from .frequency import FrequencyAttack, build_frequency_attack
 from .selection import is_malicious_client, normalize_fixed_malicious_clients, select_malicious_clients
 from .wanet import WanetAttack, build_wanet_attack
 from .dba import DBAAttack, build_dba_attack
+from .fcba import FCBAAttack, build_fcba_attack
 
 
 def build_attack(
@@ -28,6 +29,12 @@ def build_attack(
     dba_sub_pattern_size: int | None = None,
     dba_global_trigger_value: float = 1.0,
     dba_split_strategy: str = "grid",
+    # FCBA parameters
+    fcba_num_sub_blocks: int = 4,
+    fcba_sub_block_size: int | None = None,
+    fcba_global_trigger_value: float = 1.0,
+    fcba_split_strategy: str = "grid",
+    fcba_global_trigger_location: tuple[int, int] | None = None,
 ):
     """Generic attack factory.
 
@@ -136,7 +143,6 @@ def build_attack(
     # ========================
 
     if attack_type == "dba":
-        from .dba import build_dba_attack
         return build_dba_attack(
             malicious_ratio=malicious_ratio,
             poison_rate=poison_rate,
@@ -150,11 +156,28 @@ def build_attack(
             global_trigger_value=dba_global_trigger_value,
             split_strategy=dba_split_strategy,
         )
+    
+
+    if attack_type == "fcba":
+        return build_fcba_attack(
+            malicious_ratio=malicious_ratio,
+            poison_rate=poison_rate,
+            target_label=target_label,
+            trigger_size=trigger_size,
+            seed=seed,
+            malicious_mode=malicious_mode,
+            fixed_malicious_clients=fixed_malicious_clients,
+            num_sub_blocks=fcba_num_sub_blocks,
+            sub_block_size=fcba_sub_block_size,
+            global_trigger_value=fcba_global_trigger_value,
+            split_strategy=fcba_split_strategy,
+            global_trigger_location=fcba_global_trigger_location,
+        )
 
     # ========================
     # Unsupported
     # ========================
     raise ValueError(
         f"Unsupported attack_type={attack_type!r}. "
-        f"Supported: 'none', 'identity', 'badnets', 'wanet', 'frequency', 'frequency_dct', 'frequency_fft', 'dba'."
+        f"Supported: 'none', 'identity', 'badnets', 'wanet', 'frequency', 'frequency_dct', 'frequency_fft', 'dba', 'fcba'."
     )

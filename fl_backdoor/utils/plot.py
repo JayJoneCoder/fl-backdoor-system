@@ -741,6 +741,51 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         _legend_outside(ax, ncol=2)
         _savefig(csv_path.with_name(csv_path.stem + "_detection_overview.png"))
 
+    # 7) Aggregation filtering metrics (removal rates, removed counts, kept counts)
+    agg_removal_rate_keys = [
+        "defense-agg-malicious-removal-rate",
+        "defense-agg-benign-removal-rate",
+    ]
+    if any(k in wide.columns for k in agg_removal_rate_keys):
+        _plot_metric_lines(
+            csv_path,
+            wide,
+            agg_removal_rate_keys,
+            title=f"Aggregation Removal Rates ({csv_path.stem})",
+            ylabel="Rate",
+            outfile_suffix="_aggregation_removal_rates.png",
+        )
+
+    agg_removed_count_keys = [
+        "defense-agg-removed-malicious",
+        "defense-agg-removed-benign",
+        "defense-agg-removed-clients",
+    ]
+    if any(k in wide.columns for k in agg_removed_count_keys):
+        _plot_metric_lines(
+            csv_path,
+            wide,
+            agg_removed_count_keys,
+            title=f"Aggregation Removed Clients ({csv_path.stem})",
+            ylabel="Count",
+            outfile_suffix="_aggregation_removed_counts.png",
+        )
+
+    agg_kept_count_keys = [
+        "defense-agg-kept-malicious",
+        "defense-agg-kept-benign",
+        "defense-agg-kept-clients",
+    ]
+    if any(k in wide.columns for k in agg_kept_count_keys):
+        _plot_metric_lines(
+            csv_path,
+            wide,
+            agg_kept_count_keys,
+            title=f"Aggregation Kept Clients ({csv_path.stem})",
+            ylabel="Count",
+            outfile_suffix="_aggregation_kept_counts.png",
+        )
+
     print(f"[OK] metrics log plotted: {csv_path}")
 
 
@@ -787,6 +832,54 @@ def plot_multi_experiment_curves(results_dir: Path, metric: str = "accuracy") ->
     out_path = results_dir / f"comparison_{metric}.png"
     _savefig(out_path)
     print(f"Saved {metric} comparison plot to {out_path}")
+
+def plot_multi_experiment_aggregation_metric(results_dir: Path, metric_key: str, ylabel: str, filename: str):
+    """
+    Scan experiment subdirectories, extract a specific aggregation metric from metrics CSV,
+    and plot the curves across experiments.
+    """
+    exp_data = []
+    for exp_dir in results_dir.iterdir():
+        if not exp_dir.is_dir():
+            continue
+        # Find metrics CSV (ends with _metrics.csv)
+        metrics_csv = None
+        for f in exp_dir.glob("*_metrics.csv"):
+            metrics_csv = f
+            break
+        if metrics_csv is None:
+            continue
+        df = pd.read_csv(metrics_csv)
+        if df.empty:
+            continue
+        # Filter rows for component 'aggregation' and key == metric_key
+        rows = df[(df["component"] == "aggregation") & (df["key"] == metric_key)]
+        if rows.empty:
+            continue
+        # Pivot to get round vs value
+        df_metric = rows[["round", "value"]].copy()
+        df_metric["value"] = pd.to_numeric(df_metric["value"], errors="coerce")
+        df_metric = df_metric.dropna()
+        if df_metric.empty:
+            continue
+        exp_data.append((exp_dir.name, df_metric))
+
+    if not exp_data:
+        print(f"No experiments found with metric {metric_key}.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.2))
+    for exp_name, df_metric in exp_data:
+        ax.plot(df_metric["round"], df_metric["value"], marker='o', label=exp_name)
+    ax.set_xlabel("Round")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{ylabel} Comparison Across Experiments")
+    ax.grid(True, alpha=0.3)
+    _force_integer_axis(ax)
+    _legend_outside(ax, ncol=1)
+    out_path = results_dir / filename
+    _savefig(out_path)
+    print(f"Saved {metric_key} comparison plot to {out_path}")
 
 def plot_multi_experiment_summary(summary_csv: Path) -> None:
     """Generate summary comparison plots from summary.csv."""
@@ -916,6 +1009,24 @@ def main(argv: list[str]) -> int:
                 plot_multi_experiment_summary(summary_csv)
         else:
             print("[INFO] Not enough experiment subdirectories for multi-experiment plots (need at least 2).")
+
+    # Multi-experiment comparison for aggregation metrics
+    if first_arg.is_dir() and first_arg.name == "results":
+        subdirs = [d for d in first_arg.iterdir() if d.is_dir()]
+        if len(subdirs) >= 2:
+            # ... existing calls ...
+            plot_multi_experiment_aggregation_metric(
+                first_arg,
+                "defense-agg-malicious-removal-rate",
+                "Malicious Removal Rate",
+                "comparison_malicious_removal_rate.png"
+            )
+            plot_multi_experiment_aggregation_metric(
+                first_arg,
+                "defense-agg-benign-removal-rate",
+                "Benign Removal Rate",
+                "comparison_benign_removal_rate.png"
+            )
 
     return 0
 
