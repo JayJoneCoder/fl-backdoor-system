@@ -896,7 +896,7 @@ def plot_multi_experiment_summary(summary_csv: Path) -> None:
     has_detection = df["precision"].notna() if "precision" in df.columns else [False]*len(df)
     colors = ["red" if d else "blue" for d in has_detection]
     ax.scatter(df["asr"], df["accuracy"], c=colors, s=80, alpha=0.7)
-    # 添加标签
+        # 添加标签
     for _, row in df.iterrows():
         ax.annotate(row["experiment"], (row["asr"], row["accuracy"]), fontsize=8)
     ax.set_xlabel("ASR (final round)")
@@ -931,6 +931,42 @@ def plot_multi_experiment_summary(summary_csv: Path) -> None:
                 out_path = summary_csv.parent / "summary_detection_metrics.png"
                 _savefig(out_path)
                 print(f"Saved detection metrics bar chart to {out_path}")
+    
+    # 3) Aggregation metrics bar chart (average removal rates, kept malicious, etc.)
+    agg_avg_columns = [
+        "avg_malicious_removal_rate",
+        "avg_benign_removal_rate",
+        "avg_kept_malicious",
+        "avg_selected_clients",
+    ]
+    # 找出实际存在的聚合平均列
+    present_agg = [c for c in agg_avg_columns if c in df.columns and df[c].notna().any()]
+    if present_agg:
+        # 只保留有聚合数据的行（至少一个聚合列非空）
+        agg_df = df.dropna(subset=present_agg, how='all').copy()
+        if not agg_df.empty:
+            # 重命名列名以便绘图显示更友好
+            rename_map = {
+                "avg_malicious_removal_rate": "Malicious Removal Rate",
+                "avg_benign_removal_rate": "Benign Removal Rate",
+                "avg_kept_malicious": "Avg Kept Malicious",
+                "avg_selected_clients": "Avg Selected Clients",
+            }
+            fig, ax = plt.subplots(figsize=(max(8, len(agg_df)*0.8), 5.0))
+            x = np.arange(len(agg_df))
+            width = 0.8 / len(present_agg) if len(present_agg) > 1 else 0.6
+            for i, col in enumerate(present_agg):
+                offset = (i - (len(present_agg)-1)/2) * width
+                ax.bar(x + offset, agg_df[col], width, label=rename_map.get(col, col))
+            ax.set_xticks(x)
+            ax.set_xticklabels(agg_df["experiment"], rotation=45, ha="right")
+            ax.set_ylabel("Value")
+            ax.set_title("Aggregation Performance Comparison (Averages)")
+            ax.legend()
+            ax.grid(axis='y', alpha=0.3)
+            out_path = summary_csv.parent / "summary_aggregation_metrics.png"
+            _savefig(out_path)
+            print(f"Saved aggregation metrics bar chart to {out_path}")
 
 # -----------------------------
 # Dispatcher

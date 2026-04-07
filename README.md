@@ -13,7 +13,7 @@ framework: [pytorch, flwr]
 
 本项目实现了一个**面向联邦学习的后门攻击与防御系统**，目前支持：
 
-- **4 种后门攻击**：BadNets、WaNet、Frequency Attack（频域，dct / fft）、Distributed Backdoor Attack
+- **5 种后门攻击**：BadNets、WaNet、Frequency Attack（频域，dct / fft）、Distributed Backdoor Attack（DBA）、Full Combination Backdoor Attack（FCBA）
 - **3 层防御机制**：
   - 客户端防御（数据层）：Feature Filter
   - 服务端检测（更新层）：Anomaly、Cosine、Score、Clustering Detection
@@ -33,7 +33,8 @@ fl-backdoor-system/
 │   │   ├── badnets.py                     # 像素级贴片触发器（正方形白块）
 │   │   ├── wanet.py                       # 弹性扭曲 + 噪声，隐形后门
 │   │   ├── frequency.py                   # 频域攻击（FFT/DCT），篡改高频/低频分量
-│   │   ├── dba.py                        # 分布式后门攻击（DBA），将全局触发器拆分为多个局部子模式，由不同恶意客户端协同注入
+│   │   ├── dba.py                         # 分布式后门攻击（DBA），将全局触发器拆分为多个局部子模式，由不同恶意客户端协同注入
+│   │   ├── fcba.py                        # 全组合后门攻击（FCBA），每个恶意客户端都获得全局触发器的完整副本（而非局部子模式） 
 │   │   └── selection.py                   # 恶意客户端选择（random / fixed），支持 round‑level 确定性采样
 │   │
 │   ├── defenses/                          # 防御系统（核心）
@@ -167,22 +168,35 @@ python scripts/batch_runner.py --config my_experiments.json
 python scripts/summarize_results.py
 ```
 
-该脚本会扫描 results/ 下所有子目录，提取最后一轮的 ACC、ASR、检测指标等，生成：
+该脚本会扫描 `results/` 下所有子目录，提取最后一轮的 ACC、ASR、检测指标等，生成：
 
-    results/summary.csv：所有实验的汇总表
+```
+results/summary.csv       # 所有实验的汇总表
 
-    results/summary_table.tex：LaTeX 表格代码，可直接粘贴到论文中
+results/summary_table.tex # LaTeX 表格代码，可直接粘贴到论文中
+```
+
+#### 提取指标说明
+
+| 类别 | 指标 | 来源 |
+|------|------|------|
+| 主指标 | `accuracy`, `asr`, `loss`（最终轮） | 主 CSV 最后一行 |
+| 检测性能 | `precision`, `recall`, `fpr`, `auc`, `tp`, `fp`, `fn`, `tn`（最终轮） | `*_metrics.csv`（component=detection） |
+| 聚合平均指标 | `avg_malicious_removal_rate`, `avg_benign_removal_rate`, `avg_kept_malicious`, `avg_removed_malicious`, `avg_removed_benign`, `avg_kept_benign`, `avg_total_malicious`, `avg_total_benign`, `avg_selected_clients` | `*_metrics.csv` 中 component=aggregation 的跨轮平均值；若无则从 `*_clients.csv` 估算 |
 
 ## 画图
 
-系统会将日志信息存储在 fl-backdoor-system/results 下。
+系统会将日志信息存储在 `fl-backdoor-system/results` 下。
 用此命令画图：
 ```bash
-# 画单个实验的所有图
-python fl_backdoor/utils/plot.py results/<实验名>/<实验名>.csv
+# 单个/多个 CSV 文件
+python plot.py results/baseline.csv results/badnets.csv
 
-# 画所有实验的单图 + 多实验对比图（推荐）
-python fl_backdoor/utils/plot.py results/
+# 通配符匹配
+python plot.py results/*_clients.csv
+
+# 直接指定目录（递归查找所有 .csv，推荐）
+python plot.py results/
 ```
 ### 主日志
 
@@ -205,6 +219,7 @@ python fl_backdoor/utils/plot.py results/
 *_score_vs_norm.png           # 异常分数 vs 更新范数，颜色表示 suspicious。高分数 + 高范数区域若集中恶意 client，说明检测特征有效
 *_score_vs_cosine.png         # 异常分数 vs 余弦相似度，颜色表示 suspicious。恶意 client 倾向于低余弦 + 高分数
 *_score_by_gt.png             # 异常分数按真实标签（is_malicious）着色。验证 GT 与预测的一致性
+*_roc.png                     # 包含 AUC 值的 ROC 曲线
 ```
 
 ### metrics 日志：
@@ -217,17 +232,25 @@ python fl_backdoor/utils/plot.py results/
 *_aggregation_metrics.png     # 聚合层防御指标：Krum 保留数、Trimmed Mean 修剪数、Norm Clipping 裁剪比例、更新范数统计等
 *_client_defense_metrics.png  # 客户端防御指标：过滤样本数、保留比例、平均分数等
 *_detection_overview.png      # 检测总览图：合并 TP/FP/FN + Precision/Recall/FPR + suspicious/kept/filtered 在一张图上（紧凑版）
+*_suspicious_vs_malicious.png # 每轮可疑客户端数（检测结果）与真实恶意客户端数对比曲线
+*_score_box.png               # 根据 suspicious 标签的得分箱线图
+*_score_vs_norm.png           # 得分与参数范数的散点图，颜色表示可疑标签
+*_score_vs_cosine.png         # 得分与余弦相似度的散点图
+*_score_by_gt.png             # 得分按真实标签（is_malicious）着色
 ```
 
 ### 多实验对比图（自动生成）
 
-当运行 python fl_backdoor/utils/plot.py results/ 且 results/ 下存在多个实验子目录时，会自动生成：
+当运行 `python fl_backdoor/utils/plot.py results/` 且 `results/` 下存在多个实验子目录时，会自动生成：
 
 ```
 comparison_accuracy.png       # 所有实验的 ACC 曲线叠加对比
 comparison_asr.png            # 所有实验的 ASR 曲线叠加对比
-summary_acc_vs_asr.png        # 最终 ACC vs ASR 散点图（每个实验一个点）
-summary_detection_metrics.png # 检测器性能柱状图（仅对有检测的实验）
+comparison_malicious_removal_rate.png # 恶意客户端移除率对比
+comparison_benign_removal_rate.png    # 良性客户端移除率对比
+summary_acc_vs_asr.png                # 最终 ACC vs ASR 散点图（每个实验一个点）
+summary_aggregation_metrics.png       # 聚合性能条形图（恶意/良性移除率、平均保留的恶意客户端数、平均选中客户端数等）。
+summary_detection_metrics.png         # 检测器性能柱状图（仅对有检测的实验）
 ```
 
 ## 许可证

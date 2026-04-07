@@ -1202,9 +1202,11 @@ class DefensePipeline:
         detection_is_none = detection_type in {"", "none", "identity"}
         aggregation_is_none = aggregation_type in {"", "none", "identity"}
 
+        '''
         # Only the completely no-defense case bypasses the pipeline.
         if detection_is_none and aggregation_is_none:
             return strategy
+        '''
 
         # Any enabled defense goes through the unified pipeline so that
         # detection / aggregation / diagnostics stay consistent.

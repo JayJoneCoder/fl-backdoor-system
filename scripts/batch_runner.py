@@ -20,24 +20,7 @@ BACKUP_PATH = PROJECT_ROOT / "pyproject.toml.bak"
 
 # 默认实验配置（可以根据需要修改）
 DEFAULT_EXPERIMENTS = [
-    {
-        "name": "fcba_clustering_krum",
-        "attack": "fcba",
-        "detection": "clustering_detection",
-        "defense": "krum",
-        "client-defense": "none",
-        "num-server-rounds": 10,
-        "poison-rate": 0.3,
-    },
-    {
-        "name": "fcba_none_krum",
-        "attack": "fcba",
-        "detection": "none",
-        "defense": "krum",
-        "client-defense": "none",
-        "num-server-rounds": 10,
-        "poison-rate": 0.3,
-    },
+
     {
         "name": "fcba_clustering_none",
         "attack": "fcba",

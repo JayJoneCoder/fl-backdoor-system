@@ -46,7 +46,7 @@ attack-fixed-clients = "0,1,2,3"
 # - badnets: 像素级贴片触发器
 # - wanet: 弹性扭曲 + 噪声隐形后门
 # - frequency / frequency_dct / frequency_fft: 频域攻击（三者等价，通过 frequency-mode 区分 DCT/FFT）
-attack = "fcba"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft / dba
+attack = "fcba"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft / dba / fcba
 
 # 客户端防御类型（数据层预处理，训练前执行）
 # - none: 无客户端防御
@@ -95,7 +95,7 @@ seed = 42
 
 # =========================================================
 # 攻击参数（Attack）
-# 适用范围：badnets / wanet / frequency / dba
+# 适用范围：badnets / wanet / frequency / dba / fcba
 # =========================================================
 
 # 恶意客户端比例（attack-malicious-mode 为 fix 时会被覆盖，仅在 random 模式使用）
