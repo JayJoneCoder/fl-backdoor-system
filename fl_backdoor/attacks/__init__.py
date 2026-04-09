@@ -9,7 +9,7 @@ from .fcba import FCBAAttack, build_fcba_attack
 
 def build_attack(
     attack_type: str,
-    *,
+    dataset_meta=None,
     malicious_ratio: float = 0.2,
     poison_rate: float = 0.05,
     target_label: int = 0,
@@ -69,6 +69,7 @@ def build_attack(
             seed=seed,
             malicious_mode=malicious_mode,
             fixed_malicious_clients=fixed_malicious_clients,
+            dataset_meta=dataset_meta,
         )
 
     # ========================
@@ -85,6 +86,7 @@ def build_attack(
             noise_scale=noise_scale,
             malicious_mode=malicious_mode,
             fixed_malicious_clients=fixed_malicious_clients,
+            dataset_meta=dataset_meta,
         )
 
     # ========================
@@ -104,6 +106,7 @@ def build_attack(
             mix_alpha=frequency_mix_alpha,
             malicious_mode=malicious_mode,
             fixed_malicious_clients=fixed_malicious_clients,
+            dataset_meta=dataset_meta,
         )
 
     if attack_type in {"frequency_dct", "dct"}:
@@ -120,6 +123,7 @@ def build_attack(
             mix_alpha=frequency_mix_alpha,
             malicious_mode=malicious_mode,
             fixed_malicious_clients=fixed_malicious_clients,
+            dataset_meta=dataset_meta,
         )
 
     if attack_type in {"frequency_fft", "fft"}:
@@ -136,6 +140,7 @@ def build_attack(
             mix_alpha=frequency_mix_alpha,
             malicious_mode=malicious_mode,
             fixed_malicious_clients=fixed_malicious_clients,
+            dataset_meta=dataset_meta,
         )
     
     # ========================
@@ -155,6 +160,7 @@ def build_attack(
             sub_pattern_size=dba_sub_pattern_size,
             global_trigger_value=dba_global_trigger_value,
             split_strategy=dba_split_strategy,
+            dataset_meta=dataset_meta,
         )
     
 
@@ -172,6 +178,7 @@ def build_attack(
             global_trigger_value=fcba_global_trigger_value,
             split_strategy=fcba_split_strategy,
             global_trigger_location=fcba_global_trigger_location,
+            dataset_meta=dataset_meta,
         )
 
     # ========================

@@ -11,6 +11,7 @@ from fl_backdoor.attacks import build_attack
 from fl_backdoor.defenses.pipeline import build_defense_pipeline
 from fl_backdoor.task import Net, load_centralized_dataset, test
 from fl_backdoor.utils.logger import CSVLogger
+from fl_backdoor.dataset import get_dataset
 from pathlib import Path
 
 # Create ServerApp
@@ -24,11 +25,13 @@ def get_global_evaluate_fn(
     attack,
     *,
     logger: CSVLogger,
+    dataset_name: str,
+    dataset_meta,
 ):
     print(">>> [DEBUG] Enter get_global_evaluate_fn")
 
     try:
-        clean_testloader = load_centralized_dataset()
+        clean_testloader = load_centralized_dataset(dataset_name)
         print(">>> [DEBUG] Loaded clean_testloader")
     except Exception as e:
         print("!!! ERROR while loading clean_testloader:", e)
@@ -43,7 +46,10 @@ def get_global_evaluate_fn(
         print(f">>> [DEBUG] global_evaluate called (round={server_round})")
 
         try:
-            model = Net()
+            model = Net(
+                input_shape=dataset_meta.input_shape,
+                num_classes=dataset_meta.num_classes,
+            )
             model.load_state_dict(arrays.to_torch_state_dict())
             model.to(device)
 
@@ -144,8 +150,15 @@ def main(grid: Grid, context: Context) -> None:
         num_rounds: int = context.run_config["num-server-rounds"]
         lr: float = context.run_config["learning-rate"]
         seed = int(context.run_config.get("seed", 42))
+        dataset_name = str(context.run_config.get("dataset", "cifar10"))
 
-                # ========================
+        # ========================
+        # Dataset metadata
+        # ========================
+        dataset_meta = get_dataset(dataset_name).meta
+        print(f">>> [DEBUG] Dataset: {dataset_name}, input_shape={dataset_meta.input_shape}, num_classes={dataset_meta.num_classes}")
+
+        # ========================
         # Attack config
         # ========================
         attack_type = str(
@@ -185,10 +198,10 @@ def main(grid: Grid, context: Context) -> None:
         fcba_global_trigger_value = float(context.run_config.get("fcba-global-trigger-value", 1.0))
         fcba_split_strategy = str(context.run_config.get("fcba-split-strategy", "grid"))
         fcba_global_trigger_location = context.run_config.get("fcba-global-trigger-location", None)
-        # If needed, parse tuple from string like "[28,28]"
 
         attack = build_attack(
             attack_type=attack_type,
+            dataset_meta=dataset_meta,   # <-- 传入数据集元信息
             malicious_ratio=malicious_ratio,
             poison_rate=poison_rate,
             target_label=target_label,
@@ -211,7 +224,7 @@ def main(grid: Grid, context: Context) -> None:
             fcba_sub_block_size=fcba_sub_block_size,
             fcba_global_trigger_value=fcba_global_trigger_value,
             fcba_split_strategy=fcba_split_strategy,
-            fcba_global_trigger_location=fcba_global_trigger_location,  # 可选，默认为 None
+            fcba_global_trigger_location=fcba_global_trigger_location,
         )
 
         print(">>> [DEBUG] Attack built:", attack)
@@ -257,9 +270,12 @@ def main(grid: Grid, context: Context) -> None:
         print(f">>> [DEBUG] Logger initialized: {results_dir}/{run_name}.csv")
 
         # ========================
-        # Model init
+        # Model init (use dataset_meta)
         # ========================
-        global_model = Net()
+        global_model = Net(
+            input_shape=dataset_meta.input_shape,
+            num_classes=dataset_meta.num_classes,
+        )
         arrays = ArrayRecord(global_model.state_dict())
 
         # ========================
@@ -278,7 +294,6 @@ def main(grid: Grid, context: Context) -> None:
             diagnostics_logger=experiment_logger,
         )
 
-        
         print(">>> [DEBUG] Pipeline ready:", pipeline)
 
         strategy = pipeline.apply(base_strategy)
@@ -296,6 +311,8 @@ def main(grid: Grid, context: Context) -> None:
             evaluate_fn=get_global_evaluate_fn(
                 attack,
                 logger=experiment_logger,
+                dataset_name=dataset_name,
+                dataset_meta=dataset_meta,
             ),
         )
 

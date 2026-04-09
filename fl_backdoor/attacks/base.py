@@ -17,6 +17,7 @@ class AttackConfig:
     target_label: int = 0
     trigger_size: int = 4
     extra: dict[str, Any] = field(default_factory=dict)
+    dataset_meta: Any = None
 
     def validate(self) -> None:
         if not (0.0 <= float(self.malicious_ratio) <= 1.0):
@@ -78,6 +79,21 @@ class AttackBase(ABC):
     @abstractmethod
     def get_triggered_loader(self, testloader: DataLoader) -> DataLoader:
         raise NotImplementedError
+    
+    def visualize_samples(
+        self, clean_loader: DataLoader, num_samples: int = 8
+    ) -> list[dict[str, Any]]:
+        """
+        Return a list of clean/poisoned image pairs for preview.
+
+        Each dict contains:
+            'clean_image': Tensor (C, H, W)
+            'poisoned_image': Tensor (C, H, W)
+            'label': int
+            'target_label': int
+        Default returns empty list; override in subclasses.
+        """
+        return []
 
 
 class IdentityAttack(AttackBase):

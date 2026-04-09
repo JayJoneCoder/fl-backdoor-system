@@ -3,28 +3,25 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from datasets import load_dataset
-from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
-from torch.utils.data import DataLoader
-from torchvision.transforms import Compose, Normalize, ToTensor
+from fl_backdoor.dataset import get_dataset
 
 
 class Net(nn.Module):
-    """Improved CNN for CIFAR10 (stable + stronger, drop-in replacement)"""
+    """CNN model that adapts to dataset input shape and number of classes."""
 
-    def __init__(self):
-        super(Net, self).__init__()
+    def __init__(self, input_shape=(3, 32, 32), num_classes=10):
+        super().__init__()
+        C, H, W = input_shape
 
         self.features = nn.Sequential(
             # Block 1
-            nn.Conv2d(3, 32, 3, padding=1),
+            nn.Conv2d(C, 32, 3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Conv2d(32, 32, 3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),  # 32x32 -> 16x16
+            nn.MaxPool2d(2, 2),
 
             # Block 2
             nn.Conv2d(32, 64, 3, padding=1),
@@ -33,20 +30,20 @@ class Net(nn.Module):
             nn.Conv2d(64, 64, 3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),  # 16x16 -> 8x8
+            nn.MaxPool2d(2, 2),
 
             # Block 3
             nn.Conv2d(64, 128, 3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),  # 8x8 -> 4x4
+            nn.AdaptiveAvgPool2d((4, 4)),  # Fixed output size regardless of input
         )
 
         self.classifier = nn.Sequential(
             nn.Linear(128 * 4 * 4, 256),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(256, 10),
+            nn.Linear(256, num_classes),
         )
 
     def forward(self, x):
@@ -56,63 +53,21 @@ class Net(nn.Module):
         return x
 
 
-fds = None  # Cache FederatedDataset
-
-# Keep both raw and normalized transforms.
-raw_to_tensor = ToTensor()
-normalize_only = Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-pytorch_transforms = Compose([ToTensor(), normalize_only])
+def load_data(partition_id: int, num_partitions: int, batch_size: int, dataset_name: str = "cifar10"):
+    """Load partition data for a specific client."""
+    dataset = get_dataset(dataset_name)
+    return dataset.load_partition(partition_id, num_partitions, batch_size)
 
 
-def apply_transforms(batch):
-    """Apply transforms to the partition from FederatedDataset.
-
-    We preserve:
-    - batch["img_raw"]: tensor in [0, 1]
-    - batch["img"]: normalized tensor in [-1, 1]
-
-    This allows frequency attacks to work in the raw image domain without
-    changing the rest of the training / evaluation code, which still uses
-    batch["img"].
-    """
-    raw_imgs = [raw_to_tensor(img) for img in batch["img"]]
-    batch["img_raw"] = raw_imgs
-    batch["img"] = [normalize_only(img) for img in raw_imgs]
-    return batch
-
-
-def load_data(partition_id: int, num_partitions: int, batch_size: int):
-    """Load partition CIFAR10 data."""
-    # Only initialize `FederatedDataset` once
-    global fds
-    if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
-        fds = FederatedDataset(
-            dataset="uoft-cs/cifar10",
-            partitioners={"train": partitioner},
-        )
-    partition = fds.load_partition(partition_id)
-    # Divide data on each node: 80% train, 20% test
-    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-    # Construct dataloaders
-    partition_train_test = partition_train_test.with_transform(apply_transforms)
-    trainloader = DataLoader(
-        partition_train_test["train"], batch_size=batch_size, shuffle=True
-    )
-    testloader = DataLoader(partition_train_test["test"], batch_size=batch_size)
-    return trainloader, testloader
-
-
-def load_centralized_dataset():
-    """Load test set and return dataloader."""
-    test_dataset = load_dataset("uoft-cs/cifar10", split="test")
-    dataset = test_dataset.with_transform(apply_transforms)
-    return DataLoader(dataset, batch_size=128)
+def load_centralized_dataset(dataset_name: str = "cifar10", batch_size: int = 128):
+    """Load centralized test set for global evaluation."""
+    dataset = get_dataset(dataset_name)
+    return dataset.load_centralized_test(batch_size)
 
 
 def train(net, trainloader, epochs, lr, device):
     """Train the model on the training set."""
-    net.to(device)  # move model to GPU if available
+    net.to(device)
     criterion = torch.nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9)
     net.train()

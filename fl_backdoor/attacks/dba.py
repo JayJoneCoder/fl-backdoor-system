@@ -235,6 +235,7 @@ def build_dba_attack(
     global_trigger_value: float = 1.0,
     split_strategy: str = "grid",
     global_trigger_location: tuple[int, int] | None = None,
+    dataset_meta=None,
 ) -> DBAAttack:
     """Factory for DBA attack."""
     extra = {
@@ -255,5 +256,6 @@ def build_dba_attack(
         trigger_size=trigger_size,
         seed=seed,
         extra=extra,
+        dataset_meta=dataset_meta,
     )
     return DBAAttack(config)

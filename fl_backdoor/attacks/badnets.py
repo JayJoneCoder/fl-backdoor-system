@@ -220,6 +220,7 @@ def build_badnets_attack(
     seed: int = 42,
     malicious_mode: str = "random",
     fixed_malicious_clients: list[int] | tuple[int, ...] | None = None,
+    dataset_meta=None,
 ) -> BadNetsAttack:
     config = AttackConfig(
         attack_type="badnets",
@@ -232,5 +233,6 @@ def build_badnets_attack(
             "malicious_mode": malicious_mode,
             "fixed_malicious_clients": normalize_fixed_malicious_clients(fixed_malicious_clients),
         },
+        dataset_meta=dataset_meta,
     )
     return BadNetsAttack(config)

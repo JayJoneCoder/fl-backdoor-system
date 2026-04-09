@@ -10,6 +10,7 @@ from fl_backdoor.task import train as train_fn
 from fl_backdoor.attacks import build_attack
 from fl_backdoor.defenses import build_defense_pipeline_from_run_config
 from fl_backdoor.attacks.selection import normalize_fixed_malicious_clients
+from fl_backdoor.dataset import get_dataset
 
 # Flower ClientApp
 app = ClientApp()
@@ -19,7 +20,14 @@ def train(msg: Message, context: Context):
     """Train the model on local data."""
 
     # Load model
-    model = Net()
+    # Get dataset meta for model instantiation
+    dataset_name = context.run_config.get("dataset", "cifar10")
+    dataset_meta = get_dataset(dataset_name).meta
+
+    model = Net(
+        input_shape=dataset_meta.input_shape,
+        num_classes=dataset_meta.num_classes
+    )
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -29,7 +37,10 @@ def train(msg: Message, context: Context):
     num_partitions = context.node_config["num-partitions"]
     batch_size = context.run_config["batch-size"]
 
-    trainloader, _ = load_data(partition_id, num_partitions, batch_size)
+    trainloader, _ = load_data(partition_id, num_partitions, batch_size, dataset_name)
+    # 检查第一个 batch 的形状
+    sample_batch = next(iter(trainloader))
+    print(f"[Client {partition_id}] dataset={dataset_name}, image shape={sample_batch['img'].shape}")
 
     server_round = int(msg.content["config"].get("server-round", 0))
 
@@ -82,8 +93,13 @@ def train(msg: Message, context: Context):
 
     print(f">>> [DEBUG] attack_type = {attack_type}")
 
+    # Get dataset metadata for attack construction
+    dataset_name = context.run_config.get("dataset", "cifar10")
+    dataset_meta = get_dataset(dataset_name).meta
+
     attack = build_attack(
         attack_type=attack_type,
+        dataset_meta=dataset_meta,  # <--- 新增参数
         malicious_ratio=malicious_ratio,
         poison_rate=poison_rate,
         target_label=target_label,
@@ -108,7 +124,7 @@ def train(msg: Message, context: Context):
         fcba_sub_block_size=fcba_sub_block_size,
         fcba_global_trigger_value=fcba_global_trigger_value,
         fcba_split_strategy=fcba_split_strategy,
-        fcba_global_trigger_location=fcba_global_trigger_location,  # 可选，默认为 None
+        fcba_global_trigger_location=fcba_global_trigger_location,
     )
 
     # For attacks that need client ID (DBA, FCBA)
@@ -176,7 +192,13 @@ def evaluate(msg: Message, context: Context):
     """Evaluate the model on local data."""
 
     # Load the model and initialize it with the received weights
-    model = Net()
+    dataset_name = context.run_config.get("dataset", "cifar10")
+    dataset_meta = get_dataset(dataset_name).meta
+
+    model = Net(
+        input_shape=dataset_meta.input_shape,
+        num_classes=dataset_meta.num_classes
+    )
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -185,7 +207,7 @@ def evaluate(msg: Message, context: Context):
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
     batch_size = context.run_config["batch-size"]
-    _, valloader = load_data(partition_id, num_partitions, batch_size)
+    _, valloader = load_data(partition_id, num_partitions, batch_size, dataset_name)
 
     # Call the evaluation function
     eval_loss, eval_acc = test_fn(

@@ -296,6 +296,7 @@ def build_fcba_attack(
     split_strategy: str = "grid",
     global_trigger_location: tuple[int, int] | None = None,
     image_size: int = 32,
+    dataset_meta=None,
 ) -> FCBAAttack:
     """Factory for FCBA attack."""
     extra = {
@@ -317,5 +318,6 @@ def build_fcba_attack(
         trigger_size=trigger_size,
         seed=seed,
         extra=extra,
+        dataset_meta=dataset_meta,
     )
     return FCBAAttack(config)

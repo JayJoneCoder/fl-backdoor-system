@@ -42,10 +42,22 @@ DEFAULT_EXPERIMENTS = [
 ]
 
 def load_config(config_path: Path = None):
-    """Load experiment list from JSON file if provided, else use default."""
     if config_path and config_path.exists():
         with open(config_path, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict) and "experiments" in data:
+            common = data.get("common", {})
+            experiments = data["experiments"]
+            merged = []
+            for exp in experiments:
+                merged_exp = common.copy()
+                merged_exp.update(exp)
+                merged.append(merged_exp)
+            return merged
+        else:
+            raise ValueError("Invalid JSON format")
     return DEFAULT_EXPERIMENTS
 
 def modify_toml(original_path: Path, backup_path: Path, updates: dict):

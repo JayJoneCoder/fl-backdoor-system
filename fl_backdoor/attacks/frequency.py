@@ -638,6 +638,7 @@ def build_frequency_attack(
     trigger_style: str = "structured",
     malicious_mode: str = "random",
     fixed_malicious_clients: list[int] | tuple[int, ...] | None = None,
+    dataset_meta=None,
 ) -> FrequencyAttack:
     """Convenience factory for the frequency attack."""
     resolved_window_size = _resolve_window_size(frequency_window_size, trigger_size)
@@ -659,5 +660,6 @@ def build_frequency_attack(
             "malicious_mode": malicious_mode,
             "fixed_malicious_clients": normalize_fixed_malicious_clients(fixed_malicious_clients),
         },
+        dataset_meta=dataset_meta,
     )
     return FrequencyAttack(config)

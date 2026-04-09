@@ -39,14 +39,14 @@ attack-malicious-mode = "fixed"   # random / fixed
 
 # 固定恶意客户端 ID 列表（仅在 attack-malicious-mode = "fixed" 时生效）
 # 格式：逗号分隔或数组，如 [0,1,2] 或 "0,1,2"
-attack-fixed-clients = "0,1,2,3"
+attack-fixed-clients = "0,1,2"
 
 # 攻击类型（全局开关）
 # - none: 无攻击（基线）
 # - badnets: 像素级贴片触发器
 # - wanet: 弹性扭曲 + 噪声隐形后门
 # - frequency / frequency_dct / frequency_fft: 频域攻击（三者等价，通过 frequency-mode 区分 DCT/FFT）
-attack = "fcba"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft / dba / fcba
+attack = "badnets"              # none / badnets / wanet / frequency / frequency_dct / frequency_fft / dba / fcba
 
 # 客户端防御类型（数据层预处理，训练前执行）
 # - none: 无客户端防御
@@ -67,7 +67,7 @@ detection = "none"  # none / anomaly_detection / cosine_detection / score_detect
 # - norm_clipping: 梯度裁剪（限制单客户端更新范数）
 # - trimmed_mean: 修剪平均（去掉最大最小更新后平均）
 # - krum: Krum 算法（选择距离其他更新最近的 k 个更新）
-defense = "krum"                  # none / norm_clipping / trimmed_mean / krum
+defense = "none"                  # none / norm_clipping / trimmed_mean / krum
 
 
 # =========================================================
@@ -91,6 +91,9 @@ batch-size = 32
 
 # 全局随机种子（影响攻击、防御、客户端选择的确定性）
 seed = 42
+
+# 数据集
+dataset = "mnist"   # 先用 cifar10 测试；后面可改成 cifar100
 
 
 # =========================================================
@@ -283,10 +286,10 @@ defense-trim-k = 2
 # 适用范围：krum
 
 # 预估的恶意客户端数量（用于计算距离时排除的客户端数）
-defense-num-malicious = 2
+defense-num-malicious = 3
 
 # Krum 选择的客户端数量（最终参与聚合的客户端数）
-defense-krum-k = 1
+defense-krum-k = 3
 
 
 # =========================================================

@@ -309,6 +309,7 @@ def build_wanet_attack(
     noise_scale: float = 0.05,
     malicious_mode: str = "random",
     fixed_malicious_clients: list[int] | tuple[int, ...] | None = None,
+    dataset_meta=None,
 ) -> WanetAttack:
     """Convenience factory for WaNet."""
     resolved_grid_size = int(trigger_size if grid_size is None else grid_size)
@@ -326,5 +327,6 @@ def build_wanet_attack(
             "malicious_mode": malicious_mode,
             "fixed_malicious_clients": normalize_fixed_malicious_clients(fixed_malicious_clients),
         },
+        dataset_meta=dataset_meta,
     )
     return WanetAttack(config)

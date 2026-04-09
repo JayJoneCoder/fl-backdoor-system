@@ -903,7 +903,7 @@ class DefensePipelineFedAvg(FedAvg):
                 metrics = MetricRecord()
 
             total_clients = len(replies)
-            metrics["defense-agg-type"] = "norm_clipping"
+            metrics["defense-agg-type"] = AGG_TYPE_MAP["norm_clipping"]
             metrics["defense-agg-clip-norm"] = float(clip_norm)
             metrics["defense-agg-total-clients"] = int(total_clients)
             metrics["defense-agg-clipped-clients"] = int(clipped_clients)
@@ -1023,7 +1023,7 @@ class DefensePipelineFedAvg(FedAvg):
             if metrics is None:
                 metrics = MetricRecord()
 
-            metrics["defense-agg-type"] = "trimmed_mean"
+            metrics["defense-agg-type"] = AGG_TYPE_MAP["trimmed_mean"]
             metrics["defense-agg-trim-ratio"] = float(trim_ratio)
             metrics["defense-agg-trim-k"] = int(trim_k_int)
             metrics["defense-agg-total-clients"] = int(num_clients)
