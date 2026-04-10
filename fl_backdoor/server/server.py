@@ -12,6 +12,8 @@ from fl_backdoor.defenses.pipeline import build_defense_pipeline
 from fl_backdoor.task import Net, load_centralized_dataset, test
 from fl_backdoor.utils.logger import CSVLogger
 from fl_backdoor.dataset import get_dataset
+from fl_backdoor.config import ExperimentConfig
+
 from pathlib import Path
 
 # Create ServerApp
@@ -143,175 +145,58 @@ def main(grid: Grid, context: Context) -> None:
         print(">>> [DEBUG] Server main() START")
         print(">>> run_config =", dict(context.run_config))
 
-        # ========================
-        # Basic config
-        # ========================
-        fraction_evaluate: float = context.run_config["fraction-evaluate"]
-        num_rounds: int = context.run_config["num-server-rounds"]
-        lr: float = context.run_config["learning-rate"]
-        seed = int(context.run_config.get("seed", 42))
-        dataset_name = str(context.run_config.get("dataset", "cifar10"))
+ # 统一配置解析
+        cfg = ExperimentConfig.from_run_config(context.run_config)
 
-        # ========================
-        # Dataset metadata
-        # ========================
-        dataset_meta = get_dataset(dataset_name).meta
-        print(f">>> [DEBUG] Dataset: {dataset_name}, input_shape={dataset_meta.input_shape}, num_classes={dataset_meta.num_classes}")
+        # 获取数据集元信息
+        dataset_meta = get_dataset(cfg.dataset).meta
+        print(f">>> [DEBUG] Dataset: {cfg.dataset}, input_shape={dataset_meta.input_shape}, num_classes={dataset_meta.num_classes}")
 
-        # ========================
-        # Attack config
-        # ========================
-        attack_type = str(
-            context.run_config.get("attack-type", context.run_config.get("attack", "badnets"))
-        ).lower()
-
-        malicious_ratio = float(context.run_config.get("malicious-ratio", 0.2))
-        poison_rate = float(context.run_config.get("poison-rate", 0.05))
-        target_label = int(context.run_config.get("target-label", 0))
-        trigger_size = int(context.run_config.get("trigger-size", 4))
-
-        grid_size = context.run_config.get("wanet-grid-size", None)
-        noise_scale = float(context.run_config.get("wanet-noise", 0.05))
-
-        frequency_mode = str(context.run_config.get("frequency-mode", "dct"))
-        frequency_band = str(context.run_config.get("frequency-band", "low"))
-        frequency_window_size = context.run_config.get("frequency-window-size", None)
-        frequency_intensity = float(context.run_config.get("frequency-intensity", 0.10))
-        frequency_mix_alpha = float(context.run_config.get("frequency-mix-alpha", 1.0))
-
-        malicious_mode = str(context.run_config.get("attack-malicious-mode", "random"))
-        fixed_malicious_clients = context.run_config.get("attack-fixed-clients", None)
-
-        # DBA specific parameters
-        dba_num_sub_patterns = int(context.run_config.get("dba-num-sub-patterns", 4))
-        dba_sub_pattern_size = context.run_config.get("dba-sub-pattern-size", None)
-        if dba_sub_pattern_size is not None:
-            dba_sub_pattern_size = int(dba_sub_pattern_size)
-        dba_global_trigger_value = float(context.run_config.get("dba-global-trigger-value", 1.0))
-        dba_split_strategy = str(context.run_config.get("dba-split-strategy", "grid"))
-
-        # FCBA specific parameters
-        fcba_num_sub_blocks = int(context.run_config.get("fcba-num-sub-blocks", 4))
-        fcba_sub_block_size = context.run_config.get("fcba-sub-block-size", None)
-        if fcba_sub_block_size is not None:
-            fcba_sub_block_size = int(fcba_sub_block_size)
-        fcba_global_trigger_value = float(context.run_config.get("fcba-global-trigger-value", 1.0))
-        fcba_split_strategy = str(context.run_config.get("fcba-split-strategy", "grid"))
-        fcba_global_trigger_location = context.run_config.get("fcba-global-trigger-location", None)
-
+        # 构建攻击
         attack = build_attack(
-            attack_type=attack_type,
-            dataset_meta=dataset_meta,   # <-- 传入数据集元信息
-            malicious_ratio=malicious_ratio,
-            poison_rate=poison_rate,
-            target_label=target_label,
-            trigger_size=trigger_size,
-            seed=seed,
-            malicious_mode=malicious_mode,
-            fixed_malicious_clients=fixed_malicious_clients,
-            grid_size=None if grid_size is None else int(grid_size),
-            noise_scale=noise_scale,
-            frequency_mode=frequency_mode,
-            frequency_band=frequency_band,
-            frequency_window_size=None if frequency_window_size is None else int(frequency_window_size),
-            frequency_intensity=frequency_intensity,
-            frequency_mix_alpha=frequency_mix_alpha,
-            dba_num_sub_patterns=dba_num_sub_patterns,
-            dba_sub_pattern_size=dba_sub_pattern_size,
-            dba_global_trigger_value=dba_global_trigger_value,
-            dba_split_strategy=dba_split_strategy,
-            fcba_num_sub_blocks=fcba_num_sub_blocks,
-            fcba_sub_block_size=fcba_sub_block_size,
-            fcba_global_trigger_value=fcba_global_trigger_value,
-            fcba_split_strategy=fcba_split_strategy,
-            fcba_global_trigger_location=fcba_global_trigger_location,
+            dataset_meta=dataset_meta,
+            **cfg.to_attack_kwargs()
         )
-
         print(">>> [DEBUG] Attack built:", attack)
 
-        # ========================
-        # Defense configs
-        # ========================
-        client_defense_type = str(context.run_config.get("client-defense", "none")).lower()
-        detection_type = str(context.run_config.get("detection", "none")).lower()
-        aggregation_type = str(context.run_config.get("defense", "none")).lower()
-
-        def extract_kwargs(prefix: str):
-            out = {}
-            for k, v in dict(context.run_config).items():
-                if k.startswith(prefix):
-                    key = k.removeprefix(prefix).replace("-", "_")
-                    out[key] = v
-            return out
-
-        client_defense_kwargs = extract_kwargs("client-defense-")
-        detection_kwargs = extract_kwargs("detection-")
-        aggregation_kwargs = extract_kwargs("defense-")
-
-        # ========================
-        # Naming
-        # ========================
-        results_dir = str(context.run_config.get("results-dir", "results"))
-        run_name = str(context.run_config.get("run-name", "experiment"))
-
-        # 创建子目录
-        experiment_dir = Path(results_dir) / run_name
+        # 创建日志器（在构建 pipeline 之前）
+        experiment_dir = Path(cfg.results_dir) / cfg.run_name
         experiment_dir.mkdir(parents=True, exist_ok=True)
-
-        print(f">>> [DEBUG] run_name = {run_name}")
-
-        # ========================
-        # Logger
-        # ========================
         experiment_logger = CSVLogger(
             save_dir=str(experiment_dir),
-            filename=f"{run_name}.csv"
+            filename=f"{cfg.run_name}.csv"
         )
-        print(f">>> [DEBUG] Logger initialized: {results_dir}/{run_name}.csv")
+        print(f">>> [DEBUG] Logger initialized: {experiment_dir}/{cfg.run_name}.csv")
 
-        # ========================
-        # Model init (use dataset_meta)
-        # ========================
+        # 构建防御流水线（使用 cfg 提供的方法）
+        pipeline_kwargs = cfg.get_defense_pipeline_kwargs()
+        pipeline = build_defense_pipeline(
+            **pipeline_kwargs,
+            diagnostics_logger=experiment_logger,
+        )
+        print(">>> [DEBUG] Pipeline ready:", pipeline)
+
+        # 初始化全局模型
         global_model = Net(
             input_shape=dataset_meta.input_shape,
             num_classes=dataset_meta.num_classes,
         )
         arrays = ArrayRecord(global_model.state_dict())
 
-        # ========================
-        # Strategy + Pipeline
-        # ========================
-        base_strategy = FedAvg(fraction_evaluate=fraction_evaluate)
-
-        pipeline = build_defense_pipeline(
-            client_defense_type=client_defense_type,
-            detection_type=detection_type,
-            aggregation_type=aggregation_type,
-            seed=seed,
-            client_defense_kwargs=client_defense_kwargs,
-            detection_kwargs=detection_kwargs,
-            aggregation_kwargs=aggregation_kwargs,
-            diagnostics_logger=experiment_logger,
-        )
-
-        print(">>> [DEBUG] Pipeline ready:", pipeline)
-
+        # 策略设置
+        base_strategy = FedAvg(fraction_evaluate=cfg.fraction_evaluate)
         strategy = pipeline.apply(base_strategy)
 
-        print(">>> [DEBUG] Strategy ready")
-
-        # ========================
-        # Start FL
-        # ========================
+        # 启动训练
         result = strategy.start(
             grid=grid,
             initial_arrays=arrays,
-            train_config=ConfigRecord({"lr": lr}),
-            num_rounds=num_rounds,
+            train_config=ConfigRecord({"lr": cfg.learning_rate}),
+            num_rounds=cfg.num_server_rounds,
             evaluate_fn=get_global_evaluate_fn(
                 attack,
                 logger=experiment_logger,
-                dataset_name=dataset_name,
+                dataset_name=cfg.dataset,
                 dataset_meta=dataset_meta,
             ),
         )

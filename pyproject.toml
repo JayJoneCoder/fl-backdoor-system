@@ -60,14 +60,14 @@ client-defense = "none"           # none / identity / feature_filter
 # - cosine_detection: 基于余弦相似度的方向异常检测
 # - score_detection: 基于百分位数的分数阈值过滤
 # - clustering_detection: K-means 聚类 + 轮廓系数自动分组（推荐）
-detection = "none"  # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
+detection = "clustering_detection"  # none / anomaly_detection / cosine_detection / score_detection / clustering_detection
 
 # 服务端聚合防御类型（拜占庭鲁棒聚合）
 # - none: FedAvg（无防御）
 # - norm_clipping: 梯度裁剪（限制单客户端更新范数）
 # - trimmed_mean: 修剪平均（去掉最大最小更新后平均）
 # - krum: Krum 算法（选择距离其他更新最近的 k 个更新）
-defense = "none"                  # none / norm_clipping / trimmed_mean / krum
+defense = "krum"                  # none / norm_clipping / trimmed_mean / krum
 
 
 # =========================================================

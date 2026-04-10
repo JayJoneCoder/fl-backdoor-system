@@ -8,9 +8,10 @@ from fl_backdoor.task import Net, load_data
 from fl_backdoor.task import test as test_fn
 from fl_backdoor.task import train as train_fn
 from fl_backdoor.attacks import build_attack
-from fl_backdoor.defenses import build_defense_pipeline_from_run_config
+from fl_backdoor.defenses.pipeline import build_defense_pipeline
 from fl_backdoor.attacks.selection import normalize_fixed_malicious_clients
 from fl_backdoor.dataset import get_dataset
+from fl_backdoor.config import ExperimentConfig
 
 # Flower ClientApp
 app = ClientApp()
@@ -19,10 +20,9 @@ app = ClientApp()
 def train(msg: Message, context: Context):
     """Train the model on local data."""
 
-    # Load model
-    # Get dataset meta for model instantiation
-    dataset_name = context.run_config.get("dataset", "cifar10")
-    dataset_meta = get_dataset(dataset_name).meta
+    # Load the model and initialize it with the received weights
+    cfg = ExperimentConfig.from_run_config(context.run_config)
+    dataset_meta = get_dataset(cfg.dataset).meta
 
     model = Net(
         input_shape=dataset_meta.input_shape,
@@ -32,109 +32,23 @@ def train(msg: Message, context: Context):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # Load data
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    batch_size = context.run_config["batch-size"]
-
-    trainloader, _ = load_data(partition_id, num_partitions, batch_size, dataset_name)
-    # 检查第一个 batch 的形状
-    sample_batch = next(iter(trainloader))
-    print(f"[Client {partition_id}] dataset={dataset_name}, image shape={sample_batch['img'].shape}")
+    trainloader, _ = load_data(partition_id, num_partitions, cfg.batch_size, cfg.dataset)
 
     server_round = int(msg.content["config"].get("server-round", 0))
 
-    # Attack config
-    attack_type = str(
-        context.run_config.get("attack-type", context.run_config.get("attack", "badnets"))
-    ).lower().strip()
-
-    malicious_ratio = float(context.run_config.get("malicious-ratio", 0.2))
-    poison_rate = float(context.run_config.get("poison-rate", 0.05))
-    target_label = int(context.run_config.get("target-label", 0))
-    trigger_size = int(context.run_config.get("trigger-size", 4))
-    seed = int(context.run_config.get("seed", 42))
-
-    grid_size = context.run_config.get("wanet-grid-size", None)
-    noise_scale = float(context.run_config.get("wanet-noise", 0.05))
-
-    frequency_mode = str(context.run_config.get("frequency-mode", "dct"))
-    frequency_band = str(context.run_config.get("frequency-band", "low"))
-    frequency_window_size = context.run_config.get("frequency-window-size", None)
-    frequency_intensity = float(context.run_config.get("frequency-intensity", 0.10))
-    frequency_mix_alpha = float(context.run_config.get("frequency-mix-alpha", 1.0))
-
-    malicious_mode = str(context.run_config.get("attack-malicious-mode", "random")).lower().strip()
-
-    fixed_malicious_clients_raw = context.run_config.get("attack-fixed-clients", None)
-    fixed_malicious_clients = (
-        list(normalize_fixed_malicious_clients(fixed_malicious_clients_raw))
-        if fixed_malicious_clients_raw is not None
-        else None
-    )
-
-    # DBA specific parameters
-    dba_num_sub_patterns = int(context.run_config.get("dba-num-sub-patterns", 4))
-    dba_sub_pattern_size = context.run_config.get("dba-sub-pattern-size", None)
-    if dba_sub_pattern_size is not None:
-        dba_sub_pattern_size = int(dba_sub_pattern_size)
-    dba_global_trigger_value = float(context.run_config.get("dba-global-trigger-value", 1.0))
-    dba_split_strategy = str(context.run_config.get("dba-split-strategy", "grid"))
-
-    # FCBA specific parameters
-    fcba_num_sub_blocks = int(context.run_config.get("fcba-num-sub-blocks", 4))
-    fcba_sub_block_size = context.run_config.get("fcba-sub-block-size", None)
-    if fcba_sub_block_size is not None:
-        fcba_sub_block_size = int(fcba_sub_block_size)
-    fcba_global_trigger_value = float(context.run_config.get("fcba-global-trigger-value", 1.0))
-    fcba_split_strategy = str(context.run_config.get("fcba-split-strategy", "grid"))
-    fcba_global_trigger_location = context.run_config.get("fcba-global-trigger-location", None)
-    # If needed, parse tuple from string like "[28,28]"
-
-    print(f">>> [DEBUG] attack_type = {attack_type}")
-
-    # Get dataset metadata for attack construction
-    dataset_name = context.run_config.get("dataset", "cifar10")
-    dataset_meta = get_dataset(dataset_name).meta
-
+    # 构建攻击
     attack = build_attack(
-        attack_type=attack_type,
-        dataset_meta=dataset_meta,  # <--- 新增参数
-        malicious_ratio=malicious_ratio,
-        poison_rate=poison_rate,
-        target_label=target_label,
-        trigger_size=trigger_size,
-        seed=seed,
-        malicious_mode=malicious_mode,
-        fixed_malicious_clients=fixed_malicious_clients,
-        grid_size=None if grid_size is None else int(grid_size),
-        noise_scale=noise_scale,
-        frequency_mode=frequency_mode,
-        frequency_band=frequency_band,
-        frequency_window_size=None if frequency_window_size is None else int(frequency_window_size),
-        frequency_intensity=frequency_intensity,
-        frequency_mix_alpha=frequency_mix_alpha,
-        # DBA parameters
-        dba_num_sub_patterns=dba_num_sub_patterns,
-        dba_sub_pattern_size=dba_sub_pattern_size,
-        dba_global_trigger_value=dba_global_trigger_value,
-        dba_split_strategy=dba_split_strategy,
-        # FCBA parameters
-        fcba_num_sub_blocks=fcba_num_sub_blocks,
-        fcba_sub_block_size=fcba_sub_block_size,
-        fcba_global_trigger_value=fcba_global_trigger_value,
-        fcba_split_strategy=fcba_split_strategy,
-        fcba_global_trigger_location=fcba_global_trigger_location,
+        dataset_meta=dataset_meta,
+        **cfg.to_attack_kwargs()
     )
 
-    # For attacks that need client ID (DBA, FCBA)
     if attack.name in ("dba", "fcba"):
         attack._current_client_id = partition_id
 
     is_malicious = attack.is_malicious_client(
-        partition_id,
-        num_partitions,
-        server_round=server_round,
+        partition_id, num_partitions, server_round=server_round
     )
 
     if is_malicious:
@@ -143,33 +57,17 @@ def train(msg: Message, context: Context):
     else:
         print(f"[Client {partition_id}] benign client")
 
-    # ------------------------
-    # Build Pipeline
-    # ------------------------
-    pipeline = build_defense_pipeline_from_run_config(
-        context.run_config,
-        seed=seed,
-    )
-
+    # 构建防御流水线（客户端部分）
+    pipeline_kwargs = cfg.get_defense_pipeline_kwargs()
+    pipeline = build_defense_pipeline(**pipeline_kwargs)
     client_defense = pipeline.build_client_defense()
-
     print(f">>> [DEBUG] client_defense = {client_defense}")
 
-    trainloader, defense_stats = client_defense.apply(
-        model=model,
-        trainloader=trainloader,
-        device=device,
-    )
+    trainloader, defense_stats = client_defense.apply(model, trainloader, device)
 
-    print(f">>> [DEBUG] client defense applied: {defense_stats}")
-
-    # Train
     train_loss = train_fn(
-        model,
-        trainloader,
-        context.run_config["local-epochs"],
-        msg.content["config"]["lr"],
-        device,
+        model, trainloader, cfg.local_epochs,
+        msg.content["config"]["lr"], device
     )
 
     # Return

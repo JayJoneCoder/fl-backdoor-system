@@ -1267,39 +1267,19 @@ def build_defense_pipeline_from_run_config(
     seed: int | None = None,
     diagnostics_logger: Any | None = None,
 ) -> DefensePipeline:
-    """Convenience helper for server.py / client.py.
+    """从 run_config 构建防御流水线（委托给 ExperimentConfig）。
 
-    It keeps config parsing in one place, so adding new defense options later
-    usually only requires updating this module and the factory registries.
+    保留此函数仅为向后兼容，新代码直接使用 ExperimentConfig 和 build_defense_pipeline。
     """
-    rc = dict(run_config)
+    from fl_backdoor.config import ExperimentConfig
 
-    resolved_seed = int(seed if seed is not None else rc.get("seed", 42))
+    cfg = ExperimentConfig.from_run_config(run_config)
+    if seed is not None:
+        cfg.seed = seed
 
-    client_defense_type = str(
-        rc.get("client-defense", rc.get("client_defense", "none"))
-    ).lower()
-    detection_type = str(rc.get("detection", "none")).lower()
-    aggregation_type = str(rc.get("defense", "none")).lower()
-
-    client_defense_kwargs = _prefixed_kwargs(rc, "client-defense-")
-    detection_kwargs = _prefixed_kwargs(rc, "detection-")
-    aggregation_kwargs = _prefixed_kwargs(rc, "defense-")
-
-    # Backward compatibility for older top-level keys.
-    if "clip-norm" in rc and "clip_norm" not in aggregation_kwargs:
-        aggregation_kwargs["clip_norm"] = rc["clip-norm"]
-
-    return build_defense_pipeline(
-        client_defense_type=client_defense_type,
-        detection_type=detection_type,
-        aggregation_type=aggregation_type,
-        seed=resolved_seed,
-        client_defense_kwargs=client_defense_kwargs,
-        detection_kwargs=detection_kwargs,
-        aggregation_kwargs=aggregation_kwargs,
-        diagnostics_logger=diagnostics_logger,
-    )
+    kwargs = cfg.get_defense_pipeline_kwargs()
+    kwargs["diagnostics_logger"] = diagnostics_logger
+    return build_defense_pipeline(**kwargs)
 
 
 __all__ = [

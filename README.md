@@ -27,14 +27,14 @@ framework: [pytorch, flwr]
 ```shell
 fl-backdoor-system/
 ├── fl_backdoor/                           # 核心源码
-│   ├── attacks/                           # 后门攻击实现（BadNets / WaNet / Frequency）
+│   ├── attacks/                           # 后门攻击实现（BadNets / WaNet / Frequency / DBA / FCBA）
 │   │   ├── __init__.py                    # build_attack() 工厂，支持 attack="none"
 │   │   ├── base.py                        # AttackBase + AttackConfig，定义恶意客户端选择接口
 │   │   ├── badnets.py                     # 像素级贴片触发器（正方形白块）
 │   │   ├── wanet.py                       # 弹性扭曲 + 噪声，隐形后门
 │   │   ├── frequency.py                   # 频域攻击（FFT/DCT），篡改高频/低频分量
 │   │   ├── dba.py                         # 分布式后门攻击（DBA），将全局触发器拆分为多个局部子模式，由不同恶意客户端协同注入
-│   │   ├── fcba.py                        # 全组合后门攻击（FCBA），每个恶意客户端都获得全局触发器的完整副本（而非局部子模式） 
+│   │   ├── fcba.py                        # 全组合后门攻击（FCBA），生成 2^m-2 种局部触发器组合，每个恶意客户端使用唯一组合
 │   │   └── selection.py                   # 恶意客户端选择（random / fixed），支持 round‑level 确定性采样
 │   │
 │   ├── defenses/                          # 防御系统（核心）
@@ -63,6 +63,13 @@ fl-backdoor-system/
 │   │           ├── features.py            # 特征提取（范数、余弦、z‑score、deltas）
 │   │           └── __init__.py            # build_detection()
 │   │
+│   ├── dataset/                           # 数据集抽象层（支持多数据集切换）
+│   │   ├── __init__.py                    # get_dataset() 工厂，注册所有支持的数据集
+│   │   ├── base.py                        # BaseDataset 抽象基类，定义 load_partition / load_centralized_test
+│   │   ├── config.py                      # DatasetMeta 数据类，描述数据集元信息（shape、类别数、均值/方差等）
+│   │   ├── cifar10.py                     # CIFAR-10 实现（基于 HuggingFace）
+│   │   └── mnist.py                       # MNIST 实现（基于 torchvision，支持离线缓存）
+│   │
 │   ├── client/
 │   │   ├── __init__.py
 │   │   └── client.py                      # Flower ClientApp，执行本地训练 + 攻击注入 + 客户端防御
@@ -77,7 +84,8 @@ fl-backdoor-system/
 │   │   └── plot.py                        # 绘图脚本：自动生成 ACC/ASR、检测率、混淆矩阵、客户端分布图、多实验对比图
 │   │
 │   ├── __init__.py
-│   └── task.py                            # 模型定义（Net）、数据加载（CIFAR‑10）、训练/测试函数
+│   ├── config.py                          # 统一配置层（ExperimentConfig），从 run_config 解析所有参数，并提供校验与参数字典
+│   └── task.py                            # 模型定义（Net，自适应输入形状）、数据加载、训练/测试函数
 │
 ├── scripts/                               # 辅助脚本（批量实验、结果汇总）
 │   ├── batch_runner.py                    # 批量运行实验（自动修改 pyproject.toml，串行执行）
@@ -91,7 +99,6 @@ fl-backdoor-system/
 │   │   ├── *_detection_confusion.png      # TP / FP / FN / TN 混淆矩阵计数
 │   │   ├── *_suspicious_vs_malicious.png  # 检测出的可疑数 vs 真实恶意数
 │   │   ├── *_score_*.png                  # 客户端异常分数相关图
-│   │   ├── ...等等。详见“画图”部分
 │   │   └── *.csv                          # 原始日志
 │   ├── comparison_accuracy.png            # 多实验 ACC 曲线叠加对比
 │   ├── comparison_asr.png                 # 多实验 ASR 曲线叠加对比
@@ -100,7 +107,7 @@ fl-backdoor-system/
 │   ├── summary.csv                        # 汇总表格（CSV）
 │   └── summary_table.tex                  # 汇总表格（LaTeX，可直接用于论文）
 │
-├── pyproject.toml                         # 项目配置 + 实验参数（攻击类型、防御类型、联邦学习超参数）
+├── pyproject.toml                         # 项目配置 + 实验参数（攻击/防御类型、联邦学习超参数、数据集、客户端总数等）
 ├── final_model.pt                         # 训练完成的全局模型
 ├── .gitignore
 ├── LICENSE
