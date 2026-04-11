@@ -22,17 +22,17 @@ BACKUP_PATH = PROJECT_ROOT / "pyproject.toml.bak"
 DEFAULT_EXPERIMENTS = [
 
     {
-        "name": "fcba_clustering_none",
-        "attack": "fcba",
+        "name": "badnets_clustering_none",
+        "attack": "badnets",
         "detection": "clustering_detection",
-        "defense": "none",
+        "defense": "krum",
         "client-defense": "none",
         "num-server-rounds": 10,
         "poison-rate": 0.3,
     },
     {
-        "name": "fcba_none_none",
-        "attack": "fcba",
+        "name": "wanet_none_none",
+        "attack": "wanet",
         "detection": "none",
         "defense": "none",
         "client-defense": "none",

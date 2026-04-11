@@ -70,13 +70,13 @@ class FeatureDistributionFilterDefense(ClientDefenseBase):
 
         if total_samples == 0 or self.filter_ratio <= 0.0:
             return trainloader, {
-                "client-defense-applied": 0,
-                "client-defense-filtered-samples": 0,
-                "client-defense-kept-samples": total_samples,
-                "client-defense-filter-ratio": 0.0,
-                "client-defense-mean-score": 0.0,
-                "client-defense-max-score": 0.0,
-                "client-defense-label-aware": int(self.use_label_centroids),
+                "client_defense_applied": 0,
+                "client_defense_filtered_samples": 0,
+                "client_defense_kept_samples": total_samples,
+                "client_defense_filter_ratio": 0.0,
+                "client_defense_mean_score": 0.0,
+                "client_defense_max_score": 0.0,
+                "client_defense_label_aware": int(self.use_label_centroids),
             }
 
         scan_batch_size = min(self.scoring_batch_size, total_samples)
@@ -105,13 +105,13 @@ class FeatureDistributionFilterDefense(ClientDefenseBase):
 
         if not feature_chunks:
             return trainloader, {
-                "client-defense-applied": 0,
-                "client-defense-filtered-samples": 0,
-                "client-defense-kept-samples": total_samples,
-                "client-defense-filter-ratio": 0.0,
-                "client-defense-mean-score": 0.0,
-                "client-defense-max-score": 0.0,
-                "client-defense-label-aware": int(self.use_label_centroids),
+                "client_defense_applied": 0,
+                "client_defense_filtered_samples": 0,
+                "client_defense_kept_samples": total_samples,
+                "client_defense_filter_ratio": 0.0,
+                "client_defense_mean_score": 0.0,
+                "client_defense_max_score": 0.0,
+                "client_defense_label_aware": int(self.use_label_centroids),
             }
 
         features = torch.cat(feature_chunks, dim=0)

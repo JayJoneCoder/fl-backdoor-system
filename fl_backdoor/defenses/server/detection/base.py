@@ -61,7 +61,7 @@ class DetectionReport:
             return 0.0
         return float(self.filtered_clients / self.total_clients)
 
-    def to_metric_record(self, prefix: str = "defense-detect") -> MetricRecord:
+    def to_metric_record(self, prefix: str = "detect") -> MetricRecord:
         def _is_valid_metric_value(value: Any) -> bool:
             if isinstance(value, (int, float, np.integer, np.floating)):
                 return True
@@ -70,32 +70,29 @@ class DetectionReport:
             return False
 
         payload: dict[str, Any] = {
-            # 数值化类型标识，避免字符串
-           f"{prefix}-type-id": (
+            f"{prefix}_type_id": (
                 1 if self.detection_type.startswith("anomaly") else
                 2 if self.detection_type.startswith("cosine") else
                 3 if ("cluster" in self.detection_type or "kmeans" in self.detection_type) else
                 4 if "score" in self.detection_type else
                 0
             ),
-
-            f"{prefix}-round": int(self.server_round),
-            f"{prefix}-total-clients": int(self.total_clients),
-            f"{prefix}-kept-clients": int(self.kept_clients),
-            f"{prefix}-filtered-clients": int(self.filtered_clients),
-            f"{prefix}-kept-ratio": float(self.kept_ratio),
-            f"{prefix}-filtered-ratio": float(self.filtered_ratio),
-            f"{prefix}-suspicious-clients": int(self.suspicious_count),
-            f"{prefix}-skip-count": int(self.skip_count),
-            f"{prefix}-threshold": (
+            f"{prefix}_round": int(self.server_round),
+            f"{prefix}_total_clients": int(self.total_clients),
+            f"{prefix}_kept_clients": int(self.kept_clients),
+            f"{prefix}_filtered_clients": int(self.filtered_clients),
+            f"{prefix}_kept_ratio": float(self.kept_ratio),
+            f"{prefix}_filtered_ratio": float(self.filtered_ratio),
+            f"{prefix}_suspicious_clients": int(self.suspicious_count),
+            f"{prefix}_skip_count": int(self.skip_count),
+            f"{prefix}_threshold": (
                 float(self.threshold) if self.threshold is not None else 0.0
             ),
-            f"{prefix}-keep-indices": [int(i) for i in self.kept_indices],
-            f"{prefix}-mask": [1 if x else 0 for x in self.suspicious_mask],
-            f"{prefix}-scores": [float(x) for x in self.scores],
+            f"{prefix}_keep_indices": [int(i) for i in self.kept_indices],
+            f"{prefix}_mask": [1 if x else 0 for x in self.suspicious_mask],
+            f"{prefix}_scores": [float(x) for x in self.scores],
         }
 
-        # 只保留数值型 extra，字符串会被跳过
         for key, value in self.extra.items():
             if _is_valid_metric_value(value):
                 if isinstance(value, list):

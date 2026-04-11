@@ -417,14 +417,14 @@ class DefensePipelineFedAvg(FedAvg):
 
         if not np.any(known):
             return {
-                "defense-detect-gt-known-clients": 0,
-                "defense-detect-tp": 0,
-                "defense-detect-fp": 0,
-                "defense-detect-fn": 0,
-                "defense-detect-tn": 0,
-                "defense-detect-precision": 0.0,
-                "defense-detect-recall": 0.0,
-                "defense-detect-fpr": 0.0,
+                "detect_gt_known_clients": 0,
+                "detect_tp": 0,
+                "detect_fp": 0,
+                "detect_fn": 0,
+                "detect_tn": 0,
+                "detect_precision": 0.0,
+                "detect_recall": 0.0,
+                "detect_fpr": 0.0,
             }
 
         pred = pred[known]
@@ -440,14 +440,14 @@ class DefensePipelineFedAvg(FedAvg):
         fpr = float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
 
         return {
-            "defense-detect-gt-known-clients": int(np.sum(known)),
-            "defense-detect-tp": tp,
-            "defense-detect-fp": fp,
-            "defense-detect-fn": fn,
-            "defense-detect-tn": tn,
-            "defense-detect-precision": precision,
-            "defense-detect-recall": recall,
-            "defense-detect-fpr": fpr,
+            "detect_gt_known_clients": int(np.sum(known)),
+            "detect_tp": tp,
+            "detect_fp": fp,
+            "detect_fn": fn,
+            "detect_tn": tn,
+            "detect_precision": precision,
+            "detect_recall": recall,
+            "detect_fpr": fpr,
         }
 
     def _log_client_rows(
@@ -604,8 +604,8 @@ class DefensePipelineFedAvg(FedAvg):
                 suspicious_count=0,
                 skip_count=0,
                 extra={
-                    "defense-detect-skipped": 1,
-                    "defense-detect-skip-reason": "warmup_or_invalid",
+                    "detect_skipped": 1,
+                    "detect_skip_reason": "warmup_or_invalid",
                 },
             )
             return replies, report.to_metric_record()
@@ -727,38 +727,18 @@ class DefensePipelineFedAvg(FedAvg):
                 suspicious_count=int(np.sum(suspicious_mask)),
                 skip_count=int(skipped),
                 extra={
-                    "defense-detect-mean-update-norm": float(np.mean(norms))
-                    if len(norms) > 0
-                    else 0.0,
-                    "defense-detect-max-update-norm": float(np.max(norms))
-                    if len(norms) > 0
-                    else 0.0,
-                    "defense-detect-mean-norm-z": float(np.mean(norm_z))
-                    if len(norm_z) > 0
-                    else 0.0,
-                    "defense-detect-max-norm-z": float(np.max(norm_z))
-                    if len(norm_z) > 0
-                    else 0.0,
-                    "defense-detect-mean-cosine": float(np.mean(cosine))
-                    if len(cosine) > 0
-                    else 0.0,
-                    "defense-detect-min-cosine": float(np.min(cosine))
-                    if len(cosine) > 0
-                    else 0.0,
-                    "defense-detect-mean-score": float(np.mean(score))
-                    if len(score) > 0
-                    else 0.0,
-                    "defense-detect-max-score": float(np.max(score))
-                    if len(score) > 0
-                    else 0.0,
-                    "defense-detect-min-score": float(np.min(score))
-                    if len(score) > 0
-                    else 0.0,
-                    "defense-detect-raw-suspicious-count": int(
-                        np.sum(raw_suspicious) if raw_suspicious is not None else 0
-                    ),
-                    "defense-detect-enable-filter": int(enable_filter),
-                    "defense-detect-skip-count": int(skipped),
+                    "detect_mean_update_norm": float(np.mean(norms)) if len(norms) > 0 else 0.0,
+                    "detect_max_update_norm": float(np.max(norms)) if len(norms) > 0 else 0.0,
+                    "detect_mean_norm_z": float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0,
+                    "detect_max_norm_z": float(np.max(norm_z)) if len(norm_z) > 0 else 0.0,
+                    "detect_mean_cosine": float(np.mean(cosine)) if len(cosine) > 0 else 0.0,
+                    "detect_min_cosine": float(np.min(cosine)) if len(cosine) > 0 else 0.0,
+                    "detect_mean_score": float(np.mean(score)) if len(score) > 0 else 0.0,
+                    "detect_max_score": float(np.max(score)) if len(score) > 0 else 0.0,
+                    "detect_min_score": float(np.min(score)) if len(score) > 0 else 0.0,
+                    "detect_raw_suspicious_count": int(np.sum(raw_suspicious) if raw_suspicious is not None else 0),
+                    "detect_enable_filter": int(enable_filter),
+                    "detect_skip_count": int(skipped),
                 },
             )
 
@@ -840,8 +820,8 @@ class DefensePipelineFedAvg(FedAvg):
                 metrics = MetricRecord()
 
             agg_type = self.pipeline_config.aggregation_type.lower()
-            metrics["defense-agg-type"] = AGG_TYPE_MAP.get(agg_type, -1)
-            metrics["defense-agg-total-clients"] = int(len(replies))
+            metrics["agg_type"] = AGG_TYPE_MAP.get(agg_type, -1)
+            metrics["agg_total_clients"] = int(len(replies))
 
             gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
             total_mal = sum(1 for l in gt_labels if l == 1)
@@ -849,14 +829,14 @@ class DefensePipelineFedAvg(FedAvg):
             kept_indices = list(range(len(replies)))
             kept_mal = sum(1 for i in kept_indices if gt_labels[i] == 1)
             kept_ben = sum(1 for i in kept_indices if gt_labels[i] == 0)
-            metrics["defense-agg-total-malicious"] = total_mal
-            metrics["defense-agg-total-benign"] = total_ben
-            metrics["defense-agg-kept-malicious"] = kept_mal
-            metrics["defense-agg-kept-benign"] = kept_ben
-            metrics["defense-agg-removed-malicious"] = total_mal - kept_mal
-            metrics["defense-agg-removed-benign"] = total_ben - kept_ben
-            metrics["defense-agg-malicious-removal-rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
-            metrics["defense-agg-benign-removal-rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
+            metrics["agg_total_malicious"] = total_mal
+            metrics["agg_total_benign"] = total_ben
+            metrics["agg_kept_malicious"] = kept_mal
+            metrics["agg_kept_benign"] = kept_ben
+            metrics["agg_removed_malicious"] = total_mal - kept_mal
+            metrics["agg_removed_benign"] = total_ben - kept_ben
+            metrics["agg_malicious_removal_rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
+            metrics["agg_benign_removal_rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
             return arrays, metrics
 
         if aggregation_type in {"norm_clipping", "normclipping"}:
@@ -903,20 +883,20 @@ class DefensePipelineFedAvg(FedAvg):
                 metrics = MetricRecord()
 
             total_clients = len(replies)
-            metrics["defense-agg-type"] = AGG_TYPE_MAP["norm_clipping"]
-            metrics["defense-agg-clip-norm"] = float(clip_norm)
-            metrics["defense-agg-total-clients"] = int(total_clients)
-            metrics["defense-agg-clipped-clients"] = int(clipped_clients)
-            metrics["defense-agg-clipped-ratio"] = (
+            metrics["agg_type"] = AGG_TYPE_MAP["norm_clipping"]
+            metrics["agg_clip_norm"] = float(clip_norm)
+            metrics["agg_total_clients"] = int(total_clients)
+            metrics["agg_clipped_clients"] = int(clipped_clients)
+            metrics["agg_clipped_ratio"] = (
                 float(clipped_clients / total_clients) if total_clients > 0 else 0.0
             )
-            metrics["defense-agg-avg-update-norm"] = (
+            metrics["agg_avg_update_norm"] = (
                 float(np.mean(pre_norms)) if pre_norms else 0.0
             )
-            metrics["defense-agg-max-update-norm"] = (
+            metrics["agg_max_update_norm"] = (
                 float(np.max(pre_norms)) if pre_norms else 0.0
             )
-            metrics["defense-agg-avg-post-norm"] = (
+            metrics["agg_avg_post_norm"] = (
                 float(np.mean(post_norms)) if post_norms else 0.0
             )
 
@@ -926,14 +906,14 @@ class DefensePipelineFedAvg(FedAvg):
             kept_indices = list(range(len(replies)))
             kept_mal = sum(1 for i in kept_indices if gt_labels[i] == 1)
             kept_ben = sum(1 for i in kept_indices if gt_labels[i] == 0)
-            metrics["defense-agg-total-malicious"] = total_mal
-            metrics["defense-agg-total-benign"] = total_ben
-            metrics["defense-agg-kept-malicious"] = kept_mal
-            metrics["defense-agg-kept-benign"] = kept_ben
-            metrics["defense-agg-removed-malicious"] = total_mal - kept_mal
-            metrics["defense-agg-removed-benign"] = total_ben - kept_ben
-            metrics["defense-agg-malicious-removal-rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
-            metrics["defense-agg-benign-removal-rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
+            metrics["agg_total_malicious"] = total_mal
+            metrics["agg_total_benign"] = total_ben
+            metrics["agg_kept_malicious"] = kept_mal
+            metrics["agg_kept_benign"] = kept_ben
+            metrics["agg_removed_malicious"] = total_mal - kept_mal
+            metrics["agg_removed_benign"] = total_ben - kept_ben
+            metrics["agg_malicious_removal_rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
+            metrics["agg_benign_removal_rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
             
             return arrays, metrics
 
@@ -1023,18 +1003,18 @@ class DefensePipelineFedAvg(FedAvg):
             if metrics is None:
                 metrics = MetricRecord()
 
-            metrics["defense-agg-type"] = AGG_TYPE_MAP["trimmed_mean"]
-            metrics["defense-agg-trim-ratio"] = float(trim_ratio)
-            metrics["defense-agg-trim-k"] = int(trim_k_int)
-            metrics["defense-agg-total-clients"] = int(num_clients)
-            metrics["defense-agg-avg-update-norm"] = (
+            metrics["agg_type"] = AGG_TYPE_MAP["trimmed_mean"]
+            metrics["agg_trim_ratio"] = float(trim_ratio)
+            metrics["agg_trim_k"] = int(trim_k_int)
+            metrics["agg_total_clients"] = int(num_clients)
+            metrics["agg_avg_update_norm"] = (
                 float(np.mean(client_update_norms)) if client_update_norms else 0.0
             )
-            metrics["defense-agg-max-update-norm"] = (
+            metrics["agg_max_update_norm"] = (
                 float(np.max(client_update_norms)) if client_update_norms else 0.0
             )
 
-                        # 添加统计
+            # 添加统计
             gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
             total_mal = sum(1 for l in gt_labels if l == 1)
             total_ben = sum(1 for l in gt_labels if l == 0)
@@ -1042,10 +1022,10 @@ class DefensePipelineFedAvg(FedAvg):
             removed_count = 2 * trim_k_int
             # 注意：我们不知道具体哪些客户端被剔除，所以无法计算 kept_mal/kept_ben
             # 只记录总剔除数
-            metrics["defense-agg-total-malicious"] = total_mal
-            metrics["defense-agg-total-benign"] = total_ben
-            metrics["defense-agg-removed-clients"] = removed_count
-            metrics["defense-agg-kept-clients"] = len(replies) - removed_count
+            metrics["agg_total_malicious"] = total_mal
+            metrics["agg_total_benign"] = total_ben
+            metrics["agg_removed_clients"] = removed_count
+            metrics["agg_kept_clients"] = len(replies) - removed_count
             # 比率暂不计算（因为缺少标签信息）
 
             return aggregated_arrays, metrics
@@ -1103,11 +1083,11 @@ class DefensePipelineFedAvg(FedAvg):
             if metrics is None:
                 metrics = MetricRecord()
 
-            metrics["defense-agg-type"] = AGG_TYPE_MAP["krum"]
-            metrics["defense-agg-total-clients"] = int(n)
-            metrics["defense-agg-selected-clients"] = int(len(selected_indices))
-            metrics["defense-agg-krum-f"] = int(f)
-            metrics["defense-agg-krum-k"] = int(k)
+            metrics["agg_type"] = AGG_TYPE_MAP["krum"]
+            metrics["agg_total_clients"] = int(n)
+            metrics["agg_selected_clients"] = int(len(selected_indices))
+            metrics["agg_krum_f"] = int(f)
+            metrics["agg_krum_k"] = int(k)
 
             gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
             total_mal = sum(1 for l in gt_labels if l == 1)
@@ -1115,14 +1095,14 @@ class DefensePipelineFedAvg(FedAvg):
             kept_indices = selected_indices
             kept_mal = sum(1 for i in kept_indices if gt_labels[i] == 1)
             kept_ben = sum(1 for i in kept_indices if gt_labels[i] == 0)
-            metrics["defense-agg-total-malicious"] = total_mal
-            metrics["defense-agg-total-benign"] = total_ben
-            metrics["defense-agg-kept-malicious"] = kept_mal
-            metrics["defense-agg-kept-benign"] = kept_ben
-            metrics["defense-agg-removed-malicious"] = total_mal - kept_mal
-            metrics["defense-agg-removed-benign"] = total_ben - kept_ben
-            metrics["defense-agg-malicious-removal-rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
-            metrics["defense-agg-benign-removal-rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
+            metrics["agg_total_malicious"] = total_mal
+            metrics["agg_total_benign"] = total_ben
+            metrics["agg_kept_malicious"] = kept_mal
+            metrics["agg_kept_benign"] = kept_ben
+            metrics["agg_removed_malicious"] = total_mal - kept_mal
+            metrics["agg_removed_benign"] = total_ben - kept_ben
+            metrics["agg_malicious_removal_rate"] = (total_mal - kept_mal) / total_mal if total_mal > 0 else 0.0
+            metrics["agg_benign_removal_rate"] = (total_ben - kept_ben) / total_ben if total_ben > 0 else 0.0
 
             return aggregated_arrays, metrics
 

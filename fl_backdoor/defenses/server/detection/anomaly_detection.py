@@ -186,72 +186,46 @@ class AnomalyDetectionFedAvg(FedAvg):
         arrays, metrics = super().aggregate_train(server_round, filtered_replies)
 
         extra_metrics = {
-            "defense-total-clients": int(total),
-            "defense-kept-clients": int(len(filtered_replies)),
-            "defense-filtered-clients": int(total - len(filtered_replies)),
-            "defense-filter-ratio": (
+            "detect_total_clients": int(total),
+            "detect_kept_clients": int(len(filtered_replies)),
+            "detect_filtered_clients": int(total - len(filtered_replies)),
+            "detect_filter_ratio": (
                 float((total - len(filtered_replies)) / total) if total > 0 else 0.0
             ),
-            "defense-suspicious-clients": int(np.sum(suspicious)),
-            "defense-norm-z-threshold": float(self.norm_z_threshold),
-            "defense-cosine-floor": float(self.cosine_floor),
-            "defense-mean-update-norm": float(np.mean(norms)) if len(norms) > 0 else 0.0,
-            "defense-max-update-norm": float(np.max(norms)) if len(norms) > 0 else 0.0,
-            "defense-mean-norm-z": float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0,
-            "defense-max-norm-z": float(np.max(norm_z)) if len(norm_z) > 0 else 0.0,
-            "defense-mean-cosine": float(np.mean(cosine)) if len(cosine) > 0 else 0.0,
-            "defense-min-cosine": float(np.min(cosine)) if len(cosine) > 0 else 0.0,
-            "defense-mean-score": float(np.mean(score)) if len(score) > 0 else 0.0,
-            "defense-max-score": float(np.max(score)) if len(score) > 0 else 0.0,
-            "defense-skip-count": int(skipped),
+            "detect_suspicious_clients": int(np.sum(suspicious)),
+            "detect_norm_z_threshold": float(self.norm_z_threshold),
+            "detect_cosine_floor": float(self.cosine_floor),
+            "detect_mean_update_norm": float(np.mean(norms)) if len(norms) > 0 else 0.0,
+            "detect_max_update_norm": float(np.max(norms)) if len(norms) > 0 else 0.0,
+            "detect_mean_norm_z": float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0,
+            "detect_max_norm_z": float(np.max(norm_z)) if len(norm_z) > 0 else 0.0,
+            "detect_mean_cosine": float(np.mean(cosine)) if len(cosine) > 0 else 0.0,
+            "detect_min_cosine": float(np.min(cosine)) if len(cosine) > 0 else 0.0,
+            "detect_mean_score": float(np.mean(score)) if len(score) > 0 else 0.0,
+            "detect_max_score": float(np.max(score)) if len(score) > 0 else 0.0,
+            "detect_skip_count": int(skipped),
         }
 
         if metrics is None:
             metrics = MetricRecord({
-                # ===== 核心统一字段（pipeline兼容）=====
-                "defense-detect-round": int(server_round),
-
-                "defense-detect-total-clients": int(total),
-                "defense-detect-kept-clients": int(len(filtered_replies)),
-                "defense-detect-filtered-clients": int(total - len(filtered_replies)),
-
-                "defense-detect-filter-ratio": (
-                    float((total - len(filtered_replies)) / total) if total > 0 else 0.0
-                ),
-
-                "defense-detect-suspicious-clients": int(np.sum(suspicious)),
-
-                # ===== 阈值信息（可解释性关键）=====
-                "defense-detect-norm-z-threshold": float(self.norm_z_threshold),
-                "defense-detect-cosine-floor": float(self.cosine_floor),
-
-                "defense-detect-min-kept-clients": int(self.min_kept_clients),
-                "defense-detect-max-reject-fraction": float(self.max_reject_fraction),
-
-                # ===== 分布统计（论文级别指标）=====
-                "defense-detect-mean-update-norm": (
-                    float(np.mean(norms)) if len(norms) > 0 else 0.0
-                ),
-                "defense-detect-max-update-norm": (
-                    float(np.max(norms)) if len(norms) > 0 else 0.0
-                ),
-
-                "defense-detect-mean-norm-z": (
-                    float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0
-                ),
-                "defense-detect-max-norm-z": (
-                    float(np.max(norm_z)) if len(norm_z) > 0 else 0.0
-                ),
-
-                "defense-detect-mean-cosine": (
-                    float(np.mean(cosine)) if len(cosine) > 0 else 0.0
-                ),
-                "defense-detect-min-cosine": (
-                    float(np.min(cosine)) if len(cosine) > 0 else 0.0
-                ),
-
-                # ===== 控制参数记录 =====
-                "defense-detect-enable-filter": int(self.enable_filter),
+                "detect_round": int(server_round),
+                "detect_total_clients": int(total),
+                "detect_kept_clients": int(len(filtered_replies)),
+                "detect_filtered_clients": int(total - len(filtered_replies)),
+                "detect_filter_ratio": (float((total - len(filtered_replies)) / total) if total > 0 else 0.0),
+                "detect_suspicious_clients": int(np.sum(suspicious)),
+                "detect_norm_z_threshold": float(self.norm_z_threshold),
+                "detect_cosine_floor": float(self.cosine_floor),
+                "detect_min_kept_clients": int(self.min_kept_clients),
+                "detect_max_reject_fraction": float(self.max_reject_fraction),
+                "detect_mean_update_norm": float(np.mean(norms)) if len(norms) > 0 else 0.0,
+                "detect_max_update_norm": float(np.max(norms)) if len(norms) > 0 else 0.0,
+                "detect_mean_norm_z": float(np.mean(norm_z)) if len(norm_z) > 0 else 0.0,
+                "detect_max_norm_z": float(np.max(norm_z)) if len(norm_z) > 0 else 0.0,
+                "detect_mean_cosine": float(np.mean(cosine)) if len(cosine) > 0 else 0.0,
+                "detect_min_cosine": float(np.min(cosine)) if len(cosine) > 0 else 0.0,
+                "detect_enable_filter": int(self.enable_filter),
+                "detect_skip_count": int(skipped),
             })
         return arrays, _merge_metrics(metrics, extra_metrics)
 

@@ -175,42 +175,24 @@ class CosineDetectionFedAvg(FedAvg):
 
         # 统一 detection 指标（和 pipeline 完全对齐）
         detect_metrics = {
-            "defense-detect-round": int(server_round),
-
-            "defense-detect-total-clients": int(total),
-            "defense-detect-kept-clients": int(len(filtered_replies)),
-            "defense-detect-filtered-clients": int(total - len(filtered_replies)),
-
-            "defense-detect-filter-ratio": (
+            "detect_round": int(server_round),
+            "detect_total_clients": int(total),
+            "detect_kept_clients": int(len(filtered_replies)),
+            "detect_filtered_clients": int(total - len(filtered_replies)),
+            "detect_filter_ratio": (
                 float((total - len(filtered_replies)) / total) if total > 0 else 0.0
             ),
-
-            "defense-detect-suspicious-clients": int(np.sum(suspicious)),
-
-            "defense-detect-cosine-floor": float(self.cosine_floor),
-            "defense-detect-min-kept-clients": int(self.min_kept_clients),
-            "defense-detect-max-reject-fraction": float(self.max_reject_fraction),
-
-            "defense-detect-mean-update-norm": (
-                float(np.mean(norms)) if len(norms) > 0 else 0.0
-            ),
-            "defense-detect-max-update-norm": (
-                float(np.max(norms)) if len(norms) > 0 else 0.0
-            ),
-
-            # 关键修复：用 cosine_scores
-            "defense-detect-mean-cosine": (
-                float(np.mean(cosine_scores)) if len(cosine_scores) > 0 else 0.0
-            ),
-            "defense-detect-min-cosine": (
-                float(np.min(cosine_scores)) if len(cosine_scores) > 0 else 0.0
-            ),
-            "defense-detect-max-cosine": (
-                float(np.max(cosine_scores)) if len(cosine_scores) > 0 else 0.0
-            ),
-
-            "defense-detect-skip-count": int(skipped),
-            "defense-detect-enable-filter": int(self.enable_filter),
+            "detect_suspicious_clients": int(np.sum(suspicious)),
+            "detect_cosine_floor": float(self.cosine_floor),
+            "detect_min_kept_clients": int(self.min_kept_clients),
+            "detect_max_reject_fraction": float(self.max_reject_fraction),
+            "detect_mean_update_norm": float(np.mean(norms)) if len(norms) > 0 else 0.0,
+            "detect_max_update_norm": float(np.max(norms)) if len(norms) > 0 else 0.0,
+            "detect_mean_cosine": float(np.mean(cosine_scores)) if len(cosine_scores) > 0 else 0.0,
+            "detect_min_cosine": float(np.min(cosine_scores)) if len(cosine_scores) > 0 else 0.0,
+            "detect_max_cosine": float(np.max(cosine_scores)) if len(cosine_scores) > 0 else 0.0,
+            "detect_skip_count": int(skipped),
+            "detect_enable_filter": int(self.enable_filter),
         }
 
         if metrics is None:

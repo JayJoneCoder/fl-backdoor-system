@@ -613,10 +613,10 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     # 1) Detection quality metrics
     detection_keys = [
-        "defense-detect-tp",
-        "defense-detect-fp",
-        "defense-detect-fn",
-        "defense-detect-tn",
+        "detect_tp",
+        "detect_fp",
+        "detect_fn",
+        "detect_tn",
     ]
     _plot_metric_lines(
         csv_path,
@@ -628,9 +628,9 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
     )
 
     detection_rate_keys = [
-        "defense-detect-precision",
-        "defense-detect-recall",
-        "defense-detect-fpr",
+        "detect_precision",
+        "detect_recall",
+        "detect_fpr",
     ]
     _plot_metric_lines(
         csv_path,
@@ -643,12 +643,12 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     # 2) Detection summary metrics
     summary_keys = [
-        "defense-detect-total-clients",
-        "defense-detect-kept-clients",
-        "defense-detect-filtered-clients",
-        "defense-detect-suspicious-clients",
-        "defense-detect-raw-suspicious-count",
-        "defense-detect-skip-count",
+        "detect_total_clients",
+        "detect_kept_clients",
+        "detect_filtered_clients",
+        "detect_suspicious_clients",
+        "detect_raw_suspicious_count",
+        "detect_skip_count",
     ]
     _plot_metric_lines(
         csv_path,
@@ -661,13 +661,13 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     # 3) Threshold / score related metrics
     score_keys = [
-        "defense-detect-mean-score",
-        "defense-detect-max-score",
-        "defense-detect-min-score",
-        "defense-detect-mean-cosine",
-        "defense-detect-min-cosine",
-        "defense-detect-mean-update-norm",
-        "defense-detect-max-update-norm",
+        "detect_mean_score",
+        "detect_max_score",
+        "detect_min_score",
+        "detect_mean_cosine",
+        "detect_min_cosine",
+        "detect_mean_update_norm",
+        "detect_max_update_norm",
     ]
     _plot_metric_lines(
         csv_path,
@@ -680,13 +680,13 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     # 4) Aggregation metrics
     agg_keys = [
-        "defense-agg-total-clients",
-        "defense-agg-clipped-clients",
-        "defense-agg-clipped-ratio",
-        "defense-agg-avg-update-norm",
-        "defense-agg-max-update-norm",
-        "defense-agg-avg-post-norm",
-        "defense-agg-selected-clients",
+        "agg_total_clients",
+        "agg_clipped_clients",
+        "agg_clipped_ratio",
+        "agg_avg_update_norm",
+        "agg_max_update_norm",
+        "agg_avg_post_norm",
+        "agg_selected_clients",
     ]
     _plot_metric_lines(
         csv_path,
@@ -699,14 +699,14 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     # 5) Client-defense metrics
     client_keys = [
-        "client-defense-applied",
-        "client-defense-filtered-samples",
-        "client-defense-kept-samples",
-        "client-defense-filter-ratio",
-        "client-defense-mean-score",
-        "client-defense-max-score",
-        "client-defense-label-aware",
-        "client-defense-label-blend-alpha",
+        "client_defense_applied",
+        "client_defense_filtered_samples",
+        "client_defense_kept_samples",
+        "client_defense_filter_ratio",
+        "client_defense_mean_score",
+        "client_defense_max_score",
+        "client_defense_label_aware",
+        "client_defense_label_blend_alpha",
     ]
     _plot_metric_lines(
         csv_path,
@@ -719,15 +719,15 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     # 6) Compact all-in-one detection snapshot
     wanted_keys = [
-        "defense-detect-tp",
-        "defense-detect-fp",
-        "defense-detect-fn",
-        "defense-detect-precision",
-        "defense-detect-recall",
-        "defense-detect-fpr",
-        "defense-detect-suspicious-clients",
-        "defense-detect-kept-clients",
-        "defense-detect-filtered-clients",
+        "detect_tp",
+        "detect_fp",
+        "detect_fn",
+        "detect_precision",
+        "detect_recall",
+        "detect_fpr",
+        "detect_suspicious_clients",
+        "detect_kept_clients",
+        "detect_filtered_clients",
     ]
     present = [k for k in wanted_keys if k in wide.columns]
     if present:
@@ -743,8 +743,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     # 7) Aggregation filtering metrics (removal rates, removed counts, kept counts)
     agg_removal_rate_keys = [
-        "defense-agg-malicious-removal-rate",
-        "defense-agg-benign-removal-rate",
+        "agg_malicious_removal_rate",
+        "agg_benign_removal_rate",
     ]
     if any(k in wide.columns for k in agg_removal_rate_keys):
         _plot_metric_lines(
@@ -757,9 +757,9 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         )
 
     agg_removed_count_keys = [
-        "defense-agg-removed-malicious",
-        "defense-agg-removed-benign",
-        "defense-agg-removed-clients",
+        "agg_removed_malicious",
+        "agg_removed_benign",
+        "agg_removed_clients",
     ]
     if any(k in wide.columns for k in agg_removed_count_keys):
         _plot_metric_lines(
@@ -772,9 +772,9 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         )
 
     agg_kept_count_keys = [
-        "defense-agg-kept-malicious",
-        "defense-agg-kept-benign",
-        "defense-agg-kept-clients",
+        "agg_kept_malicious",
+        "agg_kept_benign",
+        "agg_kept_clients",
     ]
     if any(k in wide.columns for k in agg_kept_count_keys):
         _plot_metric_lines(
@@ -1053,13 +1053,13 @@ def main(argv: list[str]) -> int:
             # ... existing calls ...
             plot_multi_experiment_aggregation_metric(
                 first_arg,
-                "defense-agg-malicious-removal-rate",
+                "agg_malicious_removal_rate",
                 "Malicious Removal Rate",
                 "comparison_malicious_removal_rate.png"
             )
             plot_multi_experiment_aggregation_metric(
                 first_arg,
-                "defense-agg-benign-removal-rate",
+                "agg_benign_removal_rate",
                 "Benign Removal Rate",
                 "comparison_benign_removal_rate.png"
             )

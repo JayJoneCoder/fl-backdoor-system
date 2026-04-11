@@ -184,19 +184,19 @@ class NormClippingFedAvg(FedAvg):
             metrics = MetricRecord()
 
         total_clients = len(valid_replies)
-        metrics["defense-clip-norm"] = float(self.clip_norm)
-        metrics["defense-total-clients"] = int(total_clients)
-        metrics["defense-clipped-clients"] = int(clipped_clients)
-        metrics["defense-clipped-ratio"] = (
+        metrics["agg_clip_norm"] = float(self.clip_norm)
+        metrics["agg_total_clients"] = int(total_clients)
+        metrics["agg_clipped_clients"] = int(clipped_clients)
+        metrics["agg_clipped_ratio"] = (
             float(clipped_clients / total_clients) if total_clients > 0 else 0.0
         )
-        metrics["defense-avg-update-norm"] = (
+        metrics["agg_avg_update_norm"] = (
             float(np.mean(pre_norms)) if pre_norms else 0.0
         )
-        metrics["defense-max-update-norm"] = (
+        metrics["agg_max_update_norm"] = (
             float(np.max(pre_norms)) if pre_norms else 0.0
         )
-        metrics["defense-avg-post-norm"] = (
+        metrics["agg_avg_post_norm"] = (
             float(np.mean(post_norms)) if post_norms else 0.0
         )
 

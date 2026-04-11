@@ -212,10 +212,10 @@ class KrumFedAvg(FedAvg):
         if metrics is None:
             metrics = MetricRecord()
 
-        metrics["defense-total-clients"] = int(n)
-        metrics["defense-selected-clients"] = int(len(selected_indices))
-        metrics["defense-krum-f"] = int(f)
-        metrics["defense-krum-k"] = int(k)
+        metrics["agg_total_clients"] = int(n)
+        metrics["agg_selected_clients"] = int(len(selected_indices))
+        metrics["agg_krum_f"] = int(f)
+        metrics["agg_krum_k"] = int(k)
 
         return aggregated_arrays, metrics
 

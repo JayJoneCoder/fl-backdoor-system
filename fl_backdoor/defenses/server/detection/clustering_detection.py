@@ -92,8 +92,6 @@ def _kmeans_2_numpy(
 
     rng = np.random.default_rng(seed)
 
-    # Deterministic-ish robust init:
-    # choose one random point and one farthest point from it
     i0 = int(rng.integers(0, n))
     d0 = np.sum((X - X[i0]) ** 2, axis=1)
     i1 = int(np.argmax(d0))
@@ -108,7 +106,6 @@ def _kmeans_2_numpy(
         dist1 = np.sum((X - centers[1]) ** 2, axis=1)
         new_labels = np.where(dist1 < dist0, 1, 0).astype(int)
 
-        # If a cluster becomes empty, re-seed it to a far point
         for cid in (0, 1):
             if not np.any(new_labels == cid):
                 farthest = int(np.argmax(np.minimum(dist0, dist1)))
@@ -125,7 +122,6 @@ def _kmeans_2_numpy(
             if len(members) > 0:
                 centers[cid] = members.mean(axis=0)
 
-    # Final inertia
     dist0 = np.sum((X - centers[0]) ** 2, axis=1)
     dist1 = np.sum((X - centers[1]) ** 2, axis=1)
     inertia = float(np.sum(np.minimum(dist0, dist1)))
@@ -142,7 +138,6 @@ def _silhouette_score_numpy(X: np.ndarray, labels: np.ndarray) -> float:
     if n < 3 or unique.size < 2:
         return 0.0
 
-    # Pairwise distances
     diff = X[:, None, :] - X[None, :, :]
     D = np.sqrt(np.sum(diff * diff, axis=2))
 
@@ -175,7 +170,6 @@ def _build_feature_matrix(
     score: np.ndarray,
     deltas: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Construct richer features for clustering."""
     norm_z = np.asarray(norm_z, dtype=np.float64).reshape(-1)
     cosine = np.asarray(cosine, dtype=np.float64).reshape(-1)
     score = np.asarray(score, dtype=np.float64).reshape(-1)
@@ -207,7 +201,6 @@ def _build_feature_matrix(
         dtype=np.float64,
     )
 
-    # A few extra robust shape descriptors
     sign_balance = np.mean(np.sign(deltas), axis=1)
 
     extra_features = np.column_stack(
@@ -273,15 +266,15 @@ def _score_fallback_report(
         skip_count=int(skipped),
         extra={
             **extra,
-            "defense-detect-clustering-fallback": 1,
-            "defense-detect-silhouette": 0.0,
-            "defense-detect-inertia": 0.0,
-            "defense-detect-suspicious-cluster-id": -1,
-            "defense-detect-cluster-0-size": 0,
-            "defense-detect-cluster-1-size": 0,
-            "defense-detect-cluster-0-mean-score": 0.0,
-            "defense-detect-cluster-1-mean-score": 0.0,
-            "defense-detect-cluster-labels": [],
+            "detect_clustering_fallback": 1,
+            "detect_silhouette": 0.0,
+            "detect_inertia": 0.0,
+            "detect_suspicious_cluster_id": -1,
+            "detect_cluster_0_size": 0,
+            "detect_cluster_1_size": 0,
+            "detect_cluster_0_mean_score": 0.0,
+            "detect_cluster_1_mean_score": 0.0,
+            "detect_cluster_labels": [],
         },
     )
 
@@ -304,7 +297,6 @@ def build_clustering_report(
     min_silhouette: float = 0.05,
     cluster_score_gap: float = 0.15,
 ) -> DetectionReport:
-    """Return a standardized clustering-based detection report."""
     norm_z = np.asarray(norm_z, dtype=np.float64).reshape(-1)
     cosine = np.asarray(cosine, dtype=np.float64).reshape(-1)
     score = np.asarray(score, dtype=np.float64).reshape(-1)
@@ -321,10 +313,10 @@ def build_clustering_report(
             suspicious_count=0,
             skip_count=int(skipped),
             extra={
-                "defense-detect-clustering-fallback": 1,
-                "defense-detect-silhouette": 0.0,
-                "defense-detect-inertia": 0.0,
-                "defense-detect-suspicious-cluster-id": -1,
+                "detect_clustering_fallback": 1,
+                "detect_silhouette": 0.0,
+                "detect_inertia": 0.0,
+                "detect_suspicious_cluster_id": -1,
             },
         )
 
@@ -334,16 +326,16 @@ def build_clustering_report(
         )
 
     base_extra: dict[str, Any] = {
-        "defense-detect-percentile": float(percentile),
-        "defense-detect-enable-filter": int(enable_filter),
-        "defense-detect-skip-count": int(skipped),
-        "defense-detect-mean-score": float(np.mean(score)),
-        "defense-detect-max-score": float(np.max(score)),
-        "defense-detect-min-score": float(np.min(score)),
-        "defense-detect-mean-norm-z": float(np.mean(norm_z)),
-        "defense-detect-max-norm-z": float(np.max(norm_z)),
-        "defense-detect-mean-cosine": float(np.mean(cosine)),
-        "defense-detect-min-cosine": float(np.min(cosine)),
+        "detect_percentile": float(percentile),
+        "detect_enable_filter": int(enable_filter),
+        "detect_skip_count": int(skipped),
+        "detect_mean_score": float(np.mean(score)),
+        "detect_max_score": float(np.max(score)),
+        "detect_min_score": float(np.min(score)),
+        "detect_mean_norm_z": float(np.mean(norm_z)),
+        "detect_max_norm_z": float(np.max(norm_z)),
+        "detect_mean_cosine": float(np.mean(cosine)),
+        "detect_min_cosine": float(np.min(cosine)),
     }
 
     if total_clients < 4:
@@ -411,19 +403,19 @@ def build_clustering_report(
                 skipped=skipped,
                 extra={
                     **base_extra,
-                    "defense-detect-inertia": float(inertia),
-                    "defense-detect-silhouette": sil,
-                    "defense-detect-cluster-labels": [int(x) for x in labels.tolist()],
-                    "defense-detect-cluster-0-size": int(np.sum(labels == 0)),
-                    "defense-detect-cluster-1-size": int(np.sum(labels == 1)),
-                    "defense-detect-cluster-0-mean-score": (
+                    "detect_inertia": float(inertia),
+                    "detect_silhouette": sil,
+                    "detect_cluster_labels": [int(x) for x in labels.tolist()],
+                    "detect_cluster_0_size": int(np.sum(labels == 0)),
+                    "detect_cluster_1_size": int(np.sum(labels == 1)),
+                    "detect_cluster_0_mean_score": (
                         float(score[labels == 0].mean()) if np.any(labels == 0) else 0.0
                     ),
-                    "defense-detect-cluster-1-mean-score": (
+                    "detect_cluster_1_mean_score": (
                         float(score[labels == 1].mean()) if np.any(labels == 1) else 0.0
                     ),
-                    "defense-detect-suspicious-cluster-id": -1,
-                    "defense-detect-clustering-fallback": 1,
+                    "detect_suspicious_cluster_id": -1,
+                    "detect_clustering_fallback": 1,
                 },
             )
 
@@ -436,7 +428,6 @@ def build_clustering_report(
             dtype=np.float64,
         )
 
-        # Higher mean score + slightly smaller size -> more suspicious
         cluster_rank = cluster_score_means - cluster_score_gap * (
             cluster_sizes / max(total_clients, 1)
         )
@@ -479,19 +470,19 @@ def build_clustering_report(
             skip_count=int(skipped),
             extra={
                 **base_extra,
-                "defense-detect-inertia": float(inertia),
-                "defense-detect-silhouette": sil,
-                "defense-detect-cluster-labels": [int(x) for x in labels.tolist()],
-                "defense-detect-cluster-0-size": int(cluster_sizes[0]),
-                "defense-detect-cluster-1-size": int(cluster_sizes[1]),
-                "defense-detect-cluster-0-mean-score": (
+                "detect_inertia": float(inertia),
+                "detect_silhouette": sil,
+                "detect_cluster_labels": [int(x) for x in labels.tolist()],
+                "detect_cluster_0_size": int(cluster_sizes[0]),
+                "detect_cluster_1_size": int(cluster_sizes[1]),
+                "detect_cluster_0_mean_score": (
                     float(cluster_score_means[0]) if np.isfinite(cluster_score_means[0]) else 0.0
                 ),
-                "defense-detect-cluster-1-mean-score": (
+                "detect_cluster_1_mean_score": (
                     float(cluster_score_means[1]) if np.isfinite(cluster_score_means[1]) else 0.0
                 ),
-                "defense-detect-suspicious-cluster-id": int(suspicious_cluster),
-                "defense-detect-clustering-fallback": 0,
+                "detect_suspicious_cluster_id": int(suspicious_cluster),
+                "detect_clustering_fallback": 0,
             },
         )
 

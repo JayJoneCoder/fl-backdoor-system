@@ -214,13 +214,13 @@ class TrimmedMeanFedAvg(FedAvg):
         if metrics is None:
             metrics = MetricRecord()
 
-        metrics["defense-trim-ratio"] = float(self.trim_ratio)
-        metrics["defense-trim-k"] = int(trim_k)
-        metrics["defense-total-clients"] = int(num_clients)
-        metrics["defense-avg-update-norm"] = (
+        metrics["agg_trim_ratio"] = float(self.trim_ratio)
+        metrics["agg_trim_k"] = int(trim_k)
+        metrics["agg_total_clients"] = int(num_clients)
+        metrics["agg_avg_update_norm"] = (
             float(np.mean(client_update_norms)) if client_update_norms else 0.0
         )
-        metrics["defense-max-update-norm"] = (
+        metrics["agg_max_update_norm"] = (
             float(np.max(client_update_norms)) if client_update_norms else 0.0
         )
 

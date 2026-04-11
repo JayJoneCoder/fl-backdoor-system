@@ -189,10 +189,10 @@ def extract_experiment_metrics(exp_dir: Path):
         for _, row in detection_rows.iterrows():
             key = row["key"]
             val = row["value"]
-            if key in ["defense-detect-precision", "defense-detect-recall", "defense-detect-fpr"]:
-                metrics[key.replace("defense-detect-", "")] = float(val) if pd.notna(val) else None
-            elif key in ["defense-detect-tp", "defense-detect-fp", "defense-detect-fn", "defense-detect-tn"]:
-                metrics[key.replace("defense-detect-", "")] = float(val) if pd.notna(val) else None
+            if key in ["detect_precision", "detect_recall", "detect_fpr"]:
+                metrics[key.replace("detect_", "")] = float(val) if pd.notna(val) else None
+            elif key in ["detect_tp", "detect_fp", "detect_fn", "detect_tn"]:
+                metrics[key.replace("detect_", "")] = float(val) if pd.notna(val) else None
 
         # Check if there are any aggregation records
         agg_rows = df_metrics[df_metrics["component"] == "aggregation"]
@@ -200,15 +200,15 @@ def extract_experiment_metrics(exp_dir: Path):
             has_aggregation = True
             # Compute averages
             key_mapping = {
-                "defense-agg-malicious-removal-rate": "avg_malicious_removal_rate",
-                "defense-agg-benign-removal-rate": "avg_benign_removal_rate",
-                "defense-agg-kept-malicious": "avg_kept_malicious",
-                "defense-agg-removed-malicious": "avg_removed_malicious",
-                "defense-agg-removed-benign": "avg_removed_benign",
-                "defense-agg-kept-benign": "avg_kept_benign",
-                "defense-agg-total-malicious": "avg_total_malicious",
-                "defense-agg-total-benign": "avg_total_benign",
-                "defense-agg-selected-clients": "avg_selected_clients",
+                "agg_malicious_removal_rate": "avg_malicious_removal_rate",
+                "agg_benign_removal_rate": "avg_benign_removal_rate",
+                "agg_kept_malicious": "avg_kept_malicious",
+                "agg_removed_malicious": "avg_removed_malicious",
+                "agg_removed_benign": "avg_removed_benign",
+                "agg_kept_benign": "avg_kept_benign",
+                "agg_total_malicious": "avg_total_malicious",
+                "agg_total_benign": "avg_total_benign",
+                "agg_selected_clients": "avg_selected_clients",
             }
             for key, new_key in key_mapping.items():
                 values = agg_rows[agg_rows["key"] == key]["value"]
