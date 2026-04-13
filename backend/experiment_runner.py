@@ -59,6 +59,16 @@ class ExperimentRunner:
         self.log_file = exp_dir / "run.log"
         self.exp_name = exp_name
 
+        # 保存配置快照到实验目录
+        snapshot_path = exp_dir / "config_snapshot.toml"
+        try:
+            import shutil
+            from backend import config_manager
+            shutil.copy2(config_manager.TOML_PATH, snapshot_path)
+            print(f"[Runner] Config snapshot saved to {snapshot_path}")
+        except Exception as e:
+            print(f"[Runner] Warning: Failed to save config snapshot: {e}")
+
         # 直接运行命令，不修改环境
         cmd = ["flwr", "run", str(PROJECT_ROOT), "--stream"]
 

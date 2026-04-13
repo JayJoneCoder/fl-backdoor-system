@@ -171,18 +171,35 @@ def extract_experiment_metrics(exp_dir: Path) -> Optional[dict[str, Any]]:
     # Main curve data (for frontend plotting)
     curve_data = df_main[["round", "accuracy", "asr", "loss"]].to_dict(orient="list")
 
+    # 提取数据集名称
+    dataset = None
+    snapshot_path = exp_dir / "config_snapshot.toml"
+    if snapshot_path.exists():
+        try:
+            import tomli
+            with open(snapshot_path, "rb") as f:
+                config = tomli.load(f)
+            tool_config = config.get("tool", {}).get("flwr", {}).get("app", {}).get("config", {})
+            dataset = tool_config.get("dataset")
+        except Exception:
+            pass
+
     return {
         "accuracy": acc,
         "asr": asr,
         "loss": loss,
         "last_round": last_round,
         "curve_data": curve_data,
+        "dataset": dataset or "",
         **metrics,
     }
 
 
 def list_experiments(results_dir: Path) -> list[dict[str, Any]]:
     """Return summary list of all experiments."""
+    import os
+    from datetime import datetime
+
     experiments = []
     for exp_dir in results_dir.iterdir():
         if not exp_dir.is_dir():
@@ -190,6 +207,44 @@ def list_experiments(results_dir: Path) -> list[dict[str, Any]]:
         metrics = extract_experiment_metrics(exp_dir)
         if metrics is None:
             continue
+
+        # 获取目录创建时间
+        created_timestamp = os.path.getctime(exp_dir)
+        created = datetime.fromtimestamp(created_timestamp).isoformat()
+
+        # 尝试获取数据集名称
+        dataset = None
+        snapshot_path = exp_dir / "config_snapshot.toml"
+        if snapshot_path.exists():
+            try:
+                import tomli
+                with open(snapshot_path, "rb") as f:
+                    config = tomli.load(f)
+                tool_config = config.get("tool", {}).get("flwr", {}).get("app", {}).get("config", {})
+                dataset = tool_config.get("dataset")
+            except Exception:
+                pass
+
+        # 如果快照没有，尝试从主 CSV 文件名或实验名推测
+        if dataset is None:
+            main_csv = find_main_csv(exp_dir)
+            if main_csv:
+                name_lower = main_csv.stem.lower()
+                if "mnist" in name_lower:
+                    dataset = "mnist"
+                elif "cifar10" in name_lower or "cifar" in name_lower:
+                    dataset = "cifar10"
+                elif "cifar100" in name_lower:
+                    dataset = "cifar100"
+        if dataset is None:
+            exp_name_lower = exp_dir.name.lower()
+            if "mnist" in exp_name_lower:
+                dataset = "mnist"
+            elif "cifar10" in exp_name_lower or "cifar" in exp_name_lower:
+                dataset = "cifar10"
+            elif "cifar100" in exp_name_lower:
+                dataset = "cifar100"
+
         experiments.append({
             "name": exp_dir.name,
             "accuracy": metrics.get("accuracy"),
@@ -200,9 +255,11 @@ def list_experiments(results_dir: Path) -> list[dict[str, Any]]:
             "recall": metrics.get("recall"),
             "fpr": metrics.get("fpr"),
             "auc": metrics.get("auc"),
+            "created": created,
+            "dataset": dataset or "",
         })
-    # Sort by name (or could be by creation time)
-    experiments.sort(key=lambda x: x["name"])
+    # 按创建时间倒序排列（最新的在前）
+    experiments.sort(key=lambda x: x["created"] or "", reverse=True)
     return experiments
 
 

@@ -418,6 +418,51 @@ async def download_summary_images(summary_name: str):
         headers={"Content-Disposition": f"attachment; filename={summary_name}_images.zip"}
     )
 
+@app.get("/api/experiments/{exp_name}/images/download")
+async def download_experiment_images(exp_name: str):
+    """下载实验目录下所有 PNG 图片的 ZIP 压缩包"""
+    exp_dir = RESULTS_DIR / exp_name
+    if not exp_dir.exists():
+        raise HTTPException(404, "Experiment not found")
+
+    png_files = list(exp_dir.glob("*.png"))
+    if not png_files:
+        raise HTTPException(404, "No images found in this experiment")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for png in png_files:
+            zf.write(png, arcname=png.name)
+
+    zip_buffer.seek(0)
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={exp_name}_images.zip"}
+    )
+
+@app.get("/api/experiments/{exp_name}/all/download")
+async def download_experiment_all_files(exp_name: str):
+    """下载实验目录下所有文件（不含子目录）的 ZIP 压缩包"""
+    exp_dir = RESULTS_DIR / exp_name
+    if not exp_dir.exists():
+        raise HTTPException(404, "Experiment not found")
+
+    all_files = [f for f in exp_dir.iterdir() if f.is_file()]
+    if not all_files:
+        raise HTTPException(404, "No files found in this experiment")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in all_files:
+            zf.write(file, arcname=file.name)
+
+    zip_buffer.seek(0)
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={exp_name}_all_files.zip"}
+    )
 
 # ------------------------------
 # Main entry point
