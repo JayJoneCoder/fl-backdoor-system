@@ -31,6 +31,8 @@ import pandas as pd
 import numpy as np
 from matplotlib.colors import Normalize
 
+PROJECT_ROOT = Path(__file__).parent.parent
+RESULTS_DIR = PROJECT_ROOT / "results"
 
 # -----------------------------
 # Helpers
@@ -792,16 +794,13 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
 # -----------------------------
 # Multi-experiment comparison plots
 # -----------------------------
-def plot_multi_experiment_curves(results_dir: Path, metric: str = "accuracy") -> None:
-    """
-    Scan results_dir for experiment subdirectories, find main CSV in each,
-    and plot the specified metric (accuracy or asr) across all experiments.
-    """
-    exp_data = []  # list of (exp_name, df)
+def plot_multi_experiment_curves(results_dir: Path, metric: str = "accuracy", exp_filter: list[str] = None, output_dir: Path = None) -> None:
+    exp_data = []
     for exp_dir in results_dir.iterdir():
-        if not exp_dir.is_dir():
+        if not exp_dir.is_dir() or exp_dir.name == "summaries":
             continue
-        # Find main CSV (does not contain '_metrics' or '_clients')
+        if exp_filter is not None and exp_dir.name not in exp_filter:
+            continue
         main_csv = None
         for f in exp_dir.glob("*.csv"):
             if "_metrics" not in f.name and "_clients" not in f.name:
@@ -829,20 +828,22 @@ def plot_multi_experiment_curves(results_dir: Path, metric: str = "accuracy") ->
     ax.grid(True, alpha=0.3)
     _force_integer_axis(ax)
     _legend_outside(ax, ncol=1)
-    out_path = results_dir / f"comparison_{metric}.png"
+    out_path = (output_dir or results_dir) / f"comparison_{metric}.png"
     _savefig(out_path)
     print(f"Saved {metric} comparison plot to {out_path}")
 
-def plot_multi_experiment_aggregation_metric(results_dir: Path, metric_key: str, ylabel: str, filename: str):
+
+def plot_multi_experiment_aggregation_metric(results_dir: Path, metric_key: str, ylabel: str, filename: str, exp_filter: list[str] = None, output_dir: Path = None):
     """
     Scan experiment subdirectories, extract a specific aggregation metric from metrics CSV,
     and plot the curves across experiments.
     """
     exp_data = []
     for exp_dir in results_dir.iterdir():
-        if not exp_dir.is_dir():
+        if not exp_dir.is_dir() or exp_dir.name == "summaries":
             continue
-        # Find metrics CSV (ends with _metrics.csv)
+        if exp_filter is not None and exp_dir.name not in exp_filter:
+            continue
         metrics_csv = None
         for f in exp_dir.glob("*_metrics.csv"):
             metrics_csv = f
@@ -852,11 +853,9 @@ def plot_multi_experiment_aggregation_metric(results_dir: Path, metric_key: str,
         df = pd.read_csv(metrics_csv)
         if df.empty:
             continue
-        # Filter rows for component 'aggregation' and key == metric_key
         rows = df[(df["component"] == "aggregation") & (df["key"] == metric_key)]
         if rows.empty:
             continue
-        # Pivot to get round vs value
         df_metric = rows[["round", "value"]].copy()
         df_metric["value"] = pd.to_numeric(df_metric["value"], errors="coerce")
         df_metric = df_metric.dropna()
@@ -877,7 +876,7 @@ def plot_multi_experiment_aggregation_metric(results_dir: Path, metric_key: str,
     ax.grid(True, alpha=0.3)
     _force_integer_axis(ax)
     _legend_outside(ax, ncol=1)
-    out_path = results_dir / filename
+    out_path = (output_dir or results_dir) / filename
     _savefig(out_path)
     print(f"Saved {metric_key} comparison plot to {out_path}")
 
@@ -1006,63 +1005,64 @@ def main(argv: list[str]) -> int:
         if any(ch in arg for ch in ["*", "?", "["]):
             paths.extend(sorted(Path().glob(arg)))
         elif p.is_dir():
-            # If argument is a directory, collect all CSV files inside it (recursively)
+            summary_csv = p / "summary.csv"
+            if summary_csv.exists():
+                print(f"[INFO] Detected summary directory: {p}")
+                df = pd.read_csv(summary_csv)
+                if "experiment" in df.columns:
+                    exp_names = df["experiment"].tolist()
+                    print(f"[INFO] Found experiments: {exp_names}")
+                    # 生成多实验对比曲线（ACC/ASR）
+                    plot_multi_experiment_curves(RESULTS_DIR, metric="accuracy", exp_filter=exp_names, output_dir=p)
+                    plot_multi_experiment_curves(RESULTS_DIR, metric="asr", exp_filter=exp_names, output_dir=p)
+                    # 生成聚合指标对比图
+                    plot_multi_experiment_aggregation_metric(
+                        RESULTS_DIR, exp_filter=exp_names, output_dir=p,
+                        metric_key="agg_malicious_removal_rate",
+                        ylabel="Malicious Removal Rate",
+                        filename="comparison_malicious_removal_rate.png"
+                    )
+                    plot_multi_experiment_aggregation_metric(
+                        RESULTS_DIR, exp_filter=exp_names, output_dir=p,
+                        metric_key="agg_benign_removal_rate",
+                        ylabel="Benign Removal Rate",
+                        filename="comparison_benign_removal_rate.png"
+                    )
+                # 生成总结图表（散点图、条形图）
+                plot_multi_experiment_summary(summary_csv)
+            # 继续收集该目录下的 CSV（用于单实验图）
             paths.extend(sorted(p.rglob("*.csv")))
         else:
             paths.append(p)
 
-    if not paths:
-        print("[SKIP] no CSV files found")
-        return 0
+    # 处理收集到的所有 CSV 文件（生成单实验图）
+    if paths:
+        seen = set()
+        unique_paths = []
+        for p in paths:
+            rp = str(p.resolve())
+            if rp not in seen:
+                seen.add(rp)
+                unique_paths.append(p)
 
-    seen = set()
-    unique_paths = []
-    for p in paths:
-        rp = str(p.resolve())
-        if rp not in seen:
-            seen.add(rp)
-            unique_paths.append(p)
+        for csv_path in unique_paths:
+            if csv_path.suffix.lower() != ".csv":
+                continue
+            if not csv_path.exists():
+                print(f"[SKIP] {csv_path}: not found")
+                continue
+            plot_csv(csv_path)
 
-    for csv_path in unique_paths:
-        if csv_path.suffix.lower() != ".csv":
-            continue
-        if not csv_path.exists():
-            print(f"[SKIP] {csv_path}: not found")
-            continue
-        plot_csv(csv_path)
-
-    # Multi-experiment comparison: if the first argument is a directory named "results"
-    # and it contains multiple subdirectories with main CSV files.
+    # 如果第一个参数是 results 目录（非总结目录），也生成全局对比图
     first_arg = Path(argv[1])
     if first_arg.is_dir() and first_arg.name == "results":
-        # Check if there are at least two experiment subdirectories
-        subdirs = [d for d in first_arg.iterdir() if d.is_dir()]
+        subdirs = [d for d in first_arg.iterdir() if d.is_dir() and d.name != "summaries"]
         if len(subdirs) >= 2:
             plot_multi_experiment_curves(first_arg, metric="accuracy")
             plot_multi_experiment_curves(first_arg, metric="asr")
             summary_csv = first_arg / "summary.csv"
             if summary_csv.exists():
                 plot_multi_experiment_summary(summary_csv)
-        else:
-            print("[INFO] Not enough experiment subdirectories for multi-experiment plots (need at least 2).")
-
-    # Multi-experiment comparison for aggregation metrics
-    if first_arg.is_dir() and first_arg.name == "results":
-        subdirs = [d for d in first_arg.iterdir() if d.is_dir()]
-        if len(subdirs) >= 2:
-            # ... existing calls ...
-            plot_multi_experiment_aggregation_metric(
-                first_arg,
-                "agg_malicious_removal_rate",
-                "Malicious Removal Rate",
-                "comparison_malicious_removal_rate.png"
-            )
-            plot_multi_experiment_aggregation_metric(
-                first_arg,
-                "agg_benign_removal_rate",
-                "Benign Removal Rate",
-                "comparison_benign_removal_rate.png"
-            )
 
     return 0
 

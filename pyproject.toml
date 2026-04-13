@@ -4,23 +4,52 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fl-backdoor-system"
-version = "1.0.1"
-description = "Federated Learning with PyTorch and Flower (Quickstart Example)"
-license = "GPL-3.0"
+version = "1.0.0"
+description = "面向联邦学习的后门攻击与防御实验平台"
+license = {text = "GPL-3.0-or-later"}
+authors = [
+    {name = "JayJoneCoder"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+
 dependencies = [
     "flwr[simulation]>=1.26.0",
     "flwr-datasets[vision]>=0.5.0",
     "torch==2.8.0",
     "torchvision==0.23.0",
-    "tomli>=2.0.0", 
+    "tomli>=2.0.0",
     "tomli-w>=1.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "websockets>=12.0",
+    "watchfiles>=0.24.0",
+    "pandas>=2.0.0",
+    "python-multipart>=0.0.9",
 ]
+
+[project.urls]
+Homepage = "https://github.com/JayJoneCoder/fl-backdoor-system"
+Documentation = "https://github.com/JayJoneCoder/fl-backdoor-system/blob/main/README.md"
+Repository = "https://github.com/JayJoneCoder/fl-backdoor-system"
+Issues = "https://github.com/JayJoneCoder/fl-backdoor-system/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["fl_backdoor"]
 
 [tool.flwr.app]
-publisher = "flwrlabs"
+publisher = "JayJoneCoder"
 
 [tool.flwr.app.components]
 serverapp = "fl_backdoor.server.server:app"

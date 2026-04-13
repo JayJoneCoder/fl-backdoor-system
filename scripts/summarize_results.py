@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-Summarize results from all experiments in results/.
-Output: summary.csv, summary_table.tex
+Summarize results from selected experiments.
+Output: summary.csv, summary_table.tex, and optional plots.
 """
 
 import sys
+import argparse
 from pathlib import Path
+from datetime import datetime
 import pandas as pd
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
+SUMMARIES_DIR = RESULTS_DIR / "summaries"
 
 
-# ---------- Helper functions ----------
+# ---------- Helper functions (unchanged from original) ----------
 def _roc_curve(y_true, y_score):
     y_true = np.asarray(y_true)
     y_score = np.asarray(y_score)
@@ -60,7 +63,6 @@ def _auc(fpr, tpr):
 
 
 def compute_auc_from_clients_csv(exp_dir: Path):
-    """Compute AUC from clients CSV using score and is_malicious."""
     clients_csv = None
     for f in exp_dir.glob("*_clients.csv"):
         clients_csv = f
@@ -87,11 +89,6 @@ def find_main_csv(exp_dir: Path):
 
 
 def get_average_client_counts(exp_dir: Path) -> dict:
-    """
-    Compute average number of malicious and benign clients per round from clients CSV.
-    Returns dict with keys: avg_total_malicious, avg_total_benign, avg_kept_malicious, avg_kept_benign
-    (For no defense, kept = total).
-    """
     clients_csv = None
     for f in exp_dir.glob("*_clients.csv"):
         clients_csv = f
@@ -103,19 +100,14 @@ def get_average_client_counts(exp_dir: Path) -> dict:
     if "is_malicious" not in df.columns or "round" not in df.columns:
         return {"avg_total_malicious": 0.0, "avg_total_benign": 0.0,
                 "avg_kept_malicious": 0.0, "avg_kept_benign": 0.0}
-    # Filter valid labels (is_malicious >= 0)
     df_valid = df[df["is_malicious"] >= 0].copy()
     if df_valid.empty:
         return {"avg_total_malicious": 0.0, "avg_total_benign": 0.0,
                 "avg_kept_malicious": 0.0, "avg_kept_benign": 0.0}
-    # Group by round
     grouped = df_valid.groupby("round")
-    # Average malicious per round
     avg_malicious = grouped["is_malicious"].sum().mean()
-    # Average total clients per round (number of rows per round)
     avg_total = grouped.size().mean()
     avg_benign = avg_total - avg_malicious
-    # For no defense, kept = total
     return {
         "avg_total_malicious": avg_malicious,
         "avg_total_benign": avg_benign,
@@ -125,12 +117,6 @@ def get_average_client_counts(exp_dir: Path) -> dict:
 
 
 def extract_aggregation_averages(metrics_csv: Path) -> dict:
-    """
-    Compute average aggregation metrics across all rounds.
-    Returns dict with keys like:
-        avg_malicious_removal_rate, avg_benign_removal_rate, avg_kept_malicious, ...
-    If no aggregation records found, returns empty dict.
-    """
     key_mapping = {
         "defense-agg-malicious-removal-rate": "avg_malicious_removal_rate",
         "defense-agg-benign-removal-rate": "avg_benign_removal_rate",
@@ -148,7 +134,6 @@ def extract_aggregation_averages(metrics_csv: Path) -> dict:
     agg_rows = df[df["component"] == "aggregation"]
     if agg_rows.empty:
         return {}
-
     averages = {}
     for key, new_key in key_mapping.items():
         values = agg_rows[agg_rows["key"] == key]["value"]
@@ -198,7 +183,6 @@ def extract_experiment_metrics(exp_dir: Path):
         agg_rows = df_metrics[df_metrics["component"] == "aggregation"]
         if not agg_rows.empty:
             has_aggregation = True
-            # Compute averages
             key_mapping = {
                 "agg_malicious_removal_rate": "avg_malicious_removal_rate",
                 "agg_benign_removal_rate": "avg_benign_removal_rate",
@@ -220,7 +204,6 @@ def extract_experiment_metrics(exp_dir: Path):
 
     # If no aggregation metrics found (baseline), compute from clients CSV
     if not has_aggregation:
-        # Compute average malicious per round from clients CSV
         clients_csv = None
         for f in exp_dir.glob("*_clients.csv"):
             clients_csv = f
@@ -252,15 +235,32 @@ def extract_experiment_metrics(exp_dir: Path):
     return result
 
 
+# ---------- Main ----------
 def main():
-    if not RESULTS_DIR.exists():
-        print(f"Results directory {RESULTS_DIR} not found.")
+    parser = argparse.ArgumentParser(description="Summarize selected experiments.")
+    parser.add_argument("--experiments", nargs="+", help="List of experiment names to include.")
+    parser.add_argument("--output-name", help="Name of the summary output directory (default: timestamp).")
+    parser.add_argument("--no-plots", action="store_true", help="Skip generating multi-experiment plots.")
+    args = parser.parse_args()
+
+    # Determine which experiments to process
+    if args.experiments:
+        exp_dirs = [RESULTS_DIR / name for name in args.experiments if (RESULTS_DIR / name).is_dir()]
+    else:
+        # Default: all experiment subdirectories directly under results/
+        exp_dirs = [d for d in RESULTS_DIR.iterdir() if d.is_dir() and d.name != "summaries"]
+
+    if not exp_dirs:
+        print("No valid experiment directories found.")
         return
 
-    exp_dirs = [d for d in RESULTS_DIR.iterdir() if d.is_dir()]
-    if not exp_dirs:
-        print("No experiment subdirectories found.")
-        return
+    # Create output directory
+    if args.output_name:
+        output_name = args.output_name
+    else:
+        output_name = datetime.now().strftime("summary_%Y%m%d_%H%M%S")
+    output_dir = SUMMARIES_DIR / output_name
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
     for exp_dir in exp_dirs:
@@ -285,16 +285,24 @@ def main():
     final_cols = base_cols + [c for c in detect_cols if c in df_summary.columns] + agg_cols
     df_summary = df_summary[final_cols]
 
-    csv_path = RESULTS_DIR / "summary.csv"
+    csv_path = output_dir / "summary.csv"
     df_summary.to_csv(csv_path, index=False)
     print(f"Summary CSV saved to {csv_path}")
 
-    latex_path = RESULTS_DIR / "summary_table.tex"
+    latex_path = output_dir / "summary_table.tex"
     with open(latex_path, "w") as f:
         f.write(df_summary.to_latex(index=False, float_format="%.4f"))
     print(f"LaTeX table saved to {latex_path}")
 
-    print("\nSummary Table:\n", df_summary.to_string())
+    # Optionally generate multi-experiment plots
+    if not args.no_plots:
+        plot_script = PROJECT_ROOT / "scripts" / "plot.py"
+        import subprocess
+        cmd = [sys.executable, str(plot_script), str(output_dir)]
+        subprocess.run(cmd, cwd=str(PROJECT_ROOT))
+        print(f"Plots generated in {output_dir}")
+
+    print(f"\nSummary completed. Output directory: {output_dir}")
 
 
 if __name__ == "__main__":

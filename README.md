@@ -5,10 +5,14 @@ framework: [pytorch, flwr]
 ---
 
 # 面向联邦学习的后门攻击与防御系统
-[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.8.0-red.svg)](https://pytorch.org/)
-[![Flower](https://img.shields.io/badge/Flower-1.26+-green.svg)](https://flower.ai/)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg?logo=gnu)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg?logo=python)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.8.0-red.svg?logo=pytorch)](https://pytorch.org/)
+[![Flower](https://img.shields.io/badge/Flower-1.26+-green.svg?logo=flower)](https://flower.ai/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react)](https://react.dev/)
+[![Ant Design](https://img.shields.io/badge/Ant_Design-6.0+-0170FE?logo=antdesign)](https://ant.design/)
+[![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs)](https://nodejs.org/)
 ## 项目简介
 
 本项目实现了一个**面向联邦学习的后门攻击与防御系统**，目前支持：
@@ -20,105 +24,15 @@ framework: [pytorch, flwr]
   - 服务端聚合（模型层）：Norm Clipping、Trimmed Mean、Krum
 - **完整的评估体系**：ACC、ASR、Precision、Recall、FPR、混淆矩阵、客户端级异常分数
 - **Ground Truth 追踪**：支持 random/fixed 恶意客户端选择，实现检测性能的精确评估
+- **Web 可视化平台**：基于 FastAPI + React + Ant Design，支持在线配置实验、实时日志监控、历史结果浏览
 
 > 适用于联邦学习安全研究、后门攻击防御对比实验、鲁棒聚合算法验证。
-
-## 当前项目架构：
-```shell
-fl-backdoor-system/
-├── fl_backdoor/                           # 核心源码
-│   ├── attacks/                           # 后门攻击实现（BadNets / WaNet / Frequency / DBA / FCBA）
-│   │   ├── __init__.py                    # build_attack() 工厂，支持 attack="none"
-│   │   ├── base.py                        # AttackBase + AttackConfig，定义恶意客户端选择接口
-│   │   ├── badnets.py                     # 像素级贴片触发器（正方形白块）
-│   │   ├── wanet.py                       # 弹性扭曲 + 噪声，隐形后门
-│   │   ├── frequency.py                   # 频域攻击（FFT/DCT），篡改高频/低频分量
-│   │   ├── dba.py                         # 分布式后门攻击（DBA），将全局触发器拆分为多个局部子模式，由不同恶意客户端协同注入
-│   │   ├── fcba.py                        # 全组合后门攻击（FCBA），生成 2^m-2 种局部触发器组合，每个恶意客户端使用唯一组合
-│   │   └── selection.py                   # 恶意客户端选择（random / fixed），支持 round‑level 确定性采样
-│   │
-│   ├── defenses/                          # 防御系统（核心）
-│   │   ├── base.py                        # DefenseBase + DefenseConfig，聚合防御基类
-│   │   ├── __init__.py                    # build_defense_pipeline() 工厂入口
-│   │   ├── pipeline.py                    # DefensePipelineFedAvg，统一调度：client 防御 → detection → 聚合防御
-│   │   │
-│   │   ├── client/                        # 客户端防御（数据层预处理）
-│   │   │   ├── base.py                    # ClientDefenseBase
-│   │   │   ├── feature_filter.py          # 基于特征激活值的样本过滤（可疑样本剔除）
-│   │   │   └── __init__.py                # build_client_defense()
-│   │   │
-│   │   └── server/                        # 服务端防御
-│   │       ├── aggregation/               # 聚合层防御（拜占庭鲁棒聚合）
-│   │       │   ├── norm_clipping.py       # 梯度裁剪：限制单个 client 更新范数
-│   │       │   ├── trimmed_mean.py        # 修剪平均：去掉最大/最小更新后平均
-│   │       │   ├── krum.py                # Krum：选择距离其他更新最近的 k 个更新
-│   │       │   └── __init__.py
-│   │       │
-│   │       └── detection/                 # 检测层（聚合前过滤恶意更新）
-│   │           ├── base.py                # DetectionBase + DetectionReport
-│   │           ├── anomaly_detection.py   # 基于 z‑score 的范数异常检测
-│   │           ├── cosine_detection.py    # 余弦相似度检测（方向异常）
-│   │           ├── score_detection.py     # 百分位数阈值过滤
-│   │           ├── clustering_detection.py # K‑means 聚类 + 轮廓系数自动分组
-│   │           ├── features.py            # 特征提取（范数、余弦、z‑score、deltas）
-│   │           └── __init__.py            # build_detection()
-│   │
-│   ├── dataset/                           # 数据集抽象层（支持多数据集切换）
-│   │   ├── __init__.py                    # get_dataset() 工厂，注册所有支持的数据集
-│   │   ├── base.py                        # BaseDataset 抽象基类，定义 load_partition / load_centralized_test
-│   │   ├── config.py                      # DatasetMeta 数据类，描述数据集元信息（shape、类别数、均值/方差等）
-│   │   ├── cifar10.py                     # CIFAR-10 实现（基于 HuggingFace）
-│   │   └── mnist.py                       # MNIST 实现（基于 torchvision，支持离线缓存）
-│   │
-│   ├── client/
-│   │   ├── __init__.py
-│   │   └── client.py                      # Flower ClientApp，执行本地训练 + 攻击注入 + 客户端防御
-│   │
-│   ├── server/
-│   │   ├── __init__.py
-│   │   └── server.py                      # Flower ServerApp，初始化攻击 + 防御 pipeline + 全局评估（ACC/ASR）
-│   │
-│   ├── utils/
-│   │   ├── __init__.py
-│   │   ├── logger.py                      # CSVLogger：记录主实验指标 + 检测指标 + 客户端级指标
-│   │   └── plot.py                        # 绘图脚本：自动生成 ACC/ASR、检测率、混淆矩阵、客户端分布图、多实验对比图
-│   │
-│   ├── __init__.py
-│   ├── config.py                          # 统一配置层（ExperimentConfig），从 run_config 解析所有参数，并提供校验与参数字典
-│   └── task.py                            # 模型定义（Net，自适应输入形状）、数据加载、训练/测试函数
-│
-├── scripts/                               # 辅助脚本（批量实验、结果汇总）
-│   ├── batch_runner.py                    # 批量运行实验（自动修改 pyproject.toml，串行执行）
-│   └── summarize_results.py               # 汇总所有实验结果，生成 summary.csv 和 LaTeX 表格
-│
-├── results/                               # 实验输出目录（自动生成）
-│   ├── <experiment_name>/                 # 每个实验一个子目录
-│   │   ├── *_acc.png                      # 准确率曲线
-│   │   ├── *_asr.png                      # 后门攻击成功率曲线
-│   │   ├── *_detection_rates.png          # Precision / Recall / FPR 曲线（论文核心）
-│   │   ├── *_detection_confusion.png      # TP / FP / FN / TN 混淆矩阵计数
-│   │   ├── *_suspicious_vs_malicious.png  # 检测出的可疑数 vs 真实恶意数
-│   │   ├── *_score_*.png                  # 客户端异常分数相关图
-│   │   └── *.csv                          # 原始日志
-│   ├── comparison_accuracy.png            # 多实验 ACC 曲线叠加对比
-│   ├── comparison_asr.png                 # 多实验 ASR 曲线叠加对比
-│   ├── summary_acc_vs_asr.png             # 最终 ACC vs ASR 散点图（防御有效性）
-│   ├── summary_detection_metrics.png      # 检测器性能柱状图（Precision/Recall/FPR/AUC）
-│   ├── summary.csv                        # 汇总表格（CSV）
-│   └── summary_table.tex                  # 汇总表格（LaTeX，可直接用于论文）
-│
-├── pyproject.toml                         # 项目配置 + 实验参数（攻击/防御类型、联邦学习超参数、数据集、客户端总数等）
-├── final_model.pt                         # 训练完成的全局模型
-├── .gitignore
-├── LICENSE
-└── README.md
-
-```
 
 ## 安装依赖和运行项目
 
 参考 [flower 官网](https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html)。
 
+### 前置准备
 ```bash
 # 1. 克隆项目
 git clone https://github.com/JayJoneCoder/fl-backdoor-system.git
@@ -151,11 +65,39 @@ pip install -e .   # 如果在上一步没有安装 pytorch，这一步会安装
 # 安装 flower
 pip install "flwr[simulation]"
 
-# 6. 运行并输出日志
-flwr run . --stream
+# 6. 启动后端 API 服务
+cd backend
+uvicorn main:app --reload --port 8000
 
 # 我未来可能会加个 setup_env.py 一类的脚本，实现检测 cuda，安装 torch 一类的功能。
 ```
+
+### 图形界面前端（React 可视化界面）
+
+前端基于 Node.js 开发，需要提前安装 [Node.js](https://nodejs.org/zh-cn/download) (推荐 18+ 或 20+ LTS)。
+
+```bash
+# 1. 进入前端目录
+cd frontend
+
+# 2. 安装依赖（首次运行）
+npm install
+
+# 3. 启动开发服务器
+npm run dev
+```
+前端启动后，访问 http://localhost:5173 即可使用 Web 界面。确保后端服务已启动，否则配置加载会失败。
+
+### 仅运行联邦学习实验（命令行）
+
+```bash
+# 运行单次实验（日志输出到终端）
+flwr run . --stream
+
+# 批量实验
+python scripts/batch_runner.py --config my_experiments.json
+```
+
 
 ## 批量实验与结果汇总
 ### 批量运行多个实验
@@ -193,8 +135,9 @@ results/summary_table.tex # LaTeX 表格代码，可直接粘贴到论文中
 
 ## 画图
 
-系统会将日志信息存储在 `fl-backdoor-system/results` 下。
-用此命令画图：
+系统会将日志信息存储在 `fl-backdoor-system/results` 下，可以使用前端已有的图形化界面画图。
+
+在命令行界面中，用此命令画图：
 ```bash
 # 单个/多个 CSV 文件
 python plot.py results/baseline.csv results/badnets.csv
@@ -260,5 +203,116 @@ summary_aggregation_metrics.png       # 聚合性能条形图（恶意/良性移
 summary_detection_metrics.png         # 检测器性能柱状图（仅对有检测的实验）
 ```
 
+## 当前项目架构：
+```shell
+fl-backdoor-system/
+├── backend/                               # FastAPI 后端服务
+│   ├── main.py                            # API 入口，WebSocket 日志推送
+│   ├── config_manager.py                  # 读写 pyproject.toml，提供前端表单 schema
+│   ├── experiment_runner.py               # 管理 flwr run 子进程
+│   └── results_scanner.py                 # 扫描实验结果，提取指标
+├── frontend/                              # 🆕 React 前端界面
+│   ├── src/
+│   │   ├── api/client.ts                  # Axios 封装
+│   │   ├── components/
+│   │   │   ├── ConfigForm/                # 动态配置表单
+│   │   │   ├── ExperimentControl/         # 启动/停止 + 实时日志
+│   │   │   └── ExperimentHistory/         # 历史实验卡片与详情
+│   │   ├── pages/
+│   │   │   ├── ConfigPage.tsx
+│   │   │   ├── HistoryPage.tsx
+│   │   │   └── BatchPage.tsx
+│   │   └── App.tsx
+│   ├── package.json
+│   └── vite.config.ts
+├── fl_backdoor/                           # 核心源码
+│   ├── attacks/                           # 后门攻击实现（BadNets / WaNet / Frequency / DBA / FCBA）
+│   │   ├── __init__.py                    # build_attack() 工厂，支持 attack="none"
+│   │   ├── base.py                        # AttackBase + AttackConfig，定义恶意客户端选择接口
+│   │   ├── badnets.py                     # 像素级贴片触发器（正方形白块）
+│   │   ├── wanet.py                       # 弹性扭曲 + 噪声，隐形后门
+│   │   ├── frequency.py                   # 频域攻击（FFT/DCT），篡改高频/低频分量
+│   │   ├── dba.py                         # 分布式后门攻击（DBA），将全局触发器拆分为多个局部子模式，由不同恶意客户端协同注入
+│   │   ├── fcba.py                        # 全组合后门攻击（FCBA），生成 2^m-2 种局部触发器组合，每个恶意客户端使用唯一组合
+│   │   └── selection.py                   # 恶意客户端选择（random / fixed），支持 round‑level 确定性采样
+│   │
+│   ├── defenses/                          # 防御系统（核心）
+│   │   ├── base.py                        # DefenseBase + DefenseConfig，聚合防御基类
+│   │   ├── __init__.py                    # build_defense_pipeline() 工厂入口
+│   │   ├── pipeline.py                    # DefensePipelineFedAvg，统一调度：client 防御 → detection → 聚合防御
+│   │   │
+│   │   ├── client/                        # 客户端防御（数据层预处理）
+│   │   │   ├── base.py                    # ClientDefenseBase
+│   │   │   ├── feature_filter.py          # 基于特征激活值的样本过滤（可疑样本剔除）
+│   │   │   └── __init__.py                # build_client_defense()
+│   │   │
+│   │   └── server/                        # 服务端防御
+│   │       ├── aggregation/               # 聚合层防御（拜占庭鲁棒聚合）
+│   │       │   ├── norm_clipping.py       # 梯度裁剪：限制单个 client 更新范数
+│   │       │   ├── trimmed_mean.py        # 修剪平均：去掉最大/最小更新后平均
+│   │       │   ├── krum.py                # Krum：选择距离其他更新最近的 k 个更新
+│   │       │   └── __init__.py
+│   │       │
+│   │       └── detection/                 # 检测层（聚合前过滤恶意更新）
+│   │           ├── base.py                # DetectionBase + DetectionReport
+│   │           ├── anomaly_detection.py   # 基于 z‑score 的范数异常检测
+│   │           ├── cosine_detection.py    # 余弦相似度检测（方向异常）
+│   │           ├── score_detection.py     # 百分位数阈值过滤
+│   │           ├── clustering_detection.py # K‑means 聚类 + 轮廓系数自动分组
+│   │           ├── features.py            # 特征提取（范数、余弦、z‑score、deltas）
+│   │           └── __init__.py            # build_detection()
+│   │
+│   ├── dataset/                           # 数据集抽象层（支持多数据集切换）
+│   │   ├── __init__.py                    # get_dataset() 工厂，注册所有支持的数据集
+│   │   ├── base.py                        # BaseDataset 抽象基类，定义 load_partition / load_centralized_test
+│   │   ├── config.py                      # DatasetMeta 数据类，描述数据集元信息（shape、类别数、均值/方差等）
+│   │   ├── cifar10.py                     # CIFAR-10 实现（基于 HuggingFace）
+│   │   └── mnist.py                       # MNIST 实现（基于 torchvision，支持离线缓存）
+│   │
+│   ├── client/
+│   │   ├── __init__.py
+│   │   └── client.py                      # Flower ClientApp，执行本地训练 + 攻击注入 + 客户端防御
+│   │
+│   ├── server/
+│   │   ├── __init__.py
+│   │   └── server.py                      # Flower ServerApp，初始化攻击 + 防御 pipeline + 全局评估（ACC/ASR）
+│   │
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   └── logger.py                      # CSVLogger：记录主实验指标 + 检测指标 + 客户端级指标
+│   │
+│   ├── __init__.py
+│   ├── config.py                          # 统一配置层（ExperimentConfig），从 run_config 解析所有参数，并提供校验与参数字典
+│   └── task.py                            # 模型定义（Net，自适应输入形状）、数据加载、训练/测试函数
+│
+├── scripts/                               # 辅助脚本（批量实验、结果汇总）
+│   ├── batch_runner.py                    # 批量运行实验（自动修改 pyproject.toml，串行执行）
+│   ├── summarize_results.py               # 汇总所有实验结果，生成 summary.csv 和 LaTeX 表格
+│   └── plot.py                        # 绘图脚本：自动生成 ACC/ASR、检测率、混淆矩阵、客户端分布图、多实验对比图
+│
+├── results/                               # 实验输出目录（自动生成）
+│   ├── <experiment_name>/                 # 每个实验一个子目录
+│   │   ├── *_acc.png                      # 准确率曲线
+│   │   ├── *_asr.png                      # 后门攻击成功率曲线
+│   │   ├── *_detection_rates.png          # Precision / Recall / FPR 曲线（论文核心）
+│   │   ├── *_detection_confusion.png      # TP / FP / FN / TN 混淆矩阵计数
+│   │   ├── *_suspicious_vs_malicious.png  # 检测出的可疑数 vs 真实恶意数
+│   │   ├── *_score_*.png                  # 客户端异常分数相关图
+│   │   └── *.csv                          # 原始日志
+│   ├── comparison_accuracy.png            # 多实验 ACC 曲线叠加对比
+│   ├── comparison_asr.png                 # 多实验 ASR 曲线叠加对比
+│   ├── summary_acc_vs_asr.png             # 最终 ACC vs ASR 散点图（防御有效性）
+│   ├── summary_detection_metrics.png      # 检测器性能柱状图（Precision/Recall/FPR/AUC）
+│   ├── summary.csv                        # 汇总表格（CSV）
+│   └── summary_table.tex                  # 汇总表格（LaTeX，可直接用于论文）
+│
+├── pyproject.toml                         # 项目配置 + 实验参数（攻击/防御类型、联邦学习超参数、数据集、客户端总数等）
+├── final_model.pt                         # 训练完成的全局模型
+├── .gitignore
+├── LICENSE
+└── README.md
+
+```
+
 ## 许可证
-本项目采用 GPL-3.0 许可证，详见 [LICENSE](./LICENSE) 文件。
+本项目采用 GPL-3.0-or-later 许可证，详见 [LICENSE](./LICENSE) 文件。
