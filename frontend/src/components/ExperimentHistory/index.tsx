@@ -14,18 +14,24 @@ import {
   Statistic,
   Descriptions,
   Tooltip,
+  Dropdown,
 } from 'antd';
+import type { MenuProps } from 'antd';
 import {
   BarChartOutlined,
   DownloadOutlined,
   FileTextOutlined,
   ExperimentOutlined,
   AimOutlined,
+  FileImageOutlined,
+  FileZipOutlined,
 } from '@ant-design/icons';
 import {
   listExperiments,
   getExperimentDetail,
   generatePlots,
+  downloadExperimentImages,
+  downloadExperimentAllFiles,
 } from '../../api/client';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 
@@ -61,7 +67,7 @@ interface ExperimentSummary {
   fpr?: number;
   auc?: number;
   dataset?: string;
-  created?: string;   // 实验创建时间
+  created?: string;
 }
 
 const ExperimentHistory: React.FC = () => {
@@ -119,15 +125,128 @@ const ExperimentHistory: React.FC = () => {
     }
   };
 
-  const downloadFile = (url: string, filename: string) => {
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleDownloadZip = async (
+    fetchFn: () => Promise<any>,
+    defaultFilename: string,
+    onSuccess?: () => void
+  ) => {
+    try {
+      const res = await fetchFn();
+      const blob = new Blob([res.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = defaultFilename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      onSuccess?.();
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        message.error('文件不存在');
+      } else {
+        message.error('下载失败');
+      }
+    }
   };
 
+  const handleDownloadImages = async (exp: ExperimentSummary) => {
+    try {
+      await downloadExperimentImages(exp.name);
+      // 如果成功，直接下载
+      await handleDownloadZip(
+        () => downloadExperimentImages(exp.name),
+        `${exp.name}_images.zip`
+      );
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        Modal.confirm({
+          title: '该实验暂无图表',
+          content: '是否先生成图表？',
+          okText: '生成并下载',
+          cancelText: '取消',
+          onOk: async () => {
+            try {
+              await generatePlots(exp.name);
+              message.success('图表生成成功，开始下载');
+              await handleDownloadZip(
+                () => downloadExperimentImages(exp.name),
+                `${exp.name}_images.zip`
+              );
+            } catch (err) {
+              message.error('图表生成失败');
+            }
+          },
+        });
+      } else {
+        message.error('下载失败');
+      }
+    }
+  };
+
+  const getDownloadMenuItems = (exp: ExperimentSummary): MenuProps['items'] => [
+    {
+      key: 'main-csv',
+      label: '主日志 CSV',
+      icon: <FileTextOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        window.open(`http://localhost:8000/results/${exp.name}/${exp.name}.csv`);
+      },
+    },
+    {
+      key: 'clients-csv',
+      label: '客户端日志 CSV',
+      icon: <FileTextOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        window.open(`http://localhost:8000/results/${exp.name}/${exp.name}_clients.csv`);
+      },
+    },
+    {
+      key: 'metrics-csv',
+      label: 'Metrics 日志 CSV',
+      icon: <FileTextOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        window.open(`http://localhost:8000/results/${exp.name}/${exp.name}_metrics.csv`);
+      },
+    },
+    {
+      key: 'run-log',
+      label: '运行日志',
+      icon: <FileTextOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        window.open(`http://localhost:8000/results/${exp.name}/run.log`);
+      },
+    },
+    {
+      type: 'divider',
+    },
+    {
+      key: 'images-zip',
+      label: '下载图表 (ZIP)',
+      icon: <FileImageOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        handleDownloadImages(exp);
+      },
+    },
+    {
+      key: 'all-files-zip',
+      label: '下载全部文件 (ZIP)',
+      icon: <FileZipOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        handleDownloadZip(
+          () => downloadExperimentAllFiles(exp.name),
+          `${exp.name}_all_files.zip`
+        );
+      },
+    },
+  ];
   const columns = [
     { title: '指标', dataIndex: 'metric', key: 'metric' },
     {
@@ -145,6 +264,15 @@ const ExperimentHistory: React.FC = () => {
         .map(([key, value]) => ({ metric: key, value: String(value) }))
     : [];
 
+  const downloadFile = (url: string, filename: string) => {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <>
       <Card title="历史实验" extra={<Button onClick={loadExperiments}>刷新</Button>}>
@@ -158,22 +286,42 @@ const ExperimentHistory: React.FC = () => {
                   onClick={() => handleViewDetail(exp.name)}
                   actions={[
                     <Tooltip title="生成图表" key="plot">
-                      <BarChartOutlined onClick={(e) => { e.stopPropagation(); handleGeneratePlots(exp.name); }} />
+                      <BarChartOutlined
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleGeneratePlots(exp.name);
+                        }}
+                      />
                     </Tooltip>,
-                    <Tooltip title="下载 CSV" key="csv">
-                      <FileTextOutlined onClick={(e) => { e.stopPropagation(); window.open(`http://localhost:8000/results/${exp.name}/${exp.name}.csv`); }} />
+                    <Tooltip title="下载文件" key="download">
+                      <Dropdown
+                        menu={{ items: getDownloadMenuItems(exp) }}
+                        trigger={['click']}
+                      >
+                        <DownloadOutlined onClick={(e) => e.stopPropagation()} />
+                      </Dropdown>
                     </Tooltip>,
                   ]}
                 >
-                  {/* 新增：实验名称置顶 */}
-                  <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 8, wordBreak: 'break-word' }}>
+                  <div
+                    style={{
+                      fontSize: 16,
+                      fontWeight: 500,
+                      marginBottom: 8,
+                      wordBreak: 'break-word',
+                    }}
+                  >
                     {exp.name}
                   </div>
                   <Row gutter={8}>
                     <Col span={12}>
                       <Statistic
                         title="ACC"
-                        value={exp.accuracy !== null ? `${(exp.accuracy * 100).toFixed(2)}%` : 'N/A'}
+                        value={
+                          exp.accuracy !== null
+                            ? `${(exp.accuracy * 100).toFixed(2)}%`
+                            : 'N/A'
+                        }
                         prefix={<ExperimentOutlined />}
                         valueStyle={{ fontSize: 20 }}
                       />
@@ -181,7 +329,11 @@ const ExperimentHistory: React.FC = () => {
                     <Col span={12}>
                       <Statistic
                         title="ASR"
-                        value={exp.asr !== null ? `${(exp.asr * 100).toFixed(2)}%` : 'N/A'}
+                        value={
+                          exp.asr !== null
+                            ? `${(exp.asr * 100).toFixed(2)}%`
+                            : 'N/A'
+                        }
                         prefix={<AimOutlined />}
                         valueStyle={{ fontSize: 20 }}
                       />
@@ -190,7 +342,9 @@ const ExperimentHistory: React.FC = () => {
                   <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
                     <div>Loss: {exp.loss?.toFixed(4) || 'N/A'}</div>
                     <div>数据集: {exp.dataset || 'N/A'}</div>
-                    <div>AUC: {exp.auc?.toFixed(3) || 'N/A'} | 轮次: {exp.last_round}</div>
+                    <div>
+                      AUC: {exp.auc?.toFixed(3) || 'N/A'} | 轮次: {exp.last_round}
+                    </div>
                     {exp.created && <div>创建: {exp.created}</div>}
                   </div>
                 </Card>
@@ -214,7 +368,11 @@ const ExperimentHistory: React.FC = () => {
                 <Col span={12}>
                   <Statistic
                     title="准确率 (ACC)"
-                    value={detailData.metrics.accuracy != null ? `${(detailData.metrics.accuracy * 100).toFixed(2)}%` : 'N/A'}
+                    value={
+                      detailData.metrics.accuracy != null
+                        ? `${(detailData.metrics.accuracy * 100).toFixed(2)}%`
+                        : 'N/A'
+                    }
                     prefix={<ExperimentOutlined />}
                     valueStyle={{ fontSize: 32 }}
                   />
@@ -222,17 +380,29 @@ const ExperimentHistory: React.FC = () => {
                 <Col span={12}>
                   <Statistic
                     title="攻击成功率 (ASR)"
-                    value={detailData.metrics.asr != null ? `${(detailData.metrics.asr * 100).toFixed(2)}%` : 'N/A'}
+                    value={
+                      detailData.metrics.asr != null
+                        ? `${(detailData.metrics.asr * 100).toFixed(2)}%`
+                        : 'N/A'
+                    }
                     prefix={<AimOutlined />}
                     valueStyle={{ fontSize: 32 }}
                   />
                 </Col>
               </Row>
               <Descriptions size="small" column={4} style={{ marginBottom: 16 }}>
-                <Descriptions.Item label="Loss">{detailData.metrics.loss?.toFixed(4) || 'N/A'}</Descriptions.Item>
-                <Descriptions.Item label="数据集">{detailData.metrics.dataset || 'N/A'}</Descriptions.Item>
-                <Descriptions.Item label="最终轮次">{detailData.metrics.last_round}</Descriptions.Item>
-                <Descriptions.Item label="AUC">{detailData.metrics.auc?.toFixed(3) || 'N/A'}</Descriptions.Item>
+                <Descriptions.Item label="Loss">
+                  {detailData.metrics.loss?.toFixed(4) || 'N/A'}
+                </Descriptions.Item>
+                <Descriptions.Item label="数据集">
+                  {detailData.metrics.dataset || 'N/A'}
+                </Descriptions.Item>
+                <Descriptions.Item label="最终轮次">
+                  {detailData.metrics.last_round}
+                </Descriptions.Item>
+                <Descriptions.Item label="AUC">
+                  {detailData.metrics.auc?.toFixed(3) || 'N/A'}
+                </Descriptions.Item>
               </Descriptions>
 
               {detailData.metrics?.curve_data && (
@@ -240,19 +410,31 @@ const ExperimentHistory: React.FC = () => {
                   <h4>ACC / ASR 曲线</h4>
                   <ResponsiveContainer width="100%" height={300}>
                     <LineChart
-                      data={detailData.metrics.curve_data.round.map((r: number, i: number) => ({
-                        round: r,
-                        accuracy: detailData.metrics.curve_data.accuracy[i],
-                        asr: detailData.metrics.curve_data.asr[i],
-                      }))}
+                      data={detailData.metrics.curve_data.round.map(
+                        (r: number, i: number) => ({
+                          round: r,
+                          accuracy: detailData.metrics.curve_data.accuracy[i],
+                          asr: detailData.metrics.curve_data.asr[i],
+                        })
+                      )}
                     >
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="round" />
                       <YAxis />
                       <RechartsTooltip />
                       <Legend />
-                      <Line type="monotone" dataKey="accuracy" stroke="#8884d8" name="ACC" />
-                      <Line type="monotone" dataKey="asr" stroke="#82ca9d" name="ASR" />
+                      <Line
+                        type="monotone"
+                        dataKey="accuracy"
+                        stroke="#8884d8"
+                        name="ACC"
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="asr"
+                        stroke="#82ca9d"
+                        name="ASR"
+                      />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -277,7 +459,11 @@ const ExperimentHistory: React.FC = () => {
                 </Button>
                 <Button
                   icon={<FileTextOutlined />}
-                  onClick={() => window.open(`http://localhost:8000/results/${selectedExp}/${selectedExp}.csv`)}
+                  onClick={() =>
+                    window.open(
+                      `http://localhost:8000/results/${selectedExp}/${selectedExp}.csv`
+                    )
+                  }
                 >
                   下载 CSV
                 </Button>
@@ -298,7 +484,12 @@ const ExperimentHistory: React.FC = () => {
                               <Button
                                 size="small"
                                 icon={<DownloadOutlined />}
-                                onClick={() => downloadFile(`http://localhost:8000/results/${selectedExp}/${img}`, img)}
+                                onClick={() =>
+                                  downloadFile(
+                                    `http://localhost:8000/results/${selectedExp}/${img}`,
+                                    img
+                                  )
+                                }
                               />
                             }
                           >

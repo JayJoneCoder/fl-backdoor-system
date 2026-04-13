@@ -79,3 +79,11 @@ export const getSummaryImages = (summaryName: string) =>
 // 下载总结 ZIP 包
 export const downloadSummaryZip = (summaryName: string) =>
   apiClient.get(`/api/summaries/${summaryName}/download`, { responseType: 'blob' });
+
+// 下载实验所有图片 ZIP
+export const downloadExperimentImages = (expName: string) =>
+  apiClient.get(`/api/experiments/${expName}/images/download`, { responseType: 'blob' });
+
+// 下载实验全部文件 ZIP
+export const downloadExperimentAllFiles = (expName: string) =>
+  apiClient.get(`/api/experiments/${expName}/all/download`, { responseType: 'blob' });
