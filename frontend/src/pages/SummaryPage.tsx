@@ -13,7 +13,6 @@ import {
   Col,
   Spin,
   Divider,
-  Tooltip,
   Dropdown,
 } from 'antd';
 import type { MenuProps } from 'antd';

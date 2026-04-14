@@ -10,6 +10,10 @@ from typing import Any
 import tomli
 import tomli_w
 
+import re
+import os
+from datetime import datetime
+
 PROJECT_ROOT = Path(__file__).parent.parent
 TOML_PATH = PROJECT_ROOT / "pyproject.toml"
 BACKUP_PATH = PROJECT_ROOT / "pyproject.toml.bak"
@@ -627,3 +631,143 @@ def parse_batch_experiments(json_content: bytes) -> list[dict[str, Any]]:
         return merged
     else:
         raise ValueError("Invalid batch experiment JSON format")
+    
+
+# 匹配所有 .toml 文件，但排除主配置文件和 .bak 文件
+BACKUP_PATTERN = re.compile(r"^(.+)\.toml$")
+
+def list_backups() -> list[dict[str, Any]]:
+    """列出所有备份文件及其元信息"""
+    backups = []
+    for p in PROJECT_ROOT.glob("*.toml"):
+        # 排除主配置文件和旧式备份
+        if p.name == "pyproject.toml" or p.name == "pyproject.toml.bak":
+            continue
+        
+        match = BACKUP_PATTERN.match(p.name)
+        if not match:
+            continue
+        
+        name_part = match.group(1)
+        ts = None
+        # 尝试从文件名中提取时间戳（格式：YYYYMMDD_HHMMSS_fff 或末尾带括号的）
+        ts_match = re.search(r"(\d{8}_\d{6}_\d{3})", name_part)
+        if ts_match:
+            try:
+                ts = datetime.strptime(ts_match.group(1), "%Y%m%d_%H%M%S_%f")
+            except ValueError:
+                ts = datetime.fromtimestamp(p.stat().st_ctime)
+        else:
+            # 也可能是纯时间戳文件名（如 20260414_212523_224.toml）
+            ts_match2 = re.search(r"^(\d{8}_\d{6}_\d{3})$", name_part)
+            if ts_match2:
+                try:
+                    ts = datetime.strptime(ts_match2.group(1), "%Y%m%d_%H%M%S_%f")
+                except ValueError:
+                    ts = datetime.fromtimestamp(p.stat().st_ctime)
+            else:
+                ts = datetime.fromtimestamp(p.stat().st_ctime)
+        
+        backups.append({
+            "filename": p.name,
+            "timestamp": ts.isoformat(),
+            "size": p.stat().st_size,
+        })
+    
+    backups.sort(key=lambda x: x["timestamp"], reverse=True)
+    return backups
+
+def read_backup_content(filename: str) -> str:
+    """读取指定备份文件的内容"""
+    backup_path = PROJECT_ROOT / filename
+    if not backup_path.exists() or not BACKUP_PATTERN.match(filename):
+        raise FileNotFoundError(f"Backup file '{filename}' not found")
+    with open(backup_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def delete_backup(filename: str) -> None:
+    """删除指定的备份文件"""
+    backup_path = PROJECT_ROOT / filename
+    if not backup_path.exists() or not BACKUP_PATTERN.match(filename):
+        raise FileNotFoundError(f"Backup file '{filename}' not found")
+    backup_path.unlink()
+
+def restore_from_backup(filename: str, backup_current: bool = True, backup_name: str | None = None) -> None:
+    """从指定备份恢复配置，可选择是否先备份当前配置"""
+    backup_path = PROJECT_ROOT / filename
+    if not backup_path.exists():
+        raise FileNotFoundError(f"Backup file '{filename}' not found")
+    if backup_current:
+        create_backup(backup_name)   # 传递自定义名称
+    shutil.copy2(backup_path, TOML_PATH)
+
+def _generate_backup_filename(custom_name: str | None = None, auto_suffix: str | None = None) -> str:
+    """生成备份文件名，处理重名冲突"""
+    if custom_name:
+        safe_name = re.sub(r"[^\w\-_\.]", "_", custom_name)
+        # 确保扩展名为 .toml
+        if not safe_name.endswith('.toml'):
+            safe_name += '.toml'
+        filename = safe_name
+    else:
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        filename = f"{timestamp}.toml"
+
+    if auto_suffix:
+        base, ext = os.path.splitext(filename)
+        filename = f"{base}_{auto_suffix}{ext}"
+
+    return filename
+
+
+def _resolve_backup_path(filename: str, on_conflict: str = 'ask') -> Path | None:
+    """
+    解析备份路径，处理重名冲突。
+    on_conflict: 'ask' (返回 None 表示需询问), 'auto' (自动加后缀), 'overwrite' (直接覆盖)
+    返回 None 表示需要用户决策，否则返回最终路径。
+    """
+    path = PROJECT_ROOT / filename
+    if not path.exists():
+        return path
+
+    if on_conflict == 'overwrite':
+        return path
+    elif on_conflict == 'auto':
+        base, ext = os.path.splitext(filename)
+        counter = 1
+        while True:
+            new_filename = f"{base}({counter}){ext}"
+            new_path = PROJECT_ROOT / new_filename
+            if not new_path.exists():
+                return new_path
+            counter += 1
+    else:  # 'ask'
+        return None
+
+
+def create_backup(custom_name: str | None = None, on_conflict: str = 'ask') -> Path | None:
+    """
+    创建当前配置的备份。
+    返回备份路径，如果重名且 on_conflict='ask' 则返回 None。
+    """
+    filename = _generate_backup_filename(custom_name)
+    path = _resolve_backup_path(filename, on_conflict)
+    if path is None:
+        return None
+    shutil.copy2(TOML_PATH, path)
+    return path
+
+
+def create_backup_from_content(content: str, custom_name: str | None = None, on_conflict: str = 'ask') -> Path | None:
+    """
+    从给定内容创建备份文件。
+    返回备份路径，如果重名且 on_conflict='ask' 则返回 None。
+    """
+    filename = _generate_backup_filename(custom_name)
+    path = _resolve_backup_path(filename, on_conflict)
+    if path is None:
+        return None
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path

@@ -16,10 +16,23 @@ import {
   Modal,
   Upload,
   Alert,
+  Dropdown,
+  Table,
 } from 'antd';
-import { QuestionCircleOutlined, SettingOutlined, DownloadOutlined, UploadOutlined, SaveOutlined } from '@ant-design/icons';
+import {
+  QuestionCircleOutlined,
+  SettingOutlined,
+  DownloadOutlined,
+  UploadOutlined,
+  SaveOutlined,
+  HistoryOutlined,
+  DeleteOutlined,
+  EyeOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import { getConfigSchema, getConfig, updateConfig } from '../../api/client';
 import type { UploadFile } from 'antd/es/upload/interface';
+import type { MenuProps } from 'antd';
 
 interface FieldSchema {
   type: string;
@@ -121,6 +134,15 @@ const ConfigForm: React.FC = () => {
   const [uploadFileList, setUploadFileList] = useState<UploadFile[]>([]);
   const [advancedLoading, setAdvancedLoading] = useState(false);
 
+  // 备份管理相关
+  const [backupModalVisible, setBackupModalVisible] = useState(false);
+  const [backups, setBackups] = useState<any[]>([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [selectedBackup, setSelectedBackup] = useState<string | null>(null);
+  const [backupContent, setBackupContent] = useState('');
+  const [viewBackupModalVisible, setViewBackupModalVisible] = useState(false);
+  const [editingBackupContent, setEditingBackupContent] = useState('');
+
   // 加载 schema 和配置
   const loadConfig = async () => {
     try {
@@ -129,7 +151,7 @@ const ConfigForm: React.FC = () => {
         getConfig(),
       ]);
       setSchema(schemaRes.data.fields);
-      setGroups([...schemaRes.data.groups, 'other']); // 确保 other 分组存在
+      setGroups([...schemaRes.data.groups, 'other']);
       const newConfig = configRes.data;
       setCurrentConfig(newConfig);
       form.setFieldsValue(newConfig);
@@ -167,20 +189,153 @@ const ConfigForm: React.FC = () => {
     });
   };
 
-  const handleSaveToml = async () => {
+  const handleSaveToml = async (apply: boolean = true) => {
     setAdvancedLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/api/config/raw', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: tomlContent }),
-      });
-      if (!response.ok) throw new Error('保存失败');
-      message.success('配置已保存');
-      setAdvancedModalVisible(false);
-      await loadConfig();
+      if (apply) {
+        // 保存并应用：询问是否备份当前生效的配置
+        Modal.confirm({
+          title: '保存并应用配置',
+          content: (
+            <div>
+              <p>是否备份当前正在生效的配置？</p>
+              <Input
+                placeholder="可选：输入备份名称（留空则使用时间戳）"
+                id="backupNameInput"
+                style={{ marginTop: 8 }}
+              />
+            </div>
+          ),
+          okText: '保存应用并备份',
+          cancelText: '仅保存并应用',
+          onOk: async () => {
+            const input = document.getElementById('backupNameInput') as HTMLInputElement;
+            const customName = input?.value?.trim();
+            // 1. 写入 pyproject.toml（应用配置）
+            await fetch('http://localhost:8000/api/config/raw', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: tomlContent }),
+            });
+            // 2. 创建当前配置的备份
+            await fetch('http://localhost:8000/api/config/backups', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: customName || undefined }),
+            });
+            message.success('配置已保存并应用，备份已创建');
+            setAdvancedModalVisible(false);
+            await loadConfig();
+            loadBackups();
+          },
+          onCancel: async () => {
+            // 仅保存并应用，不备份
+            await fetch('http://localhost:8000/api/config/raw', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: tomlContent }),
+            });
+            message.success('配置已保存并应用');
+            setAdvancedModalVisible(false);
+            await loadConfig();
+          },
+          // 取消
+          footer: (_, { OkBtn, CancelBtn }) => (
+            <>
+              <Button onClick={() => Modal.destroyAll()}>取消</Button>
+              <CancelBtn />
+              <OkBtn />
+            </>
+          ),
+        });
+      } else {
+        // 仅创建备份：将编辑区内容保存为独立备份文件，不修改 pyproject.toml
+        Modal.confirm({
+          title: '创建配置草稿备份',
+          content: (
+            <div>
+              <p>将当前编辑器中的内容保存为备份文件，不会影响正在运行的配置。</p>
+              <Input
+                placeholder="可选：输入备份名称（留空则使用时间戳）"
+                id="backupNameInput"
+                style={{ marginTop: 8 }}
+              />
+            </div>
+          ),
+          okText: '创建备份',
+          cancelText: '取消',
+          onOk: async () => {
+            const input = document.getElementById('backupNameInput') as HTMLInputElement;
+            const customName = input?.value?.trim();
+            
+            const res = await fetch('http://localhost:8000/api/config/backups/content', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                content: tomlContent,
+                name: customName || undefined,
+                on_conflict: 'ask'
+              }),
+            });
+            
+            if (res.status === 409) {
+              // 重名冲突处理（可复用类似逻辑）
+              const filename = customName ? `${customName}.toml` : '默认名称';
+              Modal.confirm({
+                title: '文件已存在',
+                content: `备份文件 "${filename}" 已存在，请选择处理方式：`,
+                okText: '自动增加后缀',
+                cancelText: '覆盖',
+                onOk: async () => {
+                  // 重新请求，使用 auto 策略
+                  const retryRes = await fetch('http://localhost:8000/api/config/backups/content', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                      content: tomlContent,
+                      name: customName || undefined,
+                      on_conflict: 'auto'
+                    }),
+                  });
+                  const retryData = await retryRes.json();
+                  message.success(`备份已创建: ${retryData.filename}`);
+                  loadBackups();
+                },
+                onCancel: async () => {
+                  // 覆盖
+                  const retryRes = await fetch('http://localhost:8000/api/config/backups/content', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                      content: tomlContent,
+                      name: customName || undefined,
+                      on_conflict: 'overwrite'
+                    }),
+                  });
+                  const retryData = await retryRes.json();
+                  message.success(`备份已创建: ${retryData.filename}`);
+                  loadBackups();
+                },
+                footer: (_, { OkBtn, CancelBtn }) => (
+                  <>
+                    <Button onClick={() => Modal.destroyAll()}>取消</Button>
+                    <CancelBtn />
+                    <OkBtn />
+                  </>
+                ),
+              });
+              return;
+            }
+            
+            if (!res.ok) throw new Error('创建失败');
+            const data = await res.json();
+            message.success(`备份已创建: ${data.filename}`);
+            loadBackups();
+          },
+        });
+      }
     } catch (error) {
-      message.error('保存失败');
+      message.error('操作失败');
     } finally {
       setAdvancedLoading(false);
     }
@@ -196,13 +351,16 @@ const ConfigForm: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const handleImportToml = (file: File) => {
+  const proceedImport = (file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
-      setTomlContent(e.target?.result as string);
+      let content = e.target?.result as string;
+      // 标准化换行符
+      content = content.replace(/\r\n/g, '\n');
+      setTomlContent(content);
     };
     reader.readAsText(file);
-    return false; // 阻止自动上传
+    return false;
   };
 
   const isFieldVisible = (fieldName: string): boolean => {
@@ -258,7 +416,6 @@ const ConfigForm: React.FC = () => {
       style: { width: '100%' },
     };
 
-    // 未知 schema 的字段（来自 other 分组）统一渲染为输入框
     if (!fieldSchema) {
       return <Input {...commonProps} placeholder={FIELD_LABELS[fieldName] || fieldName} />;
     }
@@ -293,7 +450,6 @@ const ConfigForm: React.FC = () => {
     }
   };
 
-  // 专门渲染防御组的逻辑
   const renderDefenseGroup = (defenseFields: string[]) => {
     const mainFields = ['client-defense', 'detection', 'defense'];
     const mainFieldItems = defenseFields.filter(f => mainFields.includes(f));
@@ -400,17 +556,281 @@ const ConfigForm: React.FC = () => {
     );
   };
 
-  // 收集未定义在 schema 中的字段（用于 other 分组）
-const getUnknownFields = (): string[] => {
-  return Object.keys(currentConfig).filter(key => !schema[key]);
-};
+  const getUnknownFields = (): string[] => {
+    return Object.keys(currentConfig).filter(key => !schema[key]);
+  };
+
+  // -------------------- 备份管理功能 --------------------
+  const loadBackups = async () => {
+    setBackupLoading(true);
+    try {
+      const res = await fetch('http://localhost:8000/api/config/backups');
+      const data = await res.json();
+      setBackups(data.backups);
+    } catch (error) {
+      message.error('加载备份列表失败');
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const handleCreateBackup = async (customName?: string, onConflict: string = 'ask'): Promise<void> => {
+    try {
+      const res = await fetch('http://localhost:8000/api/config/backups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: customName, on_conflict: onConflict }),
+      });
+      
+      if (res.status === 409) {
+        // 重名冲突，弹窗询问
+        Modal.confirm({
+          title: '文件已存在',
+          content: `备份文件 "${customName || '默认名称'}" 已存在，请选择处理方式：`,
+          okText: '自动增加后缀',
+          cancelText: '覆盖',
+          onOk: async () => {
+            await handleCreateBackup(customName, 'auto');
+          },
+          onCancel: async () => {
+            await handleCreateBackup(customName, 'overwrite');
+          },
+          footer: (_, { OkBtn, CancelBtn }) => (
+            <>
+              <Button onClick={() => Modal.destroyAll()}>取消</Button>
+              <CancelBtn />
+              <OkBtn />
+            </>
+          ),
+        });
+        return;
+      }
+      
+      if (!res.ok) throw new Error('创建失败');
+      const data = await res.json();
+      message.success(`备份已创建: ${data.filename}`);
+      await loadBackups();
+    } catch (error) {
+      message.error('创建备份失败');
+      throw error;
+    }
+  };
+
+  const handleImportToml = (file: File) => {
+    Modal.confirm({
+      title: '导入配置',
+      content: '是否备份当前配置？',
+      okText: '备份并导入',
+      cancelText: '直接导入',
+      onOk: async () => {
+        try {
+          await handleCreateBackup();
+          proceedImport(file);
+        } catch (error) {
+          message.error('备份失败，取消导入');
+        }
+      },
+      onCancel: () => proceedImport(file),
+    });
+    return false;
+  };
+
+  const handleViewBackup = async (filename: string) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/config/backups/${filename}`);
+      const data = await res.json();
+      setSelectedBackup(filename);
+      setBackupContent(data.content);
+      setEditingBackupContent(data.content);
+      setViewBackupModalVisible(true);
+    } catch (error) {
+      message.error('读取备份失败');
+    }
+  };
+
+  const handleSaveBackupContent = async () => {
+    if (!selectedBackup) return;
+    try {
+      const response = await fetch(`http://localhost:8000/api/config/backups/${selectedBackup}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: editingBackupContent }),
+      });
+      if (!response.ok) throw new Error('保存失败');
+      message.success('备份已更新');
+      setViewBackupModalVisible(false);
+      loadBackups();
+    } catch (error) {
+      message.error('更新备份失败');
+    }
+  };
+
+  const handleRestoreBackup = async (filename: string) => {
+    let backupNameInput: string | undefined = undefined;
+
+    Modal.confirm({
+      title: '恢复配置',
+      content: (
+        <div>
+          <p>从备份 <strong>{filename}</strong> 恢复配置。</p>
+          <p>是否备份当前配置？</p>
+          <Input
+            placeholder="可选：输入备份名称（留空则使用时间戳）"
+            onChange={(e) => { backupNameInput = e.target.value; }}
+            style={{ marginTop: 8 }}
+          />
+        </div>
+      ),
+      okText: '恢复并备份',
+      cancelText: '仅恢复不备份',
+      onOk: async () => {
+        try {
+          const res = await fetch('http://localhost:8000/api/config/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename, backup_current: true, backup_name: backupNameInput || undefined }),
+          });
+          if (!res.ok) throw new Error('恢复失败');
+          message.success('配置已恢复，当前配置已备份');
+          await loadConfig();
+          loadBackups();
+        } catch (error) {
+          message.error('恢复失败');
+        }
+      },
+      onCancel: async () => {
+        try {
+          const res = await fetch('http://localhost:8000/api/config/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename, backup_current: false }),
+          });
+          if (!res.ok) throw new Error('恢复失败');
+          message.success('配置已恢复');
+          await loadConfig();
+          loadBackups();
+        } catch (error) {
+          message.error('恢复失败');
+        }
+      },
+      // 添加第三个按钮：取消
+      footer: (_, { OkBtn, CancelBtn }) => (
+        <>
+          <Button onClick={() => Modal.destroyAll()}>取消</Button>
+          <CancelBtn />
+          <OkBtn />
+        </>
+      ),
+    });
+  };
+
+  const handleDeleteBackup = async (filename: string) => {
+    Modal.confirm({
+      title: '确认删除',
+      content: `确定要删除备份 ${filename} 吗？`,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await fetch(`http://localhost:8000/api/config/backups/${filename}`, { method: 'DELETE' });
+          message.success('备份已删除');
+          loadBackups();
+        } catch (error) {
+          message.error('删除失败');
+        }
+      },
+    });
+  };
+
+  const resetMenuItems: MenuProps['items'] = [
+    {
+      key: 'form',
+      label: '撤销未保存的更改',
+      onClick: () => form.resetFields(),
+    },
+    {
+      key: 'last',
+      label: '恢复到上次备份 (.bak)',
+      onClick: () => {
+        const filename = 'pyproject.toml.bak';
+        let backupNameInput: string | undefined = undefined;
+
+        Modal.confirm({
+          title: '恢复配置',
+          content: (
+            <div>
+              <p>从备份 <strong>{filename}</strong> 恢复配置。</p>
+              <p>是否备份当前配置？</p>
+              <Input
+                placeholder="可选：输入备份名称（留空则使用时间戳）"
+                onChange={(e) => { backupNameInput = e.target.value; }}
+                style={{ marginTop: 8 }}
+              />
+            </div>
+          ),
+          okText: '恢复并备份',
+          cancelText: '仅恢复不备份',
+          onOk: async () => {
+            try {
+              const res = await fetch('http://localhost:8000/api/config/restore', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename, backup_current: true, backup_name: backupNameInput || undefined }),
+              });
+              if (!res.ok) throw new Error('恢复失败');
+              message.success('配置已恢复，当前配置已备份');
+              await loadConfig();
+              loadBackups();
+            } catch (error) {
+              message.error('恢复失败');
+            }
+          },
+          onCancel: async () => {
+            try {
+              const res = await fetch('http://localhost:8000/api/config/restore', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename, backup_current: false }),
+              });
+              if (!res.ok) throw new Error('恢复失败');
+              message.success('配置已恢复');
+              await loadConfig();
+              loadBackups();
+            } catch (error) {
+              message.error('恢复失败');
+            }
+          },
+          footer: (_, { OkBtn, CancelBtn }) => (
+            <>
+              <Button onClick={() => Modal.destroyAll()}>取消</Button>
+              <CancelBtn />
+              <OkBtn />
+            </>
+          ),
+        });
+      },
+    },
+    {
+      key: 'backup',
+      label: '从备份列表恢复...',
+      onClick: () => {
+        setBackupModalVisible(true);
+        loadBackups();
+      },
+    },
+  ];
 
   return (
     <>
       <div style={{ marginBottom: 16, textAlign: 'right' }}>
-        <Button icon={<SettingOutlined />} onClick={handleOpenAdvanced}>
-          高级模式
-        </Button>
+        <Space>
+          <Button icon={<HistoryOutlined />} onClick={() => { setBackupModalVisible(true); loadBackups(); }}>
+            备份管理
+          </Button>
+          <Button icon={<SettingOutlined />} onClick={handleOpenAdvanced}>
+            高级模式
+          </Button>
+        </Space>
       </div>
       <Form
         form={form}
@@ -422,7 +842,6 @@ const getUnknownFields = (): string[] => {
         initialValues={currentConfig}
       >
         {groups.map((group) => {
-          // 处理 other 分组：只展示未知字段
           if (group === 'other') {
             const unknownFields = getUnknownFields();
             if (unknownFields.length === 0) return null;
@@ -490,17 +909,21 @@ const getUnknownFields = (): string[] => {
         })}
         <Form.Item>
           <Space>
-            <Button type="primary" htmlType="submit" loading={loading}>
-              保存配置
-            </Button>
-            <Button onClick={() => form.resetFields()}>重置</Button>
+            <Tooltip title="保存当前用户设置的配置，并生成 .bak 备份供用户恢复">
+              <Button type="primary" htmlType="submit" loading={loading}>
+                保存配置
+              </Button>
+            </Tooltip>
+            <Dropdown menu={{ items: resetMenuItems }}>
+              <Button>重置 ▼</Button>
+            </Dropdown>
           </Space>
         </Form.Item>
       </Form>
 
       {/* 高级模式弹窗 */}
       <Modal
-        title="高级配置（直接编辑 pyproject.toml）"
+        title="高级配置模式（直接编辑 pyproject.toml）"
         open={advancedModalVisible}
         onCancel={() => setAdvancedModalVisible(false)}
         width={900}
@@ -521,14 +944,26 @@ const getUnknownFields = (): string[] => {
           <Button key="cancel" onClick={() => setAdvancedModalVisible(false)}>
             取消
           </Button>,
-          <Button key="save" type="primary" icon={<SaveOutlined />} loading={advancedLoading} onClick={handleSaveToml}>
-            保存并应用
+          <Button
+            key="backup-only"
+            onClick={() => handleSaveToml(false)}
+          >
+            仅创建备份
+          </Button>,
+          <Button
+            key="save"
+            type="primary"
+            icon={<SaveOutlined />}
+            loading={advancedLoading}
+            onClick={() => handleSaveToml(true)}
+          >
+            保存并应用...
           </Button>,
         ]}
       >
         <Alert
           message="警告"
-          description="直接编辑配置文件可能导致系统无法正常运行。请确保您熟悉 TOML 语法和配置项含义。"
+          description="直接编辑配置文件可能导致系统无法正常运行。请确保您熟悉 TOML 语法和配置项含义。强烈建议仅更改[tool.flwr.app.config]下的字段的值，避免修改其他部分。"
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
@@ -539,6 +974,85 @@ const getUnknownFields = (): string[] => {
           rows={20}
           style={{ fontFamily: 'monospace' }}
           placeholder="加载中..."
+        />
+      </Modal>
+
+      {/* 备份管理弹窗 */}
+      <Modal
+        title="配置备份管理"
+        open={backupModalVisible}
+        onCancel={() => setBackupModalVisible(false)}
+        footer={[
+          <Button key="refresh" onClick={loadBackups}>刷新</Button>,
+          <Button
+            key="new"
+            type="primary"
+            onClick={() => {
+              Modal.confirm({
+                title: '新建备份',
+                content: (
+                  <Input
+                    placeholder="可选：输入备份名称"
+                    id="backupNameInput"
+                  />
+                ),
+                onOk: () => {
+                  const input = document.getElementById('backupNameInput') as HTMLInputElement;
+                  handleCreateBackup(input?.value || undefined);
+                },
+              });
+            }}
+          >
+            立即备份当前配置
+          </Button>,
+          <Button key="close" onClick={() => setBackupModalVisible(false)}>关闭</Button>,
+        ]}
+        width={900}
+      >
+        <Table
+          loading={backupLoading}
+          dataSource={backups}
+          rowKey="filename"
+          columns={[
+            { title: '文件名', dataIndex: 'filename', key: 'filename' },
+            { title: '创建时间', dataIndex: 'timestamp', key: 'timestamp', render: (v) => new Date(v).toLocaleString() },
+            { title: '大小', dataIndex: 'size', key: 'size', render: (v) => `${(v / 1024).toFixed(1)} KB` },
+            {
+              title: '操作',
+              key: 'action',
+              render: (_, record) => (
+                <Space>
+                  <Button size="small" icon={<EyeOutlined />} onClick={() => handleViewBackup(record.filename)}>查看</Button>
+                  <Button size="small" icon={<ReloadOutlined />} onClick={() => handleRestoreBackup(record.filename)}>恢复</Button>
+                  <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDeleteBackup(record.filename)}>删除</Button>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Modal>
+
+      {/* 查看/编辑备份内容弹窗 */}
+      <Modal
+        title={`查看备份: ${selectedBackup}`}
+        open={viewBackupModalVisible}
+        onCancel={() => setViewBackupModalVisible(false)}
+        footer={[
+          <Button key="restore" type="primary" onClick={() => { handleRestoreBackup(selectedBackup!); setViewBackupModalVisible(false); }}>
+            恢复此备份
+          </Button>,
+          <Button key="save" onClick={handleSaveBackupContent}>
+            保存修改
+          </Button>,
+          <Button key="close" onClick={() => setViewBackupModalVisible(false)}>关闭</Button>,
+        ]}
+        width={900}
+      >
+        <Input.TextArea
+          value={editingBackupContent}
+          onChange={(e) => setEditingBackupContent(e.target.value)}
+          rows={20}
+          style={{ fontFamily: 'monospace' }}
         />
       </Modal>
     </>

@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Any
 import zipfile
 import io
+import re
 import pandas as pd
 
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from watchfiles import awatch
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 
 
 # Add project root to sys.path for importing fl_backdoor modules
@@ -154,6 +155,7 @@ async def get_current_config():
 async def update_current_config(updates: dict[str, Any]):
     """Update configuration in pyproject.toml."""
     try:
+        config_manager.backup_config()
         config_manager.update_config(updates)
         return {"status": "success"}
     except Exception as e:
@@ -167,9 +169,11 @@ async def upload_config_file(file: UploadFile):
         raise HTTPException(400, "Only .toml files are accepted")
     try:
         content = await file.read()
+        # 将 Windows 换行符 \r\n 统一转换为 \n
+        text_content = content.decode('utf-8').replace('\r\n', '\n')
         config_manager.backup_config()
-        with open(config_manager.TOML_PATH, "wb") as f:
-            f.write(content)
+        with open(config_manager.TOML_PATH, "w", encoding='utf-8', newline='') as f:
+            f.write(text_content)
         return {"status": "success", "message": "Configuration uploaded"}
     except Exception as e:
         config_manager.restore_config()
@@ -490,17 +494,102 @@ async def get_raw_config():
 
 @app.post("/api/config/raw")
 async def update_raw_config(data: dict[str, str]):
-    """用原始文本覆盖 pyproject.toml"""
+    """用原始文本覆盖 pyproject.toml（不自动备份，备份由前端显式触发）"""
     content = data.get("content")
     if content is None:
         raise HTTPException(400, "Missing 'content' field")
     try:
-        config_manager.backup_config()
-        with open(config_manager.TOML_PATH, "w", encoding="utf-8") as f:
+        # 统一换行符
+        content = content.replace('\r\n', '\n')
+        with open(config_manager.TOML_PATH, "w", encoding="utf-8", newline='') as f:
             f.write(content)
         return {"status": "success"}
     except Exception as e:
-        config_manager.restore_config()
+        raise HTTPException(500, str(e))
+    
+@app.get("/api/config/backups")
+async def list_backup_files():
+    """列出所有备份文件"""
+    try:
+        backups = config_manager.list_backups()
+        return {"backups": backups}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/api/config/backups")
+async def create_backup_file(data: dict[str, Any] | None = None):
+    """创建一份新备份，可选自定义名称和冲突处理策略"""
+    custom_name = data.get("name") if data else None
+    on_conflict = data.get("on_conflict", "ask") if data else "ask"
+    
+    try:
+        backup_path = config_manager.create_backup(custom_name, on_conflict)
+        if backup_path is None:
+            # 重名冲突，返回特殊状态码让前端处理
+            return JSONResponse(
+                status_code=409,
+                content={"status": "conflict", "message": "文件已存在"}
+            )
+        return {"status": "success", "filename": backup_path.name}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/api/config/backups/{filename}")
+async def get_backup_content(filename: str):
+    """获取指定备份文件的内容"""
+    try:
+        content = config_manager.read_backup_content(filename)
+        return {"content": content}
+    except FileNotFoundError:
+        raise HTTPException(404, "Backup not found")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.delete("/api/config/backups/{filename}")
+async def delete_backup_file(filename: str):
+    """删除指定备份文件"""
+    try:
+        config_manager.delete_backup(filename)
+        return {"status": "success"}
+    except FileNotFoundError:
+        raise HTTPException(404, "Backup not found")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/api/config/restore")
+async def restore_config_from_backup(data: dict[str, Any]):
+    """从指定备份恢复配置"""
+    filename = data.get("filename")
+    if not filename:
+        raise HTTPException(400, "Missing filename")
+    backup_current = data.get("backup_current", True)
+    backup_name = data.get("backup_name")
+    try:
+        config_manager.restore_from_backup(filename, backup_current, backup_name)
+        return {"status": "success"}
+    except FileNotFoundError:
+        raise HTTPException(404, "Backup not found")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    
+@app.post("/api/config/backups/content")
+async def create_backup_from_content(data: dict[str, Any]):
+    """将指定内容保存为备份文件（不修改 pyproject.toml）"""
+    content = data.get("content")
+    if content is None:
+        raise HTTPException(400, "Missing 'content' field")
+    custom_name = data.get("name")
+    on_conflict = data.get("on_conflict", "ask")
+    
+    try:
+        backup_path = config_manager.create_backup_from_content(content, custom_name, on_conflict)
+        if backup_path is None:
+            return JSONResponse(
+                status_code=409,
+                content={"status": "conflict", "message": "文件已存在"}
+            )
+        return {"status": "success", "filename": backup_path.name}
+    except Exception as e:
         raise HTTPException(500, str(e))
 
 # ------------------------------
