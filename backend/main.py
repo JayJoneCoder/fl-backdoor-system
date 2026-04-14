@@ -29,6 +29,7 @@ from backend.experiment_runner import ExperimentRunner
 from backend.results_scanner import (
     get_experiment_detail,
     list_experiments,
+    get_summary_detail,
 )
 
 # ------------------------------
@@ -140,11 +141,13 @@ async def get_config_schema():
     """Return configuration schema for frontend form generation."""
     return config_manager.get_config_schema()
 
-
 @app.get("/api/config")
 async def get_current_config():
     """Return current configuration (including UI computed fields)."""
-    return config_manager.get_ui_config()
+    try:
+        return config_manager.get_ui_config()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/config")
@@ -463,6 +466,42 @@ async def download_experiment_all_files(exp_name: str):
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename={exp_name}_all_files.zip"}
     )
+
+@app.get("/api/summaries/{summary_name}")
+async def get_summary_detail_endpoint(summary_name: str):
+    """获取单个总结的详细数据"""
+    summary_dir = RESULTS_DIR / "summaries" / summary_name
+    if not summary_dir.exists():
+        raise HTTPException(404, "Summary not found")
+    detail = get_summary_detail(summary_dir)
+    if detail is None:
+        raise HTTPException(404, "Invalid summary data")
+    return detail
+
+@app.get("/api/config/raw")
+async def get_raw_config():
+    """返回 pyproject.toml 的原始文本内容"""
+    try:
+        with open(config_manager.TOML_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"content": content}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/api/config/raw")
+async def update_raw_config(data: dict[str, str]):
+    """用原始文本覆盖 pyproject.toml"""
+    content = data.get("content")
+    if content is None:
+        raise HTTPException(400, "Missing 'content' field")
+    try:
+        config_manager.backup_config()
+        with open(config_manager.TOML_PATH, "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"status": "success"}
+    except Exception as e:
+        config_manager.restore_config()
+        raise HTTPException(500, str(e))
 
 # ------------------------------
 # Main entry point

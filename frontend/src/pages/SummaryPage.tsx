@@ -14,24 +14,27 @@ import {
   Spin,
   Divider,
   Tooltip,
+  Dropdown,
 } from 'antd';
+import type { MenuProps } from 'antd';
 import {
   FileTextOutlined,
   PlusOutlined,
   BarChartOutlined,
-  PictureOutlined,
   CodeOutlined,
   DownloadOutlined,
   FileZipOutlined,
+  FileImageOutlined,
 } from '@ant-design/icons';
 import {
   listExperiments,
   listSummaries,
   createSummary,
   generateSummaryPlots,
-  getSummaryImages,
   downloadSummaryZip,
+  getSummaryDetail,
 } from '../api/client';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 
 interface ExperimentItem {
   name: string;
@@ -52,10 +55,9 @@ const SummaryPage: React.FC = () => {
   const [summaryName, setSummaryName] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const [previewVisible, setPreviewVisible] = useState(false);
-  const [currentSummary, setCurrentSummary] = useState<string | null>(null);
-  const [images, setImages] = useState<string[]>([]);
-  const [imagesLoading, setImagesLoading] = useState(false);
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
+  const [detailData, setDetailData] = useState<any>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [plotGenerating, setPlotGenerating] = useState<string | null>(null);
 
   const loadData = async () => {
@@ -103,32 +105,15 @@ const SummaryPage: React.FC = () => {
     try {
       await generateSummaryPlots(summaryName);
       message.success('图表生成成功');
-      if (currentSummary === summaryName) {
-        fetchImages(summaryName);
+      if (detailData && detailData.name === summaryName) {
+        const res = await getSummaryDetail(summaryName);
+        setDetailData(res.data);
       }
     } catch (error) {
       message.error('图表生成失败');
     } finally {
       setPlotGenerating(null);
     }
-  };
-
-  const fetchImages = async (summaryName: string) => {
-    setImagesLoading(true);
-    try {
-      const res = await getSummaryImages(summaryName);
-      setImages(res.data.images);
-    } catch (error) {
-      message.error('加载图片失败');
-    } finally {
-      setImagesLoading(false);
-    }
-  };
-
-  const openImagePreview = (summaryName: string) => {
-    setCurrentSummary(summaryName);
-    setPreviewVisible(true);
-    fetchImages(summaryName);
   };
 
   const downloadFile = (url: string, filename: string) => {
@@ -158,61 +143,144 @@ const SummaryPage: React.FC = () => {
     }
   };
 
+  const handleDownloadImages = async (summary: SummaryItem) => {
+    try {
+      await downloadSummaryZip(summary.name);
+      await handleDownloadZip(summary.name);
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        Modal.confirm({
+          title: '该总结暂无图表',
+          content: '是否先生成图表？',
+          okText: '生成并下载',
+          cancelText: '取消',
+          onOk: async () => {
+            try {
+              await generateSummaryPlots(summary.name);
+              message.success('图表生成成功，开始下载');
+              await handleDownloadZip(summary.name);
+            } catch (err) {
+              message.error('图表生成失败');
+            }
+          },
+        });
+      } else {
+        message.error('下载失败');
+      }
+    }
+  };
+
+  const handleViewDetail = async (summaryName: string) => {
+    setDetailLoading(true);
+    setDetailModalVisible(true);
+    try {
+      const res = await getSummaryDetail(summaryName);
+      setDetailData(res.data);
+    } catch (error) {
+      message.error('加载详情失败');
+      setDetailModalVisible(false);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const getDownloadMenuItems = (record: SummaryItem): MenuProps['items'] => [
+    {
+      key: 'csv',
+      label: '总结 CSV',
+      icon: <FileTextOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        window.open(`http://localhost:8000/results/summaries/${record.name}/summary.csv`);
+      },
+    },
+    {
+      key: 'latex',
+      label: 'LaTeX 表格',
+      icon: <CodeOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        window.open(`http://localhost:8000/results/summaries/${record.name}/summary_table.tex`);
+      },
+    },
+    {
+      type: 'divider',
+    },
+    {
+      key: 'images-zip',
+      label: '下载图表 (ZIP)',
+      icon: <FileImageOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        handleDownloadImages(record);
+      },
+    },
+    {
+      key: 'all-zip',
+      label: '下载全部文件 (ZIP)',
+      icon: <FileZipOutlined />,
+      onClick: (e) => {
+        e.domEvent.stopPropagation();
+        handleDownloadZip(record.name);
+      },
+    },
+  ];
+
   const columns = [
-    { title: '总结名称', dataIndex: 'name', key: 'name', width: 180 },
+    { title: '总结名称', dataIndex: 'name', key: 'name', width: 200 },
     {
       title: '包含实验',
       dataIndex: 'experiments',
       key: 'experiments',
       render: (list: string[]) => list?.join(', ') || '',
     },
-    { title: '创建时间', dataIndex: 'created', key: 'created', width: 180 },
+    { title: '创建时间', dataIndex: 'created', key: 'created', width: 200 },
     {
       title: '操作',
       key: 'action',
-      width: 400,
+      width: 200,
       render: (_: any, record: SummaryItem) => (
         <Space wrap size="small">
           <Button
             size="small"
-            icon={<FileTextOutlined />}
-            onClick={() => window.open(`http://localhost:8000/results/summaries/${record.name}/summary.csv`)}
-          >
-            CSV
-          </Button>
-          <Button
-            size="small"
-            icon={<CodeOutlined />}
-            onClick={() => window.open(`http://localhost:8000/results/summaries/${record.name}/summary_table.tex`)}
-          >
-            LaTeX
-          </Button>
-          <Button
-            size="small"
             icon={<BarChartOutlined />}
-            onClick={() => handleGeneratePlots(record.name)}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleGeneratePlots(record.name);
+            }}
             loading={plotGenerating === record.name}
           >
             生成图表
           </Button>
-          <Button
-            size="small"
-            icon={<PictureOutlined />}
-            onClick={() => openImagePreview(record.name)}
-          >
-            查看
-          </Button>
-          <Button
-            size="small"
-            icon={<FileZipOutlined />}
-            onClick={() => handleDownloadZip(record.name)}
-          >
-            打包下载
-          </Button>
+          <Dropdown menu={{ items: getDownloadMenuItems(record) }} trigger={['click']}>
+            <Button size="small" icon={<DownloadOutlined />} onClick={(e) => e.stopPropagation()}>
+              下载
+            </Button>
+          </Dropdown>
         </Space>
       ),
     },
   ];
+
+  const prepareChartData = () => {
+    if (!detailData?.experiments_curve_data) return [];
+    const expNames = Object.keys(detailData.experiments_curve_data);
+    if (expNames.length === 0) return [];
+    const firstExp = expNames[0];
+    const rounds = detailData.experiments_curve_data[firstExp].round;
+    const data = rounds.map((r: number, idx: number) => {
+      const point: any = { round: r };
+      expNames.forEach((name) => {
+        point[`${name}_acc`] = detailData.experiments_curve_data[name].accuracy[idx];
+        point[`${name}_asr`] = detailData.experiments_curve_data[name].asr[idx];
+      });
+      return point;
+    });
+    return data;
+  };
+
+  const chartData = prepareChartData();
+  const expNames = detailData ? Object.keys(detailData.experiments_curve_data || {}) : [];
 
   return (
     <div style={{ width: '100%' }}>
@@ -230,6 +298,10 @@ const SummaryPage: React.FC = () => {
           rowKey="name"
           loading={loading}
           scroll={{ x: 1000 }}
+          onRow={(record) => ({
+            style: { cursor: 'pointer' },
+            onClick: () => handleViewDetail(record.name),
+          })}
         />
       </Card>
 
@@ -255,47 +327,100 @@ const SummaryPage: React.FC = () => {
       </Modal>
 
       <Modal
-        title={`总结图表 - ${currentSummary}`}
-        open={previewVisible}
-        onCancel={() => setPreviewVisible(false)}
+        title={`总结详情: ${detailData?.name}`}
+        open={detailModalVisible}
+        onCancel={() => setDetailModalVisible(false)}
         footer={null}
-        width={1100}
+        width={1200}
       >
-        <Spin spinning={imagesLoading}>
-          {images.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
-              暂无图表，请点击“生成图表”按钮
-            </div>
-          ) : (
+        <Spin spinning={detailLoading}>
+          {detailData && (
             <>
-              <Divider />
-              <Image.PreviewGroup>
-                <Row gutter={[16, 16]}>
-                  {images.map((img) => (
-                    <Col span={12} key={img}>
-                      <Card
-                        size="small"
-                        title={img}
-                        extra={
-                          <Tooltip title="下载图片">
-                            <Button
-                              size="small"
-                              icon={<DownloadOutlined />}
-                              onClick={() => downloadFile(`http://localhost:8000/results/summaries/${currentSummary}/${img}`, img)}
-                            />
-                          </Tooltip>
-                        }
-                      >
-                        <Image
-                          src={`http://localhost:8000/results/summaries/${currentSummary}/${img}`}
-                          alt={img}
-                          style={{ width: '100%', cursor: 'pointer' }}
+              {expNames.length > 0 && (
+                <>
+                  <h4>所有实验 ACC 曲线对比</h4>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="round" />
+                      <YAxis />
+                      <RechartsTooltip />
+                      <Legend />
+                      {expNames.map((name) => (
+                        <Line
+                          key={name}
+                          type="monotone"
+                          dataKey={`${name}_acc`}
+                          name={name}
+                          stroke={`#${Math.floor(Math.random() * 16777215).toString(16)}`}
                         />
-                      </Card>
-                    </Col>
-                  ))}
-                </Row>
-              </Image.PreviewGroup>
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+
+                  <h4 style={{ marginTop: 24 }}>所有实验 ASR 曲线对比</h4>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="round" />
+                      <YAxis />
+                      <RechartsTooltip />
+                      <Legend />
+                      {expNames.map((name) => (
+                        <Line
+                          key={name}
+                          type="monotone"
+                          dataKey={`${name}_asr`}
+                          name={name}
+                          stroke={`#${Math.floor(Math.random() * 16777215).toString(16)}`}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <Divider />
+                </>
+              )}
+
+              <h4>汇总表格</h4>
+              <Table
+                dataSource={detailData.summary_table}
+                columns={Object.keys(detailData.summary_table[0] || {}).map((k) => ({ title: k, dataIndex: k, key: k }))}
+                pagination={false}
+                size="small"
+                scroll={{ x: 1000 }}
+              />
+
+              {detailData.images && detailData.images.length > 0 && (
+                <>
+                  <Divider />
+                  <h4>生成图表</h4>
+                  <Image.PreviewGroup>
+                    <Row gutter={[16, 16]}>
+                      {detailData.images.map((img: string) => (
+                        <Col span={12} key={img}>
+                          <Card
+                            size="small"
+                            title={img}
+                            extra={
+                              <Button
+                                size="small"
+                                icon={<DownloadOutlined />}
+                                onClick={() => downloadFile(`http://localhost:8000/results/summaries/${detailData.name}/${img}`, img)}
+                              />
+                            }
+                          >
+                            <Image
+                              src={`http://localhost:8000/results/summaries/${detailData.name}/${img}`}
+                              alt={img}
+                              style={{ width: '100%', cursor: 'pointer' }}
+                            />
+                          </Card>
+                        </Col>
+                      ))}
+                    </Row>
+                  </Image.PreviewGroup>
+                </>
+              )}
             </>
           )}
         </Spin>

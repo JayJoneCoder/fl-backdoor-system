@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+import math
 
 # ----------------------------------------------------------------------
 # Helper functions (copied/adapted from summarize_results.py)
@@ -279,3 +280,58 @@ def get_experiment_detail(exp_dir: Path) -> Optional[dict[str, Any]]:
         "images": images,
         "csv_files": csv_files,
     }
+
+def _clean_for_json(obj):
+    """递归地将对象中的 NaN、Infinity 转换为 None，确保 JSON 兼容。"""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: _clean_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_clean_for_json(item) for item in obj]
+    else:
+        return obj
+
+def get_summary_detail(summary_dir: Path) -> Optional[dict[str, Any]]:
+    """Return detailed data for a summary: summary table, and curve data for all experiments."""
+    summary_csv = summary_dir / "summary.csv"
+    if not summary_csv.exists():
+        return None
+
+    df_summary = pd.read_csv(summary_csv)
+    if df_summary.empty:
+        return None
+
+    # 将 DataFrame 中的 NaN 替换为 None，以便 JSON 序列化
+    df_summary = df_summary.replace({np.nan: None})
+
+    # 收集每个实验的曲线数据
+    experiments_curve_data = {}
+    for exp_name in df_summary["experiment"]:
+        exp_dir = summary_dir.parent / exp_name
+        if exp_dir.exists():
+            main_csv = find_main_csv(exp_dir)
+            if main_csv:
+                df_main = pd.read_csv(main_csv)
+                if not df_main.empty and "round" in df_main.columns:
+                    # 提取曲线数据，并替换 NaN
+                    curve_data = df_main[["round", "accuracy", "asr", "loss"]].replace({np.nan: None}).to_dict(orient="list")
+                    experiments_curve_data[exp_name] = curve_data
+
+    # 汇总表格数据
+    summary_rows = df_summary.to_dict(orient="records")
+
+    # 图片列表
+    images = [f.name for f in summary_dir.glob("*.png")]
+
+    result = {
+        "name": summary_dir.name,
+        "summary_table": summary_rows,
+        "experiments_curve_data": experiments_curve_data,
+        "images": images,
+    }
+
+    # 最终再清理一次，确保万无一失
+    return _clean_for_json(result)

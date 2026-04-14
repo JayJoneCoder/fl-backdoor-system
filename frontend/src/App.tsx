@@ -26,7 +26,7 @@ const App: React.FC = () => {
     <Layout style={{ minHeight: '100vh', width: '100%' }}>
       <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
         <h1 style={{ color: 'white', margin: 0 }}>FL Backdoor Platform</h1>
-        <div style={{ color: 'white' }}>联邦学习后门攻防系统</div>
+        <div style={{ color: 'white' }}>联邦学习后门攻击防御系统</div>
       </Header>
       <Layout style={{ width: '100%' }}>
         <Sider width={200} style={{ background: '#fff' }}>
@@ -38,7 +38,7 @@ const App: React.FC = () => {
               { key: 'config', icon: <SettingOutlined />, label: '单个实验配置' },
               { key: 'batch', icon: <AppstoreOutlined />, label: '批量实验' },
               { key: 'history', icon: <HistoryOutlined />, label: '历史实验记录' },
-              { key: 'summary', icon: <FileTextOutlined />, label: '历史实验总结' },
+              { key: 'summary', icon: <FileTextOutlined />, label: '实验比较总结' },
             ]}
           />
         </Sider>
