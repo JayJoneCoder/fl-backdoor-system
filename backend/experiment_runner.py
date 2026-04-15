@@ -3,12 +3,16 @@ Experiment runner: manages subprocess for `flwr run`.
 """
 
 import asyncio
+import psutil
+import time
 import os
+import re
 import subprocess
 import tempfile
 import shutil
 from pathlib import Path
 from typing import Optional, Callable, Awaitable
+from backend import config_manager
 
 import tomli_w
 
@@ -26,7 +30,8 @@ class ExperimentRunner:
         self._status = "idle"
         self._stdout_task: Optional[asyncio.Task] = None
         self._on_log_line: Optional[Callable[[str], Awaitable[None]]] = None
-        self._temp_home: Optional[Path] = None   # 用于清理临时目录
+        self._temp_home: Optional[Path] = None
+        self.run_id: Optional[str] = None   # 保存当前运行的 run_id
 
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -42,8 +47,6 @@ class ExperimentRunner:
     ) -> None:
         if self.is_running():
             raise RuntimeError("An experiment is already running")
-
-        from backend import config_manager
 
         # 应用配置覆盖（不涉及 num-clients）
         if config_overrides:
@@ -62,8 +65,6 @@ class ExperimentRunner:
         # 保存配置快照到实验目录
         snapshot_path = exp_dir / "config_snapshot.toml"
         try:
-            import shutil
-            from backend import config_manager
             shutil.copy2(config_manager.TOML_PATH, snapshot_path)
             print(f"[Runner] Config snapshot saved to {snapshot_path}")
         except Exception as e:
@@ -102,6 +103,13 @@ class ExperimentRunner:
             for line in iter(self.process.stdout.readline, ""):
                 f.write(line)
                 f.flush()
+
+                if "Successfully started run" in line:
+                    match = re.search(r"run (\d+)", line)
+                    if match:
+                        self.run_id = match.group(1)
+                        print(f"[Runner] Captured run_id: {self.run_id}", flush=True)
+
                 if self._on_log_line:
                     try:
                         await self._on_log_line(line.rstrip())
@@ -113,33 +121,95 @@ class ExperimentRunner:
         self.process.stdout.close()
 
     async def stop(self) -> None:
-        if self.process and self.is_running():
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-        if self._stdout_task and not self._stdout_task.done():
-            self._stdout_task.cancel()
-            try:
-                await self._stdout_task
-            except asyncio.CancelledError:
-                pass
+        print("[Runner] >>> Stop method called <<<", flush=True)
 
+        # 立即更新状态，让前端知道已停止
+        self._status = "idle"
+
+        # 保存需要清理的数据
+        process = self.process
+        run_id = self.run_id
+        log_file = self.log_file
+        temp_home = self._temp_home
+
+        # 清理实例属性，避免重复操作
         self.process = None
         self.exp_name = None
         self.log_file = None
-        self._status = "idle"
+        self.run_id = None
+        self._temp_home = None
 
-        # 清理临时目录
-        if self._temp_home and self._temp_home.exists():
-            shutil.rmtree(self._temp_home, ignore_errors=True)
-            print(f"[Runner] Cleaned up temporary config at {self._temp_home}")
-            self._temp_home = None
+        # 终止主进程（不等待，快速返回）
+        if process and process.poll() is None:
+            print("[Runner] Terminating main process...", flush=True)
+            process.terminate()
+            # 不等待，直接返回，让操作系统异步终止
 
-        from backend import config_manager
-        config_manager.restore_config()
+        # 启动后台清理任务（不阻塞当前请求）
+        asyncio.create_task(self._background_cleanup(process, run_id, log_file, temp_home))
+        print("[Runner] Stop request processed, background cleanup started", flush=True)
 
+    async def _background_cleanup(self, process, run_id, log_file, temp_home):
+        """后台清理任务，不阻塞 HTTP 响应"""
+        import time
+        try:
+            # 等待主进程结束（最多5秒）
+            if process:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                except Exception as e:
+                    print(f"[Runner] Error waiting process: {e}", flush=True)
+
+            # 清理 Flower 运行
+            if run_id:
+                print(f"[Runner] Stopping Flower run {run_id}", flush=True)
+                subprocess.run(f'flwr stop {run_id}', shell=True, check=False, timeout=5)
+
+            # 停止 Ray
+            print("[Runner] Stopping Ray", flush=True)
+            subprocess.run('ray stop', shell=True, check=False, timeout=5)
+
+            # 强制清理残留进程
+            try:
+                import psutil
+                target_names = {'raylet.exe', 'gcs_server.exe'}
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        name = proc.info['name'].lower() if proc.info['name'] else ''
+                        if name in target_names:
+                            proc.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                time.sleep(2)
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        name = proc.info['name'].lower() if proc.info['name'] else ''
+                        if name in target_names:
+                            proc.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except ImportError:
+                if os.name == 'nt':
+                    subprocess.run('taskkill /F /IM raylet.exe /T', shell=True, check=False)
+                    subprocess.run('taskkill /F /IM gcs_server.exe /T', shell=True, check=False)
+
+            # 恢复配置
+            from backend import config_manager
+            if config_manager.BACKUP_PATH.exists():
+                config_manager.restore_config()
+                print("[Runner] Config restored from backup", flush=True)
+
+            # 清理临时目录
+            if temp_home and temp_home.exists():
+                shutil.rmtree(temp_home, ignore_errors=True)
+                print(f"[Runner] Cleaned up temp: {temp_home}", flush=True)
+
+            print("[Runner] Background cleanup finished", flush=True)
+        except Exception as e:
+            print(f"[Runner] Background cleanup error: {e}", flush=True)
+            
     async def get_status(self) -> dict:
         if self.process is None:
             return {"status": "idle", "exp_name": None}

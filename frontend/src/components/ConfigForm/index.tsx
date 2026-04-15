@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useImperativeHandle, forwardRef } from 'react';
 import {
   Form,
   Select,
@@ -18,6 +18,7 @@ import {
   Alert,
   Dropdown,
   Table,
+  Tag,
 } from 'antd';
 import {
   QuestionCircleOutlined,
@@ -44,6 +45,11 @@ interface FieldSchema {
   description?: string;
   ui_only?: boolean;
   linked_to?: string;
+}
+
+// 类型定义
+export interface ConfigFormHandle {
+  checkUnsavedBeforeStart: () => Promise<{ action: 'cancel' | 'save' | 'backup' }>;
 }
 
 // 字段名到中文标签的映射 (保持不变)
@@ -120,10 +126,12 @@ const GROUP_LABELS: Record<string, string> = {
   other: '其他配置',
 };
 
-const ConfigForm: React.FC = () => {
+const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
   const [schema, setSchema] = useState<Record<string, FieldSchema>>({});
   const [groups, setGroups] = useState<string[]>([]);
   const [currentConfig, setCurrentConfig] = useState<Record<string, any>>({});
+  const [originalConfig, setOriginalConfig] = useState<Record<string, any>>({});
+  const [dirtyFields, setDirtyFields] = useState<Set<string>>(new Set());
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [, forceUpdate] = useState({});
@@ -154,7 +162,9 @@ const ConfigForm: React.FC = () => {
       setGroups([...schemaRes.data.groups, 'other']);
       const newConfig = configRes.data;
       setCurrentConfig(newConfig);
+      setOriginalConfig(newConfig);               
       form.setFieldsValue(newConfig);
+      setDirtyFields(new Set());                  
     } catch (error: any) {
       const detail = error?.response?.data?.detail || error?.message || '未知错误';
       message.error(`加载配置失败：${detail}`);
@@ -164,6 +174,24 @@ const ConfigForm: React.FC = () => {
   useEffect(() => {
     loadConfig();
   }, []);
+
+  // 重置脏状态
+  const resetDirtyState = () => {
+    setDirtyFields(new Set());
+    const currentValues = form.getFieldsValue();
+    setOriginalConfig(currentValues);
+  };
+
+  // 判断字段是否脏
+  const isFieldDirty = (fieldName: string): boolean => {
+    return dirtyFields.has(fieldName);
+  };
+
+  // 获取分组脏状态
+  const getGroupDirtyStatus = (groupFields: string[]): boolean => {
+    return groupFields.some(field => dirtyFields.has(field));
+  };
+
 
   // 获取当前 toml 原始内容（用于高级模式）
   const fetchTomlContent = async () => {
@@ -376,19 +404,33 @@ const ConfigForm: React.FC = () => {
     return true;
   };
 
-  const handleValuesChange = (changedValues: any) => {
+  const handleValuesChange = (changedValues: any, allValues: any) => {
+    // 处理 malicious-count 联动（原有逻辑保留）
     if ('malicious-count' in changedValues) {
       const count = changedValues['malicious-count'];
-      const numClients = form.getFieldValue('num-clients') || 10;
+      const numClients = allValues['num-clients'] || 10;
       const ratio = numClients > 0 ? count / numClients : 0;
       form.setFieldValue('malicious-ratio', ratio);
     }
     if ('num-clients' in changedValues) {
       const numClients = changedValues['num-clients'];
-      const count = form.getFieldValue('malicious-count') || 2;
+      const count = allValues['malicious-count'] || 2;
       const ratio = numClients > 0 ? count / numClients : 0;
       form.setFieldValue('malicious-ratio', ratio);
     }
+
+    // 更新脏字段集合
+    const newDirty = new Set(dirtyFields);
+    Object.keys(changedValues).forEach(key => {
+      const currentValue = allValues[key];
+      const originalValue = originalConfig[key];
+      if (JSON.stringify(currentValue) !== JSON.stringify(originalValue)) {
+        newDirty.add(key);
+      } else {
+        newDirty.delete(key);
+      }
+    });
+    setDirtyFields(newDirty);
     forceUpdate({});
   };
 
@@ -401,6 +443,8 @@ const ConfigForm: React.FC = () => {
       });
       await updateConfig(updates);
       message.success('配置已保存');
+      resetDirtyState();
+      await loadConfig();
     } catch (error) {
       message.error('保存失败');
     } finally {
@@ -450,111 +494,130 @@ const ConfigForm: React.FC = () => {
     }
   };
 
-  const renderDefenseGroup = (defenseFields: string[]) => {
-    const mainFields = ['client-defense', 'detection', 'defense'];
-    const mainFieldItems = defenseFields.filter(f => mainFields.includes(f));
-    const otherFields = defenseFields.filter(f => !mainFields.includes(f));
+const renderDefenseGroup = (defenseFields: string[]) => {
+  const mainFields = ['client-defense', 'detection', 'defense'];
+  const mainFieldItems = defenseFields.filter(f => mainFields.includes(f));
+  const otherFields = defenseFields.filter(f => !mainFields.includes(f));
 
-    const clientFields = otherFields.filter(f => f.startsWith('client-defense-'));
-    const detectionFields = otherFields.filter(f => f.startsWith('detection-'));
-    const aggregationFields = otherFields.filter(f => f.startsWith('defense-'));
+  const clientFields = otherFields.filter(f => f.startsWith('client-defense-'));
+  const detectionFields = otherFields.filter(f => f.startsWith('detection-'));
+  const aggregationFields = otherFields.filter(f => f.startsWith('defense-'));
 
-    const clientVisible = clientFields.some(f => isFieldVisible(f));
-    const detectionVisible = detectionFields.some(f => isFieldVisible(f));
-    const aggregationVisible = aggregationFields.some(f => isFieldVisible(f));
+  const clientVisible = clientFields.some(f => isFieldVisible(f));
+  const detectionVisible = detectionFields.some(f => isFieldVisible(f));
+  const aggregationVisible = aggregationFields.some(f => isFieldVisible(f));
 
-    return (
-      <Card
-        title={GROUP_LABELS.defense || '防御参数'}
-        style={{ marginBottom: 16 }}
-        extra={
-          <Tooltip title="配置组: defense">
-            <QuestionCircleOutlined />
-          </Tooltip>
-        }
-      >
-        <Row gutter={16}>
-          {mainFieldItems.map(key => {
-            const visible = isFieldVisible(key);
-            return visible ? (
-              <Col span={8} key={key}>
-                <Form.Item
-                  name={key}
-                  label={FIELD_LABELS[key] || key}
-                  tooltip={`${key}: ${schema[key]?.description || ''}`}
-                >
-                  {renderField(key)}
-                </Form.Item>
-              </Col>
-            ) : null;
-          })}
-        </Row>
-        {clientVisible && (
-          <>
-            <Divider style={{ margin: '16px 0 8px' }}>客户端防御参数</Divider>
-            <Row gutter={16}>
-              {clientFields.map(key => {
-                const visible = isFieldVisible(key);
-                return visible ? (
-                  <Col span={8} key={key}>
-                    <Form.Item
-                      name={key}
-                      label={FIELD_LABELS[key] || key}
-                      tooltip={`${key}: ${schema[key]?.description || ''}`}
-                    >
-                      {renderField(key)}
-                    </Form.Item>
-                  </Col>
-                ) : null;
-              })}
-            </Row>
-          </>
-        )}
-        {detectionVisible && (
-          <>
-            <Divider style={{ margin: '16px 0 8px' }}>服务端检测参数</Divider>
-            <Row gutter={16}>
-              {detectionFields.map(key => {
-                const visible = isFieldVisible(key);
-                return visible ? (
-                  <Col span={8} key={key}>
-                    <Form.Item
-                      name={key}
-                      label={FIELD_LABELS[key] || key}
-                      tooltip={`${key}: ${schema[key]?.description || ''}`}
-                    >
-                      {renderField(key)}
-                    </Form.Item>
-                  </Col>
-                ) : null;
-              })}
-            </Row>
-          </>
-        )}
-        {aggregationVisible && (
-          <>
-            <Divider style={{ margin: '16px 0 8px' }}>聚合防御参数</Divider>
-            <Row gutter={16}>
-              {aggregationFields.map(key => {
-                const visible = isFieldVisible(key);
-                return visible ? (
-                  <Col span={8} key={key}>
-                    <Form.Item
-                      name={key}
-                      label={FIELD_LABELS[key] || key}
-                      tooltip={`${key}: ${schema[key]?.description || ''}`}
-                    >
-                      {renderField(key)}
-                    </Form.Item>
-                  </Col>
-                ) : null;
-              })}
-            </Row>
-          </>
-        )}
-      </Card>
-    );
-  };
+  const allVisibleFields = [
+    ...mainFieldItems.filter(f => isFieldVisible(f)),
+    ...(clientVisible ? clientFields : []),
+    ...(detectionVisible ? detectionFields : []),
+    ...(aggregationVisible ? aggregationFields : []),
+  ];
+  const isDirty = getGroupDirtyStatus(allVisibleFields);
+
+  return (
+    <Card
+      title={
+        <Space>
+          {GROUP_LABELS.defense || '防御参数'}
+          <Tag color={isDirty ? 'error' : 'success'}>
+            {isDirty ? '有未保存的更改' : '所有更改已保存'}
+          </Tag>
+        </Space>
+      }
+      style={{ marginBottom: 16 }}
+      extra={
+        <Tooltip title="配置组: defense">
+          <QuestionCircleOutlined />
+        </Tooltip>
+      }
+    >
+      <Row gutter={16}>
+        {mainFieldItems.map(key => {
+          const visible = isFieldVisible(key);
+          return visible ? (
+            <Col span={8} key={key}>
+              <Form.Item
+                name={key}
+                label={FIELD_LABELS[key] || key}
+                tooltip={`${key}: ${schema[key]?.description || ''}`}
+                validateStatus={isFieldDirty(key) ? 'error' : undefined}
+              >
+                {renderField(key)}
+              </Form.Item>
+            </Col>
+          ) : null;
+        })}
+      </Row>
+      {clientVisible && (
+        <>
+          <Divider style={{ margin: '16px 0 8px' }}>客户端防御参数</Divider>
+          <Row gutter={16}>
+            {clientFields.map(key => {
+              const visible = isFieldVisible(key);
+              return visible ? (
+                <Col span={8} key={key}>
+                  <Form.Item
+                    name={key}
+                    label={FIELD_LABELS[key] || key}
+                    tooltip={`${key}: ${schema[key]?.description || ''}`}
+                    validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                  >
+                    {renderField(key)}
+                  </Form.Item>
+                </Col>
+              ) : null;
+            })}
+          </Row>
+        </>
+      )}
+      {detectionVisible && (
+        <>
+          <Divider style={{ margin: '16px 0 8px' }}>服务端检测参数</Divider>
+          <Row gutter={16}>
+            {detectionFields.map(key => {
+              const visible = isFieldVisible(key);
+              return visible ? (
+                <Col span={8} key={key}>
+                  <Form.Item
+                    name={key}
+                    label={FIELD_LABELS[key] || key}
+                    tooltip={`${key}: ${schema[key]?.description || ''}`}
+                    validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                  >
+                    {renderField(key)}
+                  </Form.Item>
+                </Col>
+              ) : null;
+            })}
+          </Row>
+        </>
+      )}
+      {aggregationVisible && (
+        <>
+          <Divider style={{ margin: '16px 0 8px' }}>聚合防御参数</Divider>
+          <Row gutter={16}>
+            {aggregationFields.map(key => {
+              const visible = isFieldVisible(key);
+              return visible ? (
+                <Col span={8} key={key}>
+                  <Form.Item
+                    name={key}
+                    label={FIELD_LABELS[key] || key}
+                    tooltip={`${key}: ${schema[key]?.description || ''}`}
+                    validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                  >
+                    {renderField(key)}
+                  </Form.Item>
+                </Col>
+              ) : null;
+            })}
+          </Row>
+        </>
+      )}
+    </Card>
+  );
+};
 
   const getUnknownFields = (): string[] => {
     return Object.keys(currentConfig).filter(key => !schema[key]);
@@ -742,11 +805,94 @@ const ConfigForm: React.FC = () => {
     });
   };
 
+  // 未保存检查（暴露给父组件）
+  const checkUnsavedBeforeStart = (): Promise<{ action: 'cancel' | 'save' | 'backup' }> => {
+    return new Promise((resolve) => {
+      if (dirtyFields.size === 0) {
+        resolve({ action: 'save' });
+        return;
+      }
+      const dataSource = Array.from(dirtyFields).map(field => ({
+        key: field,
+        field: FIELD_LABELS[field] || field,
+        current: form.getFieldValue(field),
+        original: originalConfig[field],
+      }));
+      let backupNameInput: string | undefined;
+      Modal.confirm({
+        title: '有未保存的配置更改',
+        width: 700,
+        content: (
+          <div>
+            <p>以下字段在表单中有未保存的修改：</p>
+            <Table
+              size="small"
+              dataSource={dataSource}
+              columns={[
+                { title: '字段', dataIndex: 'field', key: 'field' },
+                { title: '当前值', dataIndex: 'current', key: 'current', render: v => String(v) },
+                { title: '实际值', dataIndex: 'original', key: 'original', render: v => String(v) },
+              ]}
+              pagination={false}
+              style={{ marginBottom: 16 }}
+            />
+            <p>请选择处理方式：</p>
+            <Input
+              placeholder="可选：输入备份名称（仅当选择“备份、保存并启动”时有效）"
+              onChange={(e) => { backupNameInput = e.target.value; }}
+              style={{ marginTop: 8 }}
+            />
+          </div>
+        ),
+        okText: '备份、保存并启动',
+        cancelText: '仅保存并启动',
+        onOk: async () => {
+          try {
+            await onFinish(form.getFieldsValue());
+            await fetch('http://localhost:8000/api/config/backups', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: backupNameInput || undefined }),
+            });
+            message.success('配置已保存并备份');
+            resolve({ action: 'backup' });
+          } catch (error) {
+            message.error('保存失败，无法启动实验');
+            resolve({ action: 'cancel' });
+          }
+        },
+        onCancel: async () => {
+          try {
+            await onFinish(form.getFieldsValue());
+            message.success('配置已保存');
+            resolve({ action: 'save' });
+          } catch (error) {
+            message.error('保存失败，无法启动实验');
+            resolve({ action: 'cancel' });
+          }
+        },
+        footer: (_, { OkBtn, CancelBtn }) => (
+          <>
+            <Button onClick={() => { Modal.destroyAll(); resolve({ action: 'cancel' }); }}>取消</Button>
+            <CancelBtn />
+            <OkBtn />
+          </>
+        ),
+      });
+    });
+  };
+
+  useImperativeHandle(ref, () => ({ checkUnsavedBeforeStart }));
+
   const resetMenuItems: MenuProps['items'] = [
     {
       key: 'form',
       label: '撤销未保存的更改',
-      onClick: () => form.resetFields(),
+      onClick: () => {
+        form.resetFields();
+        setDirtyFields(new Set());
+        setOriginalConfig(form.getFieldsValue());
+      },
     },
     {
       key: 'last',
@@ -836,9 +982,7 @@ const ConfigForm: React.FC = () => {
         form={form}
         layout="vertical"
         onFinish={onFinish}
-        onValuesChange={(changed, _all) => {
-          handleValuesChange(changed);
-        }}
+        onValuesChange={handleValuesChange}
         initialValues={currentConfig}
       >
         {groups.map((group) => {
@@ -848,7 +992,14 @@ const ConfigForm: React.FC = () => {
             return (
               <Card
                 key="other"
-                title={GROUP_LABELS.other}
+                title={
+                  <Space>
+                    {GROUP_LABELS.other}
+                    <Tag color={getGroupDirtyStatus(unknownFields) ? 'error' : 'success'}>
+                      {getGroupDirtyStatus(unknownFields) ? '有未保存的更改' : '所有更改已保存'}
+                    </Tag>
+                  </Space>
+                }
                 style={{ marginBottom: 16 }}
                 extra={
                   <Tooltip title="无法被标准表单解析的字段，可直接编辑">
@@ -863,6 +1014,7 @@ const ConfigForm: React.FC = () => {
                         name={key}
                         label={FIELD_LABELS[key] || key}
                         tooltip={`${key} (自定义字段)`}
+                        validateStatus={isFieldDirty(key) ? 'error' : undefined}
                       >
                         {renderField(key)}
                       </Form.Item>
@@ -877,10 +1029,18 @@ const ConfigForm: React.FC = () => {
           if (group === 'defense') {
             return renderDefenseGroup(groupFields);
           }
+          const isDirty = getGroupDirtyStatus(groupFields);
           return (
             <Card
               key={group}
-              title={GROUP_LABELS[group] || group}
+              title={
+                <Space>
+                  {GROUP_LABELS[group] || group}
+                  <Tag color={isDirty ? 'error' : 'success'}>
+                    {isDirty ? '有未保存的更改' : '所有更改已保存'}
+                  </Tag>
+                </Space>
+              }
               style={{ marginBottom: 16 }}
               extra={
                 <Tooltip title={`配置组: ${group}`}>
@@ -897,6 +1057,7 @@ const ConfigForm: React.FC = () => {
                         name={key}
                         label={FIELD_LABELS[key] || key}
                         tooltip={`${key}: ${schema[key]?.description || ''}`}
+                        validateStatus={isFieldDirty(key) ? 'error' : undefined}
                       >
                         {renderField(key)}
                       </Form.Item>
@@ -1057,6 +1218,7 @@ const ConfigForm: React.FC = () => {
       </Modal>
     </>
   );
-};
+}
+);
 
 export default ConfigForm;

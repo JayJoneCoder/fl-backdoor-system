@@ -4,14 +4,17 @@ import { PlayCircleOutlined, StopOutlined, SyncOutlined } from '@ant-design/icon
 import { startExperiment, stopExperiment, getExperimentStatus } from '../../api/client';
 import AnsiToHtml from 'ansi-to-html';
 
-// 配置 ansi-to-html：默认白色文字，黑色背景
 const ansiToHtml = new AnsiToHtml({
   fg: '#d4d4d4',
   bg: '#1e1e1e',
   escapeXML: false,
 });
 
-const ExperimentControl: React.FC = () => {
+interface ExperimentControlProps {
+  onBeforeStart?: () => Promise<{ action: 'cancel' | 'save' | 'backup' }>;
+}
+
+const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) => {
   const [expName, setExpName] = useState('test_exp');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'running' | 'finished'>('idle');
@@ -47,7 +50,7 @@ const ExperimentControl: React.FC = () => {
           rawLine = event.data;
         }
 
-        // ✅ 只过滤退格等控制字符，保留 \x1B (ANSI 转义序列)
+        // 只过滤退格等控制字符，保留 \x1B (ANSI 转义序列)
         const cleanLine = rawLine.replace(/[\x08\x0B\x0C]/g, '');
         setAnsiLog(prev => prev + (prev ? '\n' : '') + cleanLine);
 
@@ -60,7 +63,13 @@ const ExperimentControl: React.FC = () => {
         }
       };
 
-      socket.onclose = () => setWs(null);
+      socket.onclose = () => {
+        setWs(null);
+        // 如果连接关闭且状态为 running，则更新为 finished/idle
+        if (status === 'running') {
+          setStatus('finished');
+        }
+      };
     });
   };
 
@@ -69,6 +78,16 @@ const ExperimentControl: React.FC = () => {
       message.error('请输入实验名称');
       return;
     }
+
+    // 如果有未保存检查回调，先调用
+    if (onBeforeStart) {
+      const result = await onBeforeStart();
+      if (result.action === 'cancel') {
+        return; // 用户取消启动
+      }
+      // 配置已保存（可能带备份），继续启动
+    }
+
     setLoading(true);
     try {
       setAnsiLog('');
@@ -84,14 +103,23 @@ const ExperimentControl: React.FC = () => {
   };
 
   const handleStop = async () => {
+    console.log('[Frontend] Stop button clicked');
     setLoading(true);
+
     try {
-      await stopExperiment();
+      console.log('[Frontend] Sending stop request to backend...');
+      // 设置 15 秒超时，因为后端需要时间清理
+      const stopPromise = stopExperiment();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('停止请求超时，请检查后端日志')), 15000)
+      );
+      await Promise.race([stopPromise, timeoutPromise]);
       message.success('实验已停止');
       setStatus('idle');
-      ws?.close();
-    } catch (error) {
-      message.error('停止失败');
+    } catch (error: any) {
+      console.error('[Frontend] Stop request failed:', error);
+      message.error(error?.message || '停止失败');
+      setStatus('idle');
     } finally {
       setLoading(false);
     }

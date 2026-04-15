@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from watchfiles import awatch
 from fastapi.responses import StreamingResponse, JSONResponse
+from starlette.websockets import WebSocketDisconnect, WebSocketClose
 
 
 # Add project root to sys.path for importing fl_backdoor modules
@@ -32,6 +33,7 @@ from backend.results_scanner import (
     list_experiments,
     get_summary_detail,
 )
+from backend.batch_manager import batch_manager, BatchTask
 
 # ------------------------------
 # FastAPI app setup
@@ -74,7 +76,6 @@ async def websocket_logs(websocket: WebSocket, exp_name: str):
 
     # Set callback to forward subprocess stdout to WebSocket
     async def send_log_line(line: str):
-        print(f"[WS] Sending line: {line[:80]}")
         await websocket.send_text(line)
 
     runner.set_log_callback(send_log_line)
@@ -96,11 +97,43 @@ async def websocket_logs(websocket: WebSocket, exp_name: str):
         while True:
             await asyncio.sleep(1)
             # Could also send periodic status updates here
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, WebSocketClose):
+        pass
+    finally:
         watch_task.cancel()
         runner.set_log_callback(None)  # Clear callback
-        print(f"WebSocket disconnected for {exp_name}")
 
+@app.websocket("/ws/batch/{batch_id}")
+async def websocket_batch_logs(websocket: WebSocket, batch_id: str):
+    await websocket.accept()
+    task = batch_manager.get_task(batch_id)
+    if task is None:
+        await websocket.send_text("[System] Batch task not found.")
+        await websocket.close()
+        return
+
+    # 发送初始状态
+    await websocket.send_json({"type": "status", "data": task.to_dict()})
+
+    queue = await task.subscribe_logs()
+    try:
+        while True:
+            try:
+                line = await asyncio.wait_for(queue.get(), timeout=1.0)
+                await websocket.send_text(line)
+            except asyncio.TimeoutError:
+                # 定期检查任务是否结束，以及发送状态更新
+                if task.status in ("completed", "failed"):
+                    await websocket.send_json({"type": "status", "data": task.to_dict()})
+                    # 等待一小段时间让客户端处理完最后日志
+                    await asyncio.sleep(2)
+                    break
+                else:
+                    await websocket.send_json({"type": "status", "data": task.to_dict()})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        task.unsubscribe_logs(queue)
 
 async def _stream_log_file(websocket: WebSocket, log_path: Path) -> None:
     """Stream new lines appended to log file."""
@@ -202,7 +235,20 @@ async def start_experiment(request: dict[str, Any]):
 @app.post("/api/experiment/stop")
 async def stop_experiment():
     """Stop the currently running experiment."""
-    await runner.stop()
+    print("[API] ========================================", flush=True)
+    print("[API] Received stop request at", datetime.now(), flush=True)
+    print("[API] ========================================", flush=True)
+    try:
+        # 设置总超时 15 秒
+        await asyncio.wait_for(runner.stop(), timeout=15.0)
+        print("[API] Stop operation completed successfully", flush=True)
+    except asyncio.TimeoutError:
+        print("[API] Stop operation timed out, forcing cleanup", flush=True)
+        runner.process = None
+        runner._status = "idle"
+    except Exception as e:
+        print(f"[API] Error during stop: {e}", flush=True)
+        raise HTTPException(500, str(e))
     return {"status": "stopped"}
 
 
@@ -255,25 +301,86 @@ async def run_batch_experiments(request: dict[str, Any]):
     if runner.is_running():
         raise HTTPException(409, "An experiment is already running")
 
-    asyncio.create_task(_run_batch_sequence(experiments))
-    return {"status": "batch_started", "total": len(experiments)}
+    if batch_manager.get_active_task():
+        raise HTTPException(409, "A batch task is already running")
+
+    task = batch_manager.create_task(experiments)
+    asyncio.create_task(_run_batch_sequence(task))
+    return {"status": "batch_started", "batch_id": task.batch_id, "total": len(experiments)}
 
 
-async def _run_batch_sequence(experiments: list[dict[str, Any]]) -> None:
-    """Internal: run experiments sequentially."""
-    for exp in experiments:
-        exp_name = exp.pop("name")
+async def _run_batch_sequence(task: BatchTask) -> None:
+    """Internal: run experiments sequentially with status updates."""
+    task.status = "running"
+    task.start_time = datetime.now()
+    batch_manager.update_task(task)
+    task.add_log(f"[Batch] Started batch task {task.batch_id} with {len(task.experiments)} experiments.")
+
+    for idx, exp in enumerate(task.experiments):
+        exp_name = exp.get("name")
+        if not exp_name:
+            task.add_log(f"[Batch] ERROR: Experiment at index {idx} has no name, skipping.")
+            continue
+
+        task.current_index = idx
+        task.current_exp_name = exp_name
+        batch_manager.update_task(task)
+        task.add_log(f"[Batch] Starting experiment {idx+1}/{len(task.experiments)}: {exp_name}")
+
+        # 构建配置覆盖，并显式设置 run-name
+        config = {k: v for k, v in exp.items() if k != "name"}
+        config["run-name"] = exp_name   # 关键修复：确保子实验使用正确目录名
+
+        # 保存原有回调，设置日志转发
+        original_callback = runner._on_log_line
+        async def forward_log(line: str):
+            task.add_log(f"[{exp_name}] {line}")
+            if original_callback:
+                await original_callback(line)
+
+        runner.set_log_callback(forward_log)
+
         try:
-            await runner.start(exp_name, exp, backup_config=True)
+            await runner.start(exp_name, config, backup_config=True)
             while runner.is_running():
                 await asyncio.sleep(2)
+            task.add_log(f"[Batch] Finished experiment: {exp_name}")
         except Exception as e:
-            print(f"Batch experiment {exp_name} failed: {e}")
+            error_msg = f"Batch experiment {exp_name} failed: {e}"
+            print(error_msg)
+            task.add_log(f"[Batch] ERROR: {error_msg}")
+            task.error = error_msg
         finally:
-            await runner.stop()
-    print("Batch experiments finished")
+            # 恢复原有回调
+            runner.set_log_callback(original_callback)
+            try:
+                await runner.stop()
+            except:
+                pass
+
+    task.status = "completed"
+    task.end_time = datetime.now()
+    task.current_index = len(task.experiments)
+    task.current_exp_name = None
+    batch_manager.update_task(task)
+    task.add_log(f"[Batch] Batch task {task.batch_id} completed.")
+
+@app.get("/api/batch/status")
+async def get_batch_status():
+    """Get current batch task status."""
+    task = batch_manager.get_active_task()
+    if task is None:
+        return {"status": "idle"}
+    return task.to_dict()
 
 
+@app.get("/api/batch/{batch_id}/status")
+async def get_batch_task_status(batch_id: str):
+    """Get status of a specific batch task."""
+    task = batch_manager.get_task(batch_id)
+    if task is None:
+        raise HTTPException(404, "Batch task not found")
+    return task.to_dict()
 
 @app.post("/api/experiments/{exp_name}/plot")
 async def generate_plots_for_experiment(exp_name: str):
