@@ -233,7 +233,7 @@ const SummaryPage: React.FC = () => {
       key: 'experiments',
       render: (list: string[]) => list?.join(', ') || '',
     },
-    { title: '创建时间', dataIndex: 'created', key: 'created', width: 200 },
+    { title: '创建时间', dataIndex: 'created', key: 'created', width: 200,  render: (v: string) => v ? v.replace('T', ' ').substring(0, 22) : '-' },
     {
       title: '操作',
       key: 'action',
@@ -283,7 +283,7 @@ const SummaryPage: React.FC = () => {
 
   return (
     <div style={{ width: '100%' }}>
-      <h2>实验总结</h2>
+      <h2 className="page-title">实验比较总结</h2>
       <Card>
         <Space style={{ marginBottom: 16 }}>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>

@@ -1,6 +1,13 @@
 import React from 'react';
 import { Layout, Menu } from 'antd';
-import { HistoryOutlined, SettingOutlined, AppstoreOutlined, FileTextOutlined } from '@ant-design/icons';
+import {
+  HistoryOutlined,
+  SettingOutlined,
+  AppstoreOutlined,
+  FileTextOutlined,
+  SafetyOutlined,   
+  GithubOutlined,   
+} from '@ant-design/icons';
 import { useState } from 'react';
 import ConfigPage from './pages/ConfigPage';
 import HistoryPage from './pages/HistoryPage';
@@ -25,8 +32,26 @@ const App: React.FC = () => {
   return (
     <Layout style={{ minHeight: '100vh', width: '100%' }}>
       <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
-        <h1 style={{ color: 'white', margin: 0 }}>FL Backdoor Platform</h1>
-        <div style={{ color: 'white' }}>联邦学习后门攻击防御系统</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <SafetyOutlined style={{ fontSize: 28, color: '#fff' }} />
+          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+            <span style={{ color: 'white', fontSize: 18, fontWeight: 600, lineHeight: 1.4 }}>
+              联邦学习后门攻击防御系统
+            </span>
+            <span style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12, lineHeight: 1.4 }}>
+              FL Backdoor Attack & Defense System
+            </span>
+          </div>
+        </div>
+
+        <a
+          href="https://github.com/JayJoneCoder/fl-backdoor-system"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: 'white', fontSize: 24, display: 'flex', alignItems: 'center' }}
+        >
+          <GithubOutlined />
+        </a>
       </Header>
       <Layout style={{ width: '100%' }}>
         <Sider width={200} style={{ background: '#fff' }}>
@@ -44,6 +69,28 @@ const App: React.FC = () => {
         </Sider>
         <Layout style={{ padding: '24px', width: '100%', background: '#f0f2f5' }}>
           <Content style={{ background: '#fff', padding: 24, margin: 0, minHeight: 280, width: '100%' }}>
+            <style>{`
+              .page-title {
+                font-size: 24px;
+                font-weight: 600;
+                color: #1a1a1a;
+                margin-top: 0;
+                margin-bottom: 24px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid #e8e8e8;
+                display: flex;
+                align-items: center;
+              }
+              .page-title::before {
+                content: '';
+                display: inline-block;
+                width: 4px;
+                height: 22px;
+                background-color: #1890ff;
+                margin-right: 12px;
+                border-radius: 2px;
+              }
+            `}</style>
             {renderPage()}
           </Content>
         </Layout>

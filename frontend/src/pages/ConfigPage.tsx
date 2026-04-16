@@ -15,7 +15,7 @@ const ConfigPage: React.FC = () => {
 
   return (
     <div>
-      <h2>实验配置</h2>
+      <h2 className="page-title">单个实验配置</h2>
       <ConfigForm ref={configFormRef} />
       <ExperimentControl onBeforeStart={handleBeforeStart} />
     </div>

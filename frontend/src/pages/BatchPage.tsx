@@ -93,7 +93,7 @@ const BatchPage: React.FC = () => {
 
   return (
     <div>
-      <h2>批量实验</h2>
+      <h2 className="page-title">批量实验</h2>
       <Card>
         <Space direction="vertical" style={{ width: '100%' }} size="large">
           <Alert

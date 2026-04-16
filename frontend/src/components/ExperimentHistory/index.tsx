@@ -345,7 +345,7 @@ const ExperimentHistory: React.FC = () => {
                     <div>
                       AUC: {exp.auc?.toFixed(3) || 'N/A'} | 轮次: {exp.last_round}
                     </div>
-                    {exp.created && <div>创建: {exp.created}</div>}
+                    {exp.created && <div>创建: {exp.created.replace('T', ' ').substring(0, 22)}</div>}
                   </div>
                 </Card>
               </Col>
