@@ -28,6 +28,7 @@ class BatchTask:
         self.end_time: Optional[datetime] = None
         self.error: Optional[str] = None
         self.log_subscribers: list[asyncio.Queue] = []
+        self.logs: list[str] = []
         self._log_file: Optional[Path] = None
 
     def to_dict(self) -> dict:
@@ -44,18 +45,20 @@ class BatchTask:
         }
 
     def add_log(self, line: str):
-        """Push a log line to all subscribers."""
+        """Push a log line to all subscribers and keep a history buffer."""
+        self.logs.append(line)
+
         for queue in self.log_subscribers:
             try:
                 queue.put_nowait(line)
             except asyncio.QueueFull:
                 pass
 
-    async def subscribe_logs(self) -> asyncio.Queue:
-        """Create a new subscriber queue for logs."""
+    async def subscribe_logs(self) -> tuple[asyncio.Queue, list[str]]:
+        """Create a new subscriber queue and return current log history."""
         queue = asyncio.Queue(maxsize=1000)
         self.log_subscribers.append(queue)
-        return queue
+        return queue, list(self.logs)
 
     def unsubscribe_logs(self, queue: asyncio.Queue):
         """Remove a subscriber queue."""

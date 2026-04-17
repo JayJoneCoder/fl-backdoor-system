@@ -53,6 +53,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from starlette.requests import Request
+from starlette.websockets import WebSocket as StarletteWebSocket
+
+from starlette.requests import Request
+from starlette.websockets import WebSocket as StarletteWebSocket
+
+@app.middleware("http")
+async def log_all_requests(request: Request, call_next):
+    # 跳过 WebSocket 升级和 OPTIONS 预检请求的日志（但正常处理）
+    if request.method == "OPTIONS" or request.headers.get("upgrade", "").lower() == "websocket":
+        return await call_next(request)
+    response = await call_next(request)
+    return response
+
 # Static files for results
 RESULTS_DIR = PROJECT_ROOT / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -105,35 +119,47 @@ async def websocket_logs(websocket: WebSocket, exp_name: str):
 
 @app.websocket("/ws/batch/{batch_id}")
 async def websocket_batch_logs(websocket: WebSocket, batch_id: str):
-    await websocket.accept()
-    task = batch_manager.get_task(batch_id)
-    if task is None:
-        await websocket.send_text("[System] Batch task not found.")
-        await websocket.close()
-        return
-
-    # 发送初始状态
-    await websocket.send_json({"type": "status", "data": task.to_dict()})
-
-    queue = await task.subscribe_logs()
     try:
-        while True:
-            try:
-                line = await asyncio.wait_for(queue.get(), timeout=1.0)
-                await websocket.send_text(line)
-            except asyncio.TimeoutError:
-                # 定期检查任务是否结束，以及发送状态更新
-                if task.status in ("completed", "failed"):
+        await websocket.accept()
+
+        task = batch_manager.get_task(batch_id)
+        if task is None:
+            await websocket.send_text("[System] Batch task not found.")
+            await websocket.close()
+            return
+
+        queue, history = await task.subscribe_logs()
+
+        # 先发历史日志，避免晚连时丢日志
+        for line in history:
+            await websocket.send_text(line)
+
+        # 再发当前状态
+        await websocket.send_json({"type": "status", "data": task.to_dict()})
+
+        try:
+            while True:
+                try:
+                    line = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    await websocket.send_text(line)
+                except asyncio.TimeoutError:
                     await websocket.send_json({"type": "status", "data": task.to_dict()})
-                    # 等待一小段时间让客户端处理完最后日志
-                    await asyncio.sleep(2)
-                    break
-                else:
-                    await websocket.send_json({"type": "status", "data": task.to_dict()})
-    except WebSocketDisconnect:
-        pass
-    finally:
-        task.unsubscribe_logs(queue)
+                    if task.status in ("completed", "failed"):
+                        await asyncio.sleep(1)
+                        break
+        except WebSocketDisconnect:
+            print(f"[WS-Batch] Client disconnected for {batch_id}", flush=True)
+        finally:
+            task.unsubscribe_logs(queue)
+
+    except Exception as e:
+        print(f"[WS-Batch] Unexpected error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.close()
+        except:
+            pass
 
 async def _stream_log_file(websocket: WebSocket, log_path: Path) -> None:
     """Stream new lines appended to log file."""
@@ -294,19 +320,30 @@ async def parse_batch_config(file: UploadFile):
 @app.post("/api/batch/run")
 async def run_batch_experiments(request: dict[str, Any]):
     """Run a batch of experiments sequentially."""
-    experiments = request.get("experiments", [])
-    if not experiments:
-        raise HTTPException(400, "No experiments provided")
+    try:
+        experiments = request.get("experiments", [])
+        if not experiments:
+            raise HTTPException(400, "No experiments provided")
 
-    if runner.is_running():
-        raise HTTPException(409, "An experiment is already running")
+        if runner.is_running():
+            raise HTTPException(409, "An experiment is already running")
 
-    if batch_manager.get_active_task():
-        raise HTTPException(409, "A batch task is already running")
+        if batch_manager.get_active_task():
+            raise HTTPException(409, "A batch task is already running")
 
-    task = batch_manager.create_task(experiments)
-    asyncio.create_task(_run_batch_sequence(task))
-    return {"status": "batch_started", "batch_id": task.batch_id, "total": len(experiments)}
+        task = batch_manager.create_task(experiments)
+        async def delayed_start():
+            await asyncio.sleep(0.1)   
+            await _run_batch_sequence(task)
+
+        asyncio.create_task(delayed_start())
+        return {"status": "batch_started", "batch_id": task.batch_id, "total": len(experiments)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Internal server error: {str(e)}")
 
 
 async def _run_batch_sequence(task: BatchTask) -> None:

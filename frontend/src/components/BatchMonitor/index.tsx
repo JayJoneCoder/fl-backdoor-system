@@ -30,16 +30,22 @@ const BatchMonitor: React.FC<BatchMonitorProps> = ({ batchId, onComplete }) => {
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const socket = new WebSocket(`ws://localhost:8000/ws/batch/${batchId}`);
-    setWs(socket);
+    if (!batchId) return;
+    const socketRef = { current: null as WebSocket | null };
+    
+    const timer = setTimeout(() => {
+      const socket = new WebSocket(`ws://127.0.0.1:8000/ws/batch/${batchId}`);
+      socketRef.current = socket;
+      setWs(socket);
 
-    socket.onopen = () => {
-      console.log('[BatchMonitor] WebSocket connected');
-    };
+      socket.onopen = () => {
+        console.log('[BatchMonitor] WebSocket connected');
+      };
 
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        console.log('Received:', event.data)
         if (data.type === 'status') {
           setStatus(data.data);
           if (data.data.status === 'completed' || data.data.status === 'failed') {
@@ -60,18 +66,24 @@ const BatchMonitor: React.FC<BatchMonitorProps> = ({ batchId, onComplete }) => {
       }
     };
 
-    socket.onerror = (err) => {
-      console.error('[BatchMonitor] WebSocket error', err);
+    socket.onerror = (event) => {
+      console.error('[BatchMonitor] WebSocket error', event);
+      // 额外打印 readyState
+      console.log('[BatchMonitor] ReadyState:', socket.readyState);
     };
 
     socket.onclose = () => {
       console.log('[BatchMonitor] WebSocket closed');
     };
+    }, 50);
 
     return () => {
-      socket.close();
-    };
-  }, [batchId, onComplete]);
+    clearTimeout(timer);
+    if (socketRef.current) {
+      socketRef.current.close();
+    }
+  };
+}, [batchId, onComplete]);
 
   const progress = status ? Math.round((status.current_index / status.total) * 100) : 0;
 

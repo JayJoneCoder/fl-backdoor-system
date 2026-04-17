@@ -95,12 +95,25 @@ class ExperimentRunner:
         self._status = "running"
 
     async def _read_stdout(self) -> None:
-        if not self.process or not self.log_file:
+        if not self.process or not self.log_file or not self.process.stdout:
             return
 
         with open(self.log_file, "w", encoding="utf-8") as f:
-            assert self.process.stdout
-            for line in iter(self.process.stdout.readline, ""):
+            while True:
+                try:
+                    # 把阻塞式 readline 放到线程里
+                    line = await asyncio.to_thread(self.process.stdout.readline)
+                except Exception as e:
+                    print(f"[Runner] stdout read failed: {e}", flush=True)
+                    break
+
+                if line == "":
+                    # 进程结束后，退出读取循环
+                    if self.process.poll() is not None:
+                        break
+                    await asyncio.sleep(0.05)
+                    continue
+
                 f.write(line)
                 f.flush()
 
@@ -110,15 +123,19 @@ class ExperimentRunner:
                         self.run_id = match.group(1)
                         print(f"[Runner] Captured run_id: {self.run_id}", flush=True)
 
-                if self._on_log_line:
+                callback = self._on_log_line
+                if callback is not None:
                     try:
-                        await self._on_log_line(line.rstrip())
+                        await callback(line.rstrip())
                     except Exception as e:
-                        print(f"[Runner] Failed to send log line: {e}")
+                        print(f"[Runner] Failed to send log line: {e}", flush=True)
                 else:
-                    print("[Runner] _on_log_line is None")
+                    print("[Runner] _on_log_line is None", flush=True)
 
-        self.process.stdout.close()
+        try:
+            self.process.stdout.close()
+        except Exception:
+            pass
 
     async def stop(self) -> None:
         print("[Runner] >>> Stop method called <<<", flush=True)
