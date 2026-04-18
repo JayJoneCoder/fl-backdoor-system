@@ -47,6 +47,9 @@ export const parseBatchConfig = (file: File) => {
 export const runBatchExperiments = (experiments: any[]) =>
   apiClient.post('/api/batch/run', { experiments });
 
+// 获取批量实验状态
+export const getBatchStatus = () => apiClient.get('/api/batch/status');
+
 // 上传整个 toml 文件（高级模式）
 export const uploadConfigFile = (file: File) => {
   const formData = new FormData();

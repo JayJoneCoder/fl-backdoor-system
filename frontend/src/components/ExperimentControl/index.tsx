@@ -2,13 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Button, Space, Input, message, Card, Tag, Alert } from 'antd';
 import { PlayCircleOutlined, StopOutlined, SyncOutlined } from '@ant-design/icons';
 import { startExperiment, stopExperiment, getExperimentStatus } from '../../api/client';
-import AnsiToHtml from 'ansi-to-html';
+import LogViewer from '../../components/LogViewer';
 
-const ansiToHtml = new AnsiToHtml({
-  fg: '#d4d4d4',
-  bg: '#1e1e1e',
-  escapeXML: false,
-});
+const MAX_LOG_LINES = 1000;
+const RENDER_INTERVAL = 200;
 
 interface ExperimentControlProps {
   onBeforeStart?: () => Promise<{ action: 'cancel' | 'save' | 'backup' }>;
@@ -18,59 +15,54 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
   const [expName, setExpName] = useState('test_exp');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'running' | 'finished'>('idle');
-  const [ansiLog, setAnsiLog] = useState('');
-  const [ws, setWs] = useState<WebSocket | null>(null);
-  const logContainerRef = useRef<HTMLDivElement>(null);
 
-  const connectWebSocket = (name: string): Promise<WebSocket> => {
-    return new Promise((resolve, reject) => {
-      if (ws) ws.close();
-      const socket = new WebSocket(`ws://localhost:8000/ws/logs/${name}`);
+  const [logs, setLogs] = useState<string[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
 
-      socket.onopen = () => {
-        setWs(socket);
-        resolve(socket);
-      };
+  const bufferRef = useRef<string[]>([]);
+  const lastRenderRef = useRef(0);
 
-      socket.onerror = (err) => {
-        reject(err);
-      };
+  const connectWS = (name: string) => {
+    if (wsRef.current) wsRef.current.close();
 
-      socket.onmessage = (event) => {
-        let rawLine = '';
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === 'status') {
-            setStatus(data.data.status);
-            return;
-          } else if (data.type === 'csv_update') {
-            rawLine = `[CSV] ${data.file}: ${JSON.stringify(data.data)}`;
-          }
-        } catch {
-          rawLine = event.data;
+    const socket = new WebSocket(`ws://127.0.0.1:8000/ws/logs/${name}`);
+    wsRef.current = socket;
+
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'status') {
+          const raw = String(data.data.status ?? '').toLowerCase();
+          if (raw === 'running' || raw === 'starting') setStatus('running');
+          else if (raw === 'completed' || raw === 'finished') setStatus('finished');
+          else if (raw === 'idle') setStatus('idle');
+          return;
         }
 
-        // 只过滤退格等控制字符，保留 \x1B (ANSI 转义序列)
-        const cleanLine = rawLine.replace(/[\x08\x0B\x0C]/g, '');
-        setAnsiLog(prev => prev + (prev ? '\n' : '') + cleanLine);
-
-        if (logContainerRef.current) {
-          setTimeout(() => {
-            if (logContainerRef.current) {
-              logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-            }
-          }, 10);
+        if (data.type === 'csv_update') {
+          bufferRef.current.push(`[CSV] ${data.file}: ${JSON.stringify(data.data)}`);
         }
-      };
+      } catch {
+        const cleanLine = event.data.replace(/[\x08\x0B\x0C]/g, '');
+        bufferRef.current.push(cleanLine);
+      }
 
-      socket.onclose = () => {
-        setWs(null);
-        // 如果连接关闭且状态为 running，则更新为 finished/idle
-        if (status === 'running') {
-          setStatus('finished');
-        }
-      };
-    });
+      const now = Date.now();
+      if (now - lastRenderRef.current > RENDER_INTERVAL) {
+        lastRenderRef.current = now;
+
+        setLogs(prev => {
+          const merged = [...prev, ...bufferRef.current];
+          bufferRef.current = [];
+          return merged.length > MAX_LOG_LINES ? merged.slice(-MAX_LOG_LINES) : merged;
+        });
+      }
+    };
+
+    socket.onclose = () => {
+      wsRef.current = null;
+    };
   };
 
   const handleStart = async () => {
@@ -79,23 +71,20 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       return;
     }
 
-    // 如果有未保存检查回调，先调用
     if (onBeforeStart) {
       const result = await onBeforeStart();
-      if (result.action === 'cancel') {
-        return; // 用户取消启动
-      }
-      // 配置已保存（可能带备份），继续启动
+      if (result.action === 'cancel') return;
     }
 
     setLoading(true);
     try {
-      setAnsiLog('');
-      await connectWebSocket(expName);
+      setLogs([]); // 清空日志
+      connectWS(expName);
+
       await startExperiment(expName);
       message.success(`实验 "${expName}" 已启动`);
       setStatus('running');
-    } catch (error) {
+    } catch {
       message.error('启动失败');
     } finally {
       setLoading(false);
@@ -103,22 +92,18 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
   };
 
   const handleStop = async () => {
-    console.log('[Frontend] Stop button clicked');
     setLoading(true);
-
     try {
-      console.log('[Frontend] Sending stop request to backend...');
-      // 设置 15 秒超时，因为后端需要时间清理
       const stopPromise = stopExperiment();
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('停止请求超时，请检查后端日志')), 15000)
+        setTimeout(() => reject(new Error('停止请求超时')), 15000)
       );
       await Promise.race([stopPromise, timeoutPromise]);
+
       message.success('实验已停止');
       setStatus('idle');
-    } catch (error: any) {
-      console.error('[Frontend] Stop request failed:', error);
-      message.error(error?.message || '停止失败');
+    } catch (e: any) {
+      message.error(e?.message || '停止失败');
       setStatus('idle');
     } finally {
       setLoading(false);
@@ -130,33 +115,30 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       try {
         const res = await getExperimentStatus();
         setStatus(res.data.status);
+
         if (res.data.status === 'running' && res.data.exp_name) {
-          if (!ws || ws.readyState !== WebSocket.OPEN) {
-            await connectWebSocket(res.data.exp_name);
-          }
+          setExpName(res.data.exp_name);
+          if (!wsRef.current) connectWS(res.data.exp_name);
         }
-      } catch (error) {
-        // ignore
-      }
+      } catch {}
     };
+
     checkStatus();
     const interval = setInterval(checkStatus, 5000);
     return () => clearInterval(interval);
-  }, [ws]);
-
-  const htmlContent = ansiToHtml.toHtml(ansiLog);
+  }, []);
 
   return (
     <Card title="实验控制" style={{ marginTop: 24 }}>
       <Space direction="vertical" style={{ width: '100%' }}>
         <Space>
           <Input
-            placeholder="实验名称"
             value={expName}
             onChange={(e) => setExpName(e.target.value)}
             style={{ width: 200 }}
             disabled={status === 'running'}
           />
+
           <Button
             type="primary"
             icon={<PlayCircleOutlined />}
@@ -166,6 +148,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
           >
             启动实验
           </Button>
+
           <Button
             danger
             icon={<StopOutlined />}
@@ -175,37 +158,17 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
           >
             停止实验
           </Button>
+
           <Tag color={status === 'running' ? 'processing' : status === 'finished' ? 'success' : 'default'}>
             {status === 'running' ? <><SyncOutlined spin /> 运行中</> : status === 'finished' ? '已完成' : '空闲'}
           </Tag>
         </Space>
 
         {status === 'running' && (
-          <Alert message="实验运行中，实时日志如下" type="info" showIcon style={{ marginTop: 16 }} />
+          <Alert message="实验运行中，实时日志如下" type="info" showIcon />
         )}
 
-        <div
-          ref={logContainerRef}
-          style={{
-            background: '#1e1e1e',
-            color: '#d4d4d4',
-            padding: 12,
-            borderRadius: 4,
-            height: 300,
-            overflowY: 'auto',
-            fontFamily: 'monospace',
-            fontSize: 12,
-            marginTop: 16,
-            textAlign: 'left',
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          {ansiLog.length === 0 ? (
-            <span style={{ color: '#888' }}>等待日志输出...</span>
-          ) : (
-            <div dangerouslySetInnerHTML={{ __html: htmlContent }} />
-          )}
-        </div>
+        <LogViewer logs={logs} height={300} />
       </Space>
     </Card>
   );

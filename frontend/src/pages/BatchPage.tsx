@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, Upload, Button, Space, message, Table, Progress, Alert, Input, Row, Col } from 'antd';
 import { UploadOutlined, PlayCircleOutlined, EditOutlined, EyeOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
-import { parseBatchConfig, runBatchExperiments } from '../api/client';
+import { parseBatchConfig, runBatchExperiments, getBatchStatus } from '../api/client';
 import BatchMonitor from '../components/BatchMonitor';
 
 const { TextArea } = Input;
@@ -15,6 +15,27 @@ const BatchPage: React.FC = () => {
   const [batchId, setBatchId] = useState<string | null>(null);
   const [jsonContent, setJsonContent] = useState<string>('');
   const [editMode, setEditMode] = useState(false);
+
+  useEffect(() => {
+    const checkActiveBatch = async () => {
+      try {
+        const res = await getBatchStatus();
+        if (res.data.status !== 'idle' && res.data.batch_id) {
+          // 有正在运行的批量任务，恢复状态
+          setBatchId(res.data.batch_id);
+          setBatchRunning(true);
+          // 从后端返回的数据中恢复实验列表（如果有）
+          if (res.data.experiments && res.data.experiments.length > 0) {
+            setExperiments(res.data.experiments);
+          }
+          message.info(`检测到正在运行的批量实验 ${res.data.batch_id}，已恢复监控`);
+        }
+      } catch (error) {
+        // 忽略错误
+      }
+    };
+    checkActiveBatch();
+  }, []);
 
   const handleUpload = async () => {
     if (fileList.length === 0) return;

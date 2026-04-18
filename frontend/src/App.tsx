@@ -5,8 +5,8 @@ import {
   SettingOutlined,
   AppstoreOutlined,
   FileTextOutlined,
-  SafetyOutlined,   
-  GithubOutlined,   
+  SafetyOutlined,
+  GithubOutlined,
 } from '@ant-design/icons';
 import { useState } from 'react';
 import ConfigPage from './pages/ConfigPage';
@@ -30,8 +30,15 @@ const App: React.FC = () => {
   };
 
   return (
-    <Layout style={{ minHeight: '100vh', width: '100%' }}>
-      <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
+    <Layout style={{ height: '100vh', width: '100%', overflow: 'hidden' }}>
+      {/* 固定头部 */}
+      <Header style={{ 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'space-between', 
+        padding: '0 24px',
+        flexShrink: 0 
+      }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <SafetyOutlined style={{ fontSize: 28, color: '#fff' }} />
           <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
@@ -53,8 +60,18 @@ const App: React.FC = () => {
           <GithubOutlined />
         </a>
       </Header>
-      <Layout style={{ width: '100%' }}>
-        <Sider width={200} style={{ background: '#fff' }}>
+
+      {/* 主体区域：侧栏 + 内容 */}
+      <Layout style={{ flex: 1, overflow: 'hidden' }}>
+        {/* 固定侧栏 */}
+        <Sider 
+          width={200} 
+          style={{ 
+            background: '#fff', 
+            height: '100%',
+            overflowY: 'auto'  // 侧栏菜单过多时可独立滚动
+          }}
+        >
           <Menu
             mode="inline"
             selectedKeys={[currentPage]}
@@ -67,8 +84,16 @@ const App: React.FC = () => {
             ]}
           />
         </Sider>
-        <Layout style={{ padding: '24px', width: '100%', background: '#f0f2f5' }}>
-          <Content style={{ background: '#fff', padding: 24, margin: 0, minHeight: 280, width: '100%' }}>
+
+        {/* 可滚动的内容区 */}
+        <Layout style={{ padding: '24px', background: '#f0f2f5', overflowY: 'auto' }}>
+          <Content style={{ 
+            background: '#fff', 
+            padding: 24, 
+            margin: 0, 
+            minHeight: 280,
+            width: '100%' 
+          }}>
             <style>{`
               .page-title {
                 font-size: 24px;

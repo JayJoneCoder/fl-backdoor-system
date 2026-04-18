@@ -77,6 +77,8 @@ class ExperimentRunner:
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
+        env["FLWR_TELEMETRY_ENABLED"] = "0"      # 关闭遥测
+        env["HF_DATASETS_OFFLINE"] = "1"         # 强制 Hugging Face 离线模式
 
         self._status = "starting"
 

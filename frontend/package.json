@@ -13,6 +13,7 @@
     "ansi-to-html": "^0.7.2",
     "antd": "^6.3.5",
     "axios": "^1.15.0",
+    "echarts": "^6.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "recharts": "^3.8.1"
