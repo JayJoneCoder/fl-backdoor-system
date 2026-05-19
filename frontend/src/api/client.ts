@@ -94,3 +94,8 @@ export const downloadExperimentAllFiles = (expName: string) =>
 // 获取总结详情
 export const getSummaryDetail = (summaryName: string) =>
   apiClient.get(`/api/summaries/${summaryName}`);
+
+//CSV轮询接口
+export const getLatestCSV = (expName: string) => {
+  return axios.get(`/api/experiments/${expName}/csv/latest`);
+};

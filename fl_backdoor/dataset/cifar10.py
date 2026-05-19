@@ -1,63 +1,95 @@
-"""CIFAR-10 dataset implementation."""
+"""CIFAR-10 dataset using torchvision (offline-safe, no HF dependency)."""
 
-from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
-from torch.utils.data import DataLoader
-from torchvision.transforms import Compose, Normalize, ToTensor
-from datasets import load_dataset
+import torch
+from torch.utils.data import DataLoader, Subset, random_split
+from torchvision import datasets, transforms
 
 from .base import BaseDataset
 from .config import DatasetMeta
 
 
 class CIFAR10Dataset(BaseDataset):
-    """CIFAR-10 dataset loader for federated learning."""
-
     meta = DatasetMeta(
         name="cifar10",
         num_classes=10,
         input_shape=(3, 32, 32),
         mean=(0.5, 0.5, 0.5),
         std=(0.5, 0.5, 0.5),
-        hf_dataset_path="uoft-cs/cifar10",
+        hf_dataset_path="",
     )
 
     def __init__(self):
-        self._fds = None  # Cache FederatedDataset
-        self.raw_to_tensor = ToTensor()
-        self.normalize = Normalize(self.meta.mean, self.meta.std)
-        self.transforms = Compose([ToTensor(), self.normalize])
+        self.raw_to_tensor = transforms.ToTensor()
+        self.normalize = transforms.Normalize(self.meta.mean, self.meta.std)
 
-    def _apply_transforms(self, batch):
-        """Apply transforms and keep both raw and normalized images."""
-        raw_imgs = [self.raw_to_tensor(img) for img in batch["img"]]
-        batch["img_raw"] = raw_imgs
-        batch["img"] = [self.normalize(img) for img in raw_imgs]
-        return batch
+    def _apply_transforms(self, data):
+        img, label = data
+        img_tensor = self.raw_to_tensor(img)
+        return {
+            "img_raw": img_tensor,
+            "img": self.normalize(img_tensor),
+            "label": label,
+        }
 
-    def load_partition(
-        self, partition_id: int, num_partitions: int, batch_size: int
-    ):
-        if self._fds is None:
-            partitioner = IidPartitioner(num_partitions=num_partitions)
-            self._fds = FederatedDataset(
-                dataset=self.meta.hf_dataset_path,
-                partitioners={"train": partitioner},
-            )
-        partition = self._fds.load_partition(partition_id)
-        partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-        partition_train_test = partition_train_test.with_transform(
-            self._apply_transforms
+    def load_partition(self, partition_id: int, num_partitions: int, batch_size: int):
+        full_train = datasets.CIFAR10(
+            root="./data", train=True, download=True, transform=None
         )
-        trainloader = DataLoader(
-            partition_train_test["train"], batch_size=batch_size, shuffle=True
+
+        class WrappedDataset(torch.utils.data.Dataset):
+            def __init__(self, dataset, transform_fn):
+                self.dataset = dataset
+                self.transform_fn = transform_fn
+
+            def __len__(self):
+                return len(self.dataset)
+
+            def __getitem__(self, idx):
+                img, label = self.dataset[idx]
+                return self.transform_fn((img, label))
+
+        wrapped = WrappedDataset(full_train, self._apply_transforms)
+
+        total = len(wrapped)
+        indices = list(range(total))
+        torch.manual_seed(42)
+        indices = torch.randperm(total).tolist()
+
+        per_client = total // num_partitions
+        start = partition_id * per_client
+        end = start + per_client if partition_id < num_partitions - 1 else total
+        client_indices = indices[start:end]
+
+        client_subset = Subset(wrapped, client_indices)
+
+        n_local = len(client_subset)
+        n_val = int(0.2 * n_local)
+        n_train = n_local - n_val
+        train_subset, val_subset = random_split(
+            client_subset, [n_train, n_val],
+            generator=torch.Generator().manual_seed(42)
         )
-        testloader = DataLoader(
-            partition_train_test["test"], batch_size=batch_size
-        )
+
+        trainloader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+        testloader = DataLoader(val_subset, batch_size=batch_size)
         return trainloader, testloader
 
     def load_centralized_test(self, batch_size: int = 128):
-        test_dataset = load_dataset(self.meta.hf_dataset_path, split="test")
-        dataset = test_dataset.with_transform(self._apply_transforms)
-        return DataLoader(dataset, batch_size=batch_size)
+        full_test = datasets.CIFAR10(
+            root="./data", train=False, download=True, transform=None
+        )
+
+        class WrappedDataset(torch.utils.data.Dataset):
+            def __init__(self, dataset, transform_fn):
+                self.dataset = dataset
+                self.transform_fn = transform_fn
+
+            def __len__(self):
+                return len(self.dataset)
+
+            def __getitem__(self, idx):
+                img, label = self.dataset[idx]
+                return self.transform_fn((img, label))
+
+        wrapped = WrappedDataset(full_test, self._apply_transforms)
+        return DataLoader(wrapped, batch_size=batch_size)

@@ -31,7 +31,7 @@ class ExperimentRunner:
         self._stdout_task: Optional[asyncio.Task] = None
         self._on_log_line: Optional[Callable[[str], Awaitable[None]]] = None
         self._temp_home: Optional[Path] = None
-        self.run_id: Optional[str] = None   # 保存当前运行的 run_id
+        self.run_id: Optional[str] = None
 
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -57,12 +57,12 @@ class ExperimentRunner:
         if backup_config:
             config_manager.backup_config()
 
+        # 保存配置快照到实验目录
         exp_dir = RESULTS_DIR / exp_name
         exp_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = exp_dir / "run.log"
         self.exp_name = exp_name
 
-        # 保存配置快照到实验目录
         snapshot_path = exp_dir / "config_snapshot.toml"
         try:
             shutil.copy2(config_manager.TOML_PATH, snapshot_path)
@@ -77,8 +77,8 @@ class ExperimentRunner:
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
-        env["FLWR_TELEMETRY_ENABLED"] = "0"      # 关闭遥测
-        env["HF_DATASETS_OFFLINE"] = "1"         # 强制 Hugging Face 离线模式
+        env["FLWR_TELEMETRY_ENABLED"] = "0"     # 关闭遥测
+        env["HF_DATASETS_OFFLINE"] = "1"        # 强制 Hugging Face 离线模式
 
         self._status = "starting"
 
@@ -100,23 +100,47 @@ class ExperimentRunner:
         if not self.process or not self.log_file or not self.process.stdout:
             return
 
+        # 用于合并 \r 进度条行的缓冲区
+        progress_buffer = ""
+
         with open(self.log_file, "w", encoding="utf-8") as f:
             while True:
                 try:
-                    # 把阻塞式 readline 放到线程里
                     line = await asyncio.to_thread(self.process.stdout.readline)
                 except Exception as e:
                     print(f"[Runner] stdout read failed: {e}", flush=True)
                     break
 
                 if line == "":
-                    # 进程结束后，退出读取循环
                     if self.process.poll() is not None:
                         break
                     await asyncio.sleep(0.05)
                     continue
 
-                f.write(line)
+                # 合并 \r 行 
+                # 如果行以 \r 结尾（不包含 \n），说明是进度条更新，缓存起来
+                if line.endswith("\r") or (line.endswith("\r\n") and "\n" not in line.strip("\r\n")):
+                    # 纯 \r 结尾的行：进度条更新
+                    progress_buffer = line.rstrip("\r\n")
+                    continue
+                elif progress_buffer:
+                    # 前一行是进度条，当前行是后续内容
+                    # 把缓存的进度条行和当前行合并推送
+                    combined = progress_buffer + "\n" + line.rstrip("\n")
+                    f.write(combined + "\n")
+                    f.flush()
+                    progress_buffer = ""
+                    # 推送合并后的行
+                    if self._on_log_line:
+                        try:
+                            await self._on_log_line(combined)
+                        except Exception as e:
+                            print(f"[Runner] Failed to send log line: {e}", flush=True)
+                    continue
+
+                # 正常行处理
+                clean_line = line.rstrip("\r\n")
+                f.write(clean_line + "\n")
                 f.flush()
 
                 if "Successfully started run" in line:
@@ -125,14 +149,11 @@ class ExperimentRunner:
                         self.run_id = match.group(1)
                         print(f"[Runner] Captured run_id: {self.run_id}", flush=True)
 
-                callback = self._on_log_line
-                if callback is not None:
+                if self._on_log_line:
                     try:
-                        await callback(line.rstrip())
+                        await self._on_log_line(clean_line)
                     except Exception as e:
                         print(f"[Runner] Failed to send log line: {e}", flush=True)
-                else:
-                    print("[Runner] _on_log_line is None", flush=True)
 
         try:
             self.process.stdout.close()
@@ -142,37 +163,29 @@ class ExperimentRunner:
     async def stop(self) -> None:
         print("[Runner] >>> Stop method called <<<", flush=True)
 
-        # 立即更新状态，让前端知道已停止
         self._status = "idle"
 
-        # 保存需要清理的数据
         process = self.process
         run_id = self.run_id
         log_file = self.log_file
         temp_home = self._temp_home
 
-        # 清理实例属性，避免重复操作
         self.process = None
         self.exp_name = None
         self.log_file = None
         self.run_id = None
         self._temp_home = None
 
-        # 终止主进程（不等待，快速返回）
         if process and process.poll() is None:
             print("[Runner] Terminating main process...", flush=True)
             process.terminate()
-            # 不等待，直接返回，让操作系统异步终止
 
-        # 启动后台清理任务（不阻塞当前请求）
         asyncio.create_task(self._background_cleanup(process, run_id, log_file, temp_home))
         print("[Runner] Stop request processed, background cleanup started", flush=True)
 
     async def _background_cleanup(self, process, run_id, log_file, temp_home):
-        """后台清理任务，不阻塞 HTTP 响应"""
         import time
         try:
-            # 等待主进程结束（最多5秒）
             if process:
                 try:
                     process.wait(timeout=5)
@@ -181,16 +194,13 @@ class ExperimentRunner:
                 except Exception as e:
                     print(f"[Runner] Error waiting process: {e}", flush=True)
 
-            # 清理 Flower 运行
             if run_id:
                 print(f"[Runner] Stopping Flower run {run_id}", flush=True)
                 subprocess.run(f'flwr stop {run_id}', shell=True, check=False, timeout=5)
 
-            # 停止 Ray
             print("[Runner] Stopping Ray", flush=True)
             subprocess.run('ray stop', shell=True, check=False, timeout=5)
 
-            # 强制清理残留进程
             try:
                 import psutil
                 target_names = {'raylet.exe', 'gcs_server.exe'}
@@ -214,13 +224,11 @@ class ExperimentRunner:
                     subprocess.run('taskkill /F /IM raylet.exe /T', shell=True, check=False)
                     subprocess.run('taskkill /F /IM gcs_server.exe /T', shell=True, check=False)
 
-            # 恢复配置
             from backend import config_manager
             if config_manager.BACKUP_PATH.exists():
                 config_manager.restore_config()
                 print("[Runner] Config restored from backup", flush=True)
 
-            # 清理临时目录
             if temp_home and temp_home.exists():
                 shutil.rmtree(temp_home, ignore_errors=True)
                 print(f"[Runner] Cleaned up temp: {temp_home}", flush=True)
@@ -228,7 +236,7 @@ class ExperimentRunner:
             print("[Runner] Background cleanup finished", flush=True)
         except Exception as e:
             print(f"[Runner] Background cleanup error: {e}", flush=True)
-            
+
     async def get_status(self) -> dict:
         if self.process is None:
             return {"status": "idle", "exp_name": None}

@@ -174,24 +174,34 @@ async def _stream_log_file(websocket: WebSocket, log_path: Path) -> None:
 
 
 async def _watch_csv_files(websocket: WebSocket, exp_dir: Path) -> None:
-    """Watch CSV files for changes and send parsed updates."""
-    async for changes in awatch(exp_dir):
-        for change_type, path_str in changes:
-            if not path_str.endswith(".csv"):
-                continue
-            try:
-                df = pd.read_csv(path_str)
-                if df.empty:
+    """Watch the main CSV log file for changes and send structured updates."""
+    main_csv = exp_dir / f"{exp_dir.name}.csv"
+    
+    try:
+        async for changes in awatch(exp_dir):
+            for change_type, path_str in changes:
+                changed_path = Path(path_str)
+                # 只处理主日志 CSV，忽略 _clients.csv 和 _metrics.csv
+                if changed_path.name != main_csv.name:
                     continue
-                last_row = df.iloc[-1].to_dict()
-                await websocket.send_json({
-                    "type": "csv_update",
-                    "file": Path(path_str).name,
-                    "data": last_row,
-                })
-            except Exception as e:
-                print(f"Error reading CSV {path_str}: {e}")
-
+                
+                try:
+                    df = pd.read_csv(changed_path)
+                    if df.empty:
+                        continue
+                    last_row = df.iloc[-1].to_dict()
+                    if websocket.client_state.name == "CONNECTED":
+                        await websocket.send_json({
+                            "type": "csv_update",
+                            "file": changed_path.name,
+                            "data": last_row,
+                        })
+                except Exception as e:
+                    print(f"Error reading CSV {changed_path}: {e}")
+    except (WebSocketDisconnect, WebSocketClose, RuntimeError):
+        pass
+    except Exception as e:
+        print(f"[CSV Watch] Unexpected error: {e}")
 
 # ------------------------------
 # REST API Endpoints
@@ -305,6 +315,26 @@ async def get_experiment_details(exp_name: str):
     except Exception as e:
         raise HTTPException(500, str(e))
 
+@app.get("/api/experiments/{exp_name}/csv/latest")
+async def get_latest_csv_row(exp_name: str):
+    """返回主日志 CSV 的最新一行（用于前端图表实时更新）"""
+    exp_dir = RESULTS_DIR / exp_name
+    csv_path = exp_dir / f"{exp_name}.csv"
+    
+    if not csv_path.exists():
+        raise HTTPException(404, "CSV file not found yet")
+    
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        return {"round": None, "accuracy": None, "asr": None, "loss": None}
+    
+    last_row = df.iloc[-1].to_dict()
+    return {
+        "round": int(last_row.get("round", 0)),
+        "accuracy": float(last_row.get("accuracy", 0)),
+        "asr": float(last_row.get("asr", 0)),
+        "loss": float(last_row.get("loss", 0))
+    }
 
 @app.post("/api/batch/parse")
 async def parse_batch_config(file: UploadFile):
