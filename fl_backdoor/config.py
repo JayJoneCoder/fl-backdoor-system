@@ -231,49 +231,6 @@ class ExperimentConfig:
         }
     
     def get_defense_pipeline_kwargs(self) -> dict[str, Any]:
-        """返回构建防御流水线所需的三组参数字典。"""
-        client_defense_kwargs = {
-            "filter_ratio": self.client_defense_filter_ratio,
-            "min_keep": self.client_defense_min_keep,
-            "scoring_batch_size": self.client_defense_scoring_batch_size,
-            "use_label_centroids": self.client_defense_use_label_centroids,
-            "label_blend_alpha": self.client_defense_label_blend_alpha,
-            "min_class_samples": self.client_defense_min_class_samples,
-        }
-
-        detection_kwargs = {
-            "min_kept_clients": self.detection_min_kept_clients,
-            "enable_filter": self.detection_enable_filter,
-            "max_reject_fraction": self.detection_max_reject_fraction,
-            "percentile": self.detection_percentile,
-            "weight_norm": self.detection_weight_norm,
-            "weight_cosine": self.detection_weight_cosine,
-            "z_threshold": self.detection_z_threshold,
-            "top_k": self.detection_top_k,
-            "min_clients": self.detection_min_clients,
-            "cosine_floor": self.detection_cosine_floor,
-            "min_silhouette": self.detection_min_silhouette,
-            "cluster_score_gap": self.detection_cluster_score_gap,
-        }
-
-        aggregation_kwargs = {
-            "clip_norm": self.defense_clip_norm,
-            "trim_k": self.defense_trim_k,
-            "num_malicious": self.defense_num_malicious,
-            "krum_k": self.defense_krum_k,
-        }
-
-        return {
-            "client_defense_type": self.client_defense,
-            "detection_type": self.detection,
-            "aggregation_type": self.defense,
-            "seed": self.seed,
-            "client_defense_kwargs": client_defense_kwargs,
-            "detection_kwargs": detection_kwargs,
-            "aggregation_kwargs": aggregation_kwargs,
-        }
-
-    def get_defense_pipeline_kwargs(self) -> dict[str, Any]:
         """提取构建防御流水线所需的参数字典。"""
         return {
             "client_defense_type": self.client_defense,

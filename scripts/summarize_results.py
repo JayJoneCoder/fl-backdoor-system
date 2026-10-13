@@ -12,56 +12,14 @@ import pandas as pd
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from fl_backdoor.utils.metrics import auc as _auc, roc_curve as _roc_curve
 RESULTS_DIR = PROJECT_ROOT / "results"
 SUMMARIES_DIR = RESULTS_DIR / "summaries"
 
 
-# ---------- Helper functions (unchanged from original) ----------
-def _roc_curve(y_true, y_score):
-    y_true = np.asarray(y_true)
-    y_score = np.asarray(y_score)
-    desc_idx = np.argsort(y_score)[::-1]
-    y_true_sorted = y_true[desc_idx]
-    thresholds = np.unique(y_score)[::-1]
-    tpr_list = []
-    fpr_list = []
-    total_pos = np.sum(y_true == 1)
-    total_neg = np.sum(y_true == 0)
-    if total_pos == 0 or total_neg == 0:
-        return np.array([0, 1]), np.array([0, 1]), np.array([np.inf, -np.inf])
-    tp = 0
-    fp = 0
-    prev_score = None
-    for i, score in enumerate(y_score[desc_idx]):
-        if prev_score is not None and score != prev_score:
-            tpr_list.append(tp / total_pos)
-            fpr_list.append(fp / total_neg)
-        if y_true_sorted[i] == 1:
-            tp += 1
-        else:
-            fp += 1
-        prev_score = score
-    tpr_list.append(tp / total_pos)
-    fpr_list.append(fp / total_neg)
-    fpr = np.array([0] + fpr_list)
-    tpr = np.array([0] + tpr_list)
-    fpr = np.clip(fpr, 0, 1)
-    tpr = np.clip(tpr, 0, 1)
-    return fpr, tpr, thresholds
-
-
-def _auc(fpr, tpr):
-    order = np.argsort(fpr)
-    fpr_sorted = fpr[order]
-    tpr_sorted = tpr[order]
-    auc_value = 0.0
-    for i in range(1, len(fpr_sorted)):
-        width = fpr_sorted[i] - fpr_sorted[i-1]
-        height = (tpr_sorted[i] + tpr_sorted[i-1]) / 2.0
-        auc_value += width * height
-    return auc_value
-
-
+# ---------- CSV readers ----------
 def compute_auc_from_clients_csv(exp_dir: Path):
     clients_csv = None
     for f in exp_dir.glob("*_clients.csv"):
@@ -72,13 +30,16 @@ def compute_auc_from_clients_csv(exp_dir: Path):
     df = pd.read_csv(clients_csv)
     if "score" not in df.columns or "is_malicious" not in df.columns:
         return None
-    df_valid = df[df["is_malicious"] >= 0].copy()
+    df_valid = df[df["is_malicious"].isin([0, 1])].copy()
+    df_valid["score"] = pd.to_numeric(df_valid["score"], errors="coerce")
+    df_valid = df_valid[np.isfinite(df_valid["score"])]
     if df_valid.empty:
         return None
     y_true = df_valid["is_malicious"].astype(int).values
     y_score = df_valid["score"].values
     fpr, tpr, _ = _roc_curve(y_true, y_score)
-    return _auc(fpr, tpr)
+    value = _auc(fpr, tpr)
+    return float(value) if np.isfinite(value) else None
 
 
 def find_main_csv(exp_dir: Path):

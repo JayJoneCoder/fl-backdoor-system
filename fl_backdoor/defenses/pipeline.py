@@ -22,7 +22,7 @@ from flwr.serverapp.strategy.strategy_utils import aggregate_arrayrecords
 
 from .base import DefenseBase, DefenseConfig, IdentityDefense
 from .client import build_client_defense
-from .server.aggregation.krum import KrumDefense
+from .server.aggregation.krum import KrumDefense, _krum_select
 from .server.aggregation.norm_clipping import NormClippingDefense
 from .server.aggregation.trimmed_mean import TrimmedMeanDefense
 from .server.detection import build_detection
@@ -193,33 +193,6 @@ def _flatten_update(
     return np.concatenate(deltas, axis=0)
 
 
-def _krum_select(flat_updates: list[np.ndarray], f: int, k: int) -> list[int]:
-    n = len(flat_updates)
-    if n < 2:
-        raise ValueError("Need at least 2 clients for Krum.")
-
-    if n <= f + 2:
-        raise ValueError(f"Krum requires n > f + 2, got n={n}, f={f}.")
-
-    distances = np.zeros((n, n), dtype=np.float64)
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = np.linalg.norm(flat_updates[i] - flat_updates[j]) ** 2
-            distances[i, j] = d
-            distances[j, i] = d
-
-    scores = []
-    m = n - f - 2
-    for i in range(n):
-        dists = np.sort(distances[i])
-        score = np.sum(dists[1 : m + 1])
-        scores.append(score)
-
-    scores = np.array(scores)
-    selected_indices = np.argsort(scores)[:k]
-    return selected_indices.tolist()
-
-
 def _merge_metrics(*records: MetricRecord | None) -> MetricRecord:
     merged: dict[str, Any] = {}
     for rec in records:
@@ -234,14 +207,24 @@ def _finalize_keep_indices(
     total: int,
     min_kept_clients: int,
     enable_filter: bool,
+    max_reject_fraction: float = 1.0,
 ) -> tuple[list[int], np.ndarray]:
     """Turn a suspicious mask into final keep_indices + final suspicious_mask."""
+    if not np.isfinite(max_reject_fraction) or not 0 <= max_reject_fraction <= 1:
+        raise ValueError("max_reject_fraction must be in [0, 1].")
     effective_min_kept = max(1, min(int(min_kept_clients), int(total)))
+    effective_min_kept = max(
+        effective_min_kept, total - int(np.floor(total * max_reject_fraction))
+    )
 
     if enable_filter:
         keep_indices = np.where(~suspicious)[0].tolist()
         if len(keep_indices) < effective_min_kept:
-            keep_indices = np.argsort(score)[:effective_min_kept].tolist()
+            # A rejection cap may reinstate suspicious clients, but must never
+            # replace an already accepted client with a lower-scoring suspect.
+            candidates = np.flatnonzero(suspicious)
+            ranked = candidates[np.argsort(score[candidates], kind="stable")]
+            keep_indices.extend(ranked[:effective_min_kept - len(keep_indices)].tolist())
     else:
         keep_indices = list(range(total))
 
@@ -584,7 +567,8 @@ class DefensePipelineFedAvg(FedAvg):
         warmup_rounds = int(extra.get("warmup_rounds", 0))
 
         percentile = float(extra.get("percentile", 80.0))
-        norm_z_threshold = float(extra.get("norm_z_threshold", 3.5))
+        norm_z_threshold = float(extra.get("z_threshold", extra.get("norm_z_threshold", 3.5)))
+        max_reject_fraction = float(extra.get("max_reject_fraction", 1.0))
         min_silhouette = float(extra.get("min_silhouette", 0.05))
         cluster_score_gap = float(extra.get("cluster_score_gap", 0.15))
 
@@ -637,7 +621,11 @@ class DefensePipelineFedAvg(FedAvg):
         if not local_vectors:
             return replies, MetricRecord()
 
-        features = extract_features(global_vector, local_vectors)
+        features = extract_features(
+            global_vector, local_vectors,
+            weight_norm=float(extra.get("weight_norm", 1.0)),
+            weight_cosine=float(extra.get("weight_cosine", 1.0)),
+        )
         norms = features["norms"]
         norm_z = features["norm_z"]
         cosine = features["cosine"]
@@ -688,10 +676,20 @@ class DefensePipelineFedAvg(FedAvg):
                 total=total,
                 min_kept_clients=min_kept_clients,
                 enable_filter=enable_filter,
+                max_reject_fraction=max_reject_fraction,
             )
 
         elif "anomaly" in detection_type:
             raw_suspicious = (norm_z > norm_z_threshold) | (cosine < cosine_floor)
+            top_k = extra.get("top_k")
+            if top_k is not None:
+                top_k = int(top_k)
+                if top_k < 0:
+                    raise ValueError("top_k must be non-negative.")
+                candidates = np.flatnonzero(raw_suspicious)
+                ranked = candidates[np.argsort(-score[candidates], kind="stable")]
+                raw_suspicious = np.zeros(total, dtype=bool)
+                raw_suspicious[ranked[:top_k]] = True
             threshold_value = norm_z_threshold
             keep_indices, suspicious_mask = _finalize_keep_indices(
                 score=score,
@@ -699,6 +697,7 @@ class DefensePipelineFedAvg(FedAvg):
                 total=total,
                 min_kept_clients=min_kept_clients,
                 enable_filter=enable_filter,
+                max_reject_fraction=max_reject_fraction,
             )
 
         elif "cosine" in detection_type:
@@ -710,6 +709,7 @@ class DefensePipelineFedAvg(FedAvg):
                 total=total,
                 min_kept_clients=min_kept_clients,
                 enable_filter=enable_filter,
+                max_reject_fraction=max_reject_fraction,
             )
 
         else:
@@ -1018,15 +1018,12 @@ class DefensePipelineFedAvg(FedAvg):
             gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
             total_mal = sum(1 for l in gt_labels if l == 1)
             total_ben = sum(1 for l in gt_labels if l == 0)
-            # trimmed_mean 剔除 2*trim_k 个客户端
-            removed_count = 2 * trim_k_int
-            # 注意：我们不知道具体哪些客户端被剔除，所以无法计算 kept_mal/kept_ben
-            # 只记录总剔除数
+            # Coordinate-wise trimming does not remove whole clients.
             metrics["agg_total_malicious"] = total_mal
             metrics["agg_total_benign"] = total_ben
-            metrics["agg_removed_clients"] = removed_count
-            metrics["agg_kept_clients"] = len(replies) - removed_count
-            # 比率暂不计算（因为缺少标签信息）
+            metrics["agg_trimmed_values_per_coordinate"] = 2 * trim_k_int
+            metrics["agg_removed_clients"] = 0
+            metrics["agg_kept_clients"] = len(replies)
 
             return aggregated_arrays, metrics
 
@@ -1048,7 +1045,7 @@ class DefensePipelineFedAvg(FedAvg):
 
             n = len(flat_updates)
             f = num_malicious
-            k = min(krum_k, n)
+            k = krum_k
 
             selected_indices = _krum_select(flat_updates, f=f, k=k)
             selected_updates = [client_ndarrays_list[i] for i in selected_indices]

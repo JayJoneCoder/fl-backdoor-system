@@ -48,7 +48,13 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 def extract_features(
     global_vector: np.ndarray,
     local_vectors: list[np.ndarray],
+    *,
+    weight_norm: float = 1.0,
+    weight_cosine: float = 1.0,
 ) -> dict[str, np.ndarray]:
+
+    if not all(np.isfinite(w) and w >= 0 for w in (weight_norm, weight_cosine)):
+        raise ValueError("Detection score weights must be finite and non-negative.")
 
     if not local_vectors:
         return {}
@@ -90,7 +96,7 @@ def extract_features(
     # =========================
     # score
     # =========================
-    score = norm_z + np.clip(1.0 - cosine, 0.0, 2.0)
+    score = weight_norm * norm_z + weight_cosine * np.clip(1.0 - cosine, 0.0, 2.0)
 
     return {
         "deltas": deltas,
