@@ -1,5 +1,8 @@
 """fl_backdoor: A Flower / PyTorch app."""
 
+from contextlib import contextmanager
+from typing import Iterator
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -85,12 +88,26 @@ def train(net, trainloader, epochs, lr, device):
     return avg_trainloss
 
 
+@contextmanager
+def evaluation_mode(net: nn.Module) -> Iterator[None]:
+    """Temporarily disable training behavior and gradients, restoring every layer."""
+    training_modes = [(module, module.training) for module in net.modules()]
+    try:
+        net.eval()
+        with torch.no_grad():
+            yield
+    finally:
+        # Calling net.train() here would overwrite individually frozen layer modes.
+        for module, was_training in training_modes:
+            module.training = was_training
+
+
 def test(net, testloader, device):
-    """Validate the model on the test set."""
+    """Validate without updating model state or changing its original layer modes."""
     net.to(device)
     criterion = torch.nn.CrossEntropyLoss()
     correct, loss = 0, 0.0
-    with torch.no_grad():
+    with evaluation_mode(net):
         for batch in testloader:
             images = batch["img"].to(device)
             labels = batch["label"].to(device)

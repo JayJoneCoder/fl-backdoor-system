@@ -9,7 +9,7 @@ from flwr.serverapp.strategy import FedAvg
 
 from fl_backdoor.attacks import build_attack
 from fl_backdoor.defenses.pipeline import build_defense_pipeline
-from fl_backdoor.task import Net, load_centralized_dataset, test
+from fl_backdoor.task import Net, evaluation_mode, load_centralized_dataset, test
 from fl_backdoor.utils.logger import CSVLogger
 from fl_backdoor.dataset import get_dataset
 from fl_backdoor.config import ExperimentConfig
@@ -102,14 +102,14 @@ def get_global_evaluate_fn(
 
 
 def evaluate_asr(model, triggered_testloader, device, target_label: int) -> float:
+    """Evaluate ASR without updating model state or changing original layer modes."""
     print(">>> [DEBUG] Enter evaluate_asr")
 
-    model.eval()
     success = 0
     total = 0
 
     try:
-        with torch.no_grad():
+        with evaluation_mode(model):
             for batch in triggered_testloader:
                 images = batch["img"].to(device)
                 labels = batch["label"].to(device)
