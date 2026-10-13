@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Button, Space, Input, message, Card, Tag, Alert, Progress } from 'antd';
 import { PlayCircleOutlined, StopOutlined, SyncOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
-import { startExperiment, stopExperiment, getExperimentStatus } from '../../api/client';
+import { startExperiment, stopExperiment, getExperimentStatus, getConfig } from '../../api/client';
+import { getWebSocketUrl } from '../../api/endpoints';
 import LogViewer from '../../components/LogViewer';
-
-const MAX_LOG_LINES = 1000;
-const RENDER_INTERVAL = 200;
+import { useBufferedLogs } from '../../hooks/useBufferedLogs';
+import { getProgressPercent, mergeMetricPoint, normalizeExperimentStatus, parseMetricPoint, parseTotalRounds } from '../../utils/experimentStream';
+import type { MetricPoint } from '../../utils/experimentStream';
 
 interface ExperimentControlProps {
   onBeforeStart?: () => Promise<{ action: 'cancel' | 'save' | 'backup' }>;
@@ -17,11 +18,10 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'running' | 'finished'>('idle');
 
-  const [logs, setLogs] = useState<string[]>([]);
+  const { logs, queueLog, flushLogs, resetLogs } = useBufferedLogs();
   const wsRef = useRef<WebSocket | null>(null);
-
-  const bufferRef = useRef<string[]>([]);
-  const lastRenderRef = useRef(0);
+  const connectedNameRef = useRef<string | null>(null);
+  const startPendingRef = useRef(false);
 
   const [currentRound, setCurrentRound] = useState<number | null>(null);
   const [totalRound, setTotalRound] = useState<number | null>(null);
@@ -32,7 +32,40 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
   const lossChartRef = useRef<HTMLDivElement>(null);      // 副图 Loss
   const lossChartInstance = useRef<echarts.ECharts | null>(null);
 
-  const lastRoundRef = useRef<number>(-1);
+  // Keep replayed data even before initialization or while painting is paused.
+  const metricHistoryRef = useRef<MetricPoint[]>([]);
+  const renderFrameRef = useRef<number | null>(null);
+
+  const renderCharts = useCallback(() => {
+    const history = metricHistoryRef.current;
+    const rounds = history.map(point => point.round);
+    chartInstance.current?.setOption({
+      xAxis: { data: rounds },
+      series: [
+        { name: 'ACC', data: history.map(point => point.accuracy) },
+        { name: 'ASR', data: history.map(point => point.asr) },
+      ],
+    });
+    lossChartInstance.current?.setOption({
+      xAxis: { data: rounds },
+      series: [{ name: 'Loss', data: history.map(point => point.loss) }],
+    });
+  }, []);
+
+  const scheduleChartRender = useCallback(() => {
+    if (renderFrameRef.current !== null) return;
+    renderFrameRef.current = requestAnimationFrame(() => {
+      renderFrameRef.current = null;
+      renderCharts();
+    });
+  }, [renderCharts]);
+
+  const resetCharts = useCallback(() => {
+    if (renderFrameRef.current !== null) cancelAnimationFrame(renderFrameRef.current);
+    renderFrameRef.current = null;
+    metricHistoryRef.current = [];
+    renderCharts();
+  }, [renderCharts]);
 
   // ---------- 初始化两张图表 ----------
   useEffect(() => {
@@ -64,6 +97,8 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
           ],
         });
       }
+      // History may have arrived while initialization was still waiting for a frame.
+      renderCharts();
     });
 
     const handleResize = () => {
@@ -76,93 +111,73 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
 
     return () => {
       cancelAnimationFrame(rid);
+      if (renderFrameRef.current !== null) cancelAnimationFrame(renderFrameRef.current);
+      renderFrameRef.current = null;
       chartInstance.current?.dispose();
       chartInstance.current = null;
       lossChartInstance.current?.dispose();
       lossChartInstance.current = null;
       window.removeEventListener('resize', handleResize);
     };
-  }, []);
-
-  // ---------- 更新图表数据 ----------
-  const updateChart = useCallback((round: number, accuracy: number, asr: number, loss: number) => {
-    requestAnimationFrame(() => {
-      // ★ 防重复
-      if (round <= lastRoundRef.current) return;
-      lastRoundRef.current = round;
-
-      // ---- 主图 ACC + ASR ----
-      if (chartInstance.current) {
-        chartInstance.current.setOption({
-          xAxis: { data: [...(chartInstance.current.getOption().xAxis as any)?.[0]?.data ?? [], round] },
-          series: [
-            { data: [...((chartInstance.current.getOption().series as any)?.[0]?.data ?? []), accuracy] },
-            { data: [...((chartInstance.current.getOption().series as any)?.[1]?.data ?? []), asr] },
-          ],
-        });
-      }
-
-      // ---- 副图 Loss ----
-      if (lossChartInstance.current) {
-        lossChartInstance.current.setOption({
-          xAxis: { data: [...(lossChartInstance.current.getOption().xAxis as any)?.[0]?.data ?? [], round] },
-          series: [
-            { data: [...((lossChartInstance.current.getOption().series as any)?.[0]?.data ?? []), loss] },
-          ],
-        });
-      }
-    });
-  }, []);
+  }, [renderCharts]);
 
   // ---------- WebSocket 连接 ----------
   const connectWS = useCallback((name: string) => {
     if (wsRef.current) wsRef.current.close();
 
-    const socket = new WebSocket(`ws://127.0.0.1:8000/ws/logs/${name}`);
+    // Each connection replays the complete run. Start a fresh display to avoid
+    // duplicated logs and mixing one experiment's history with another's.
+    resetLogs();
+    resetCharts();
+    setCurrentRound(null);
+    setTotalRound(null);
+
+    const socket = new WebSocket(getWebSocketUrl(`/ws/logs/${encodeURIComponent(name)}`));
     wsRef.current = socket;
+    connectedNameRef.current = name;
 
     socket.onmessage = (event) => {
+      if (wsRef.current !== socket) return;
       try {
         const msg = JSON.parse(event.data);
 
         if (msg.type === 'status') {
-          const raw = String(msg.data.status ?? '').toLowerCase();
-          if (raw === 'running' || raw === 'starting') setStatus('running');
-          else if (raw === 'completed' || raw === 'finished') setStatus('finished');
-          else if (raw === 'idle') setStatus('idle');
+          const nextStatus = normalizeExperimentStatus(msg.data.status);
+          setStatus(nextStatus);
+          const total = parseTotalRounds(msg.data.total_rounds);
+          if (total !== null) setTotalRound(total);
+          if (nextStatus === 'running') setCurrentRound(previous => previous ?? 0);
+          else flushLogs();
           return;
         }
 
         if (msg.type === 'csv_update' && msg.data) {
-          const d = msg.data;
-          if (d.round !== null && d.round !== undefined) {
-            updateChart(Number(d.round), Number(d.accuracy), Number(d.asr), Number(d.loss));
+          const point = parseMetricPoint(msg.data);
+          if (point) {
+            metricHistoryRef.current = mergeMetricPoint(metricHistoryRef.current, point);
+            setCurrentRound(metricHistoryRef.current.at(-1)!.round);
+            scheduleChartRender();
           }
           return;
         }
       } catch {
+        // Preserve ANSI color escapes, but remove terminal-only backspace/VT/FF.
+        // eslint-disable-next-line no-control-regex
         const cleanLine = event.data.replace(/[\x08\x0B\x0C]/g, '');
-        const roundMatch = cleanLine.match(/ROUND\s+(\d+)\/(\d+)/i);
-        if (roundMatch) {
-          setCurrentRound(parseInt(roundMatch[1], 10));
-          setTotalRound(parseInt(roundMatch[2], 10));
-        }
-        bufferRef.current.push(cleanLine);
-      }
-
-      const now = Date.now();
-      if (now - lastRenderRef.current > RENDER_INTERVAL) {
-        lastRenderRef.current = now;
-        setLogs(prev => {
-          const merged = [...prev, ...bufferRef.current];
-          bufferRef.current = [];
-          return merged.length > MAX_LOG_LINES ? merged.slice(-MAX_LOG_LINES) : merged;
-        });
+        queueLog(cleanLine);
       }
     };
 
-    socket.onclose = () => { wsRef.current = null; };
-  }, [updateChart]);
+    socket.onclose = () => {
+      if (wsRef.current === socket) {
+        flushLogs();
+        wsRef.current = null;
+      }
+    };
+    socket.onerror = () => {
+      if (wsRef.current === socket) queueLog('[System] 日志连接异常，正在等待重连。');
+    };
+  }, [scheduleChartRender, resetCharts, resetLogs, queueLog, flushLogs]);
 
   // ---------- 启动 / 停止 ----------
   const handleStart = async () => {
@@ -172,36 +187,29 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       if (result.action === 'cancel') return;
     }
     setLoading(true);
+    startPendingRef.current = true;
     try {
-      setLogs([]);
-      setCurrentRound(null);
-      setTotalRound(null);
-      lastRoundRef.current = -1;
+      const config = await getConfig();
+      const total = parseTotalRounds(config.data['num-server-rounds']);
+      wsRef.current?.close();
+      wsRef.current = null;
+      resetLogs();
+      setCurrentRound(0);
+      setTotalRound(total);
+      resetCharts();
 
-      // ★ 同时清空两张图
-      requestAnimationFrame(() => {
-        chartInstance.current?.setOption({
-          xAxis: { data: [] },
-          series: [
-            { name: 'ACC', type: 'line', data: [] },
-            { name: 'ASR', type: 'line', data: [] },
-          ],
-        });
-        lossChartInstance.current?.setOption({
-          xAxis: { data: [] },
-          series: [
-            { name: 'Loss', type: 'line', data: [] },
-          ],
-        });
-      });
-
-      connectWS(expName);
-      await startExperiment(expName);
-      message.success(`实验 "${expName}" 已启动`);
+      const name = expName.trim();
+      // Connect after the old log has been truncated. History replay fills the gap.
+      await startExperiment(name);
       setStatus('running');
+      connectWS(name);
+      setCurrentRound(0);
+      setTotalRound(total);
+      message.success(`实验 "${name}" 已启动`);
     } catch {
       message.error('启动失败');
     } finally {
+      startPendingRef.current = false;
       setLoading(false);
     }
   };
@@ -216,8 +224,8 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       await Promise.race([stopPromise, timeoutPromise]);
       message.success('实验已停止');
       setStatus('idle');
-    } catch (e: any) {
-      message.error(e?.message || '停止失败');
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '停止失败');
       setStatus('idle');
     } finally {
       setLoading(false);
@@ -225,19 +233,43 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
   };
 
   useEffect(() => {
+    let disposed = false;
+    let checking = false;
     const checkStatus = async () => {
+      if (checking || startPendingRef.current) return;
+      checking = true;
+      const observedSocket = wsRef.current;
       try {
         const res = await getExperimentStatus();
-        setStatus(res.data.status);
-        if (res.data.status === 'running' && res.data.exp_name) {
+        if (disposed || startPendingRef.current || wsRef.current !== observedSocket) return;
+        const nextStatus = normalizeExperimentStatus(res.data.status);
+        setStatus(nextStatus);
+        if (nextStatus !== 'idle' && res.data.exp_name) {
           setExpName(res.data.exp_name);
-          if (!wsRef.current) connectWS(res.data.exp_name);
+          if (!wsRef.current || connectedNameRef.current !== res.data.exp_name) {
+            connectWS(res.data.exp_name);
+          }
         }
-      } catch {}
+        const total = parseTotalRounds(res.data.total_rounds);
+        if (total !== null) setTotalRound(total);
+      } catch {
+        // A transient backend failure is retried on the next polling interval.
+      } finally {
+        checking = false;
+      }
     };
+    void checkStatus();
     const interval = setInterval(checkStatus, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+      wsRef.current?.close();
+      wsRef.current = null;
+      connectedNameRef.current = null;
+    };
   }, [connectWS]);
+
+  const progress = getProgressPercent(currentRound, totalRound);
 
   return (
     <Card title="实验控制" style={{ marginTop: 24 }}>
@@ -260,9 +292,9 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
 
         {status === 'running' && <Alert message="实验运行中" type="info" showIcon />}
 
-        {currentRound !== null && totalRound !== null && (
+        {progress !== null && (
           <div style={{ marginBottom: 10 }}>
-            <Progress percent={Math.round((currentRound / totalRound) * 100)} status="active" />
+            <Progress percent={progress} status={status === 'running' ? 'active' : 'normal'} />
             <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>ROUND {currentRound} / {totalRound}</div>
           </div>
         )}

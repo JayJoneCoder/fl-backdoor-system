@@ -32,12 +32,19 @@ class ExperimentRunner:
         self._on_log_line: Optional[Callable[[str], Awaitable[None]]] = None
         self._temp_home: Optional[Path] = None
         self.run_id: Optional[str] = None
+        self._log_generation = 0
+        self._log_runs: dict[str, tuple[int, int]] = {}
+        self.total_rounds: Optional[int] = None
 
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
     def set_log_callback(self, callback: Callable[[str], Awaitable[None]]) -> None:
         self._on_log_line = callback
+
+    def get_log_context(self, exp_name: str) -> tuple[int, int]:
+        """Keep each run's identity even after stop clears the active process."""
+        return self._log_runs.get(exp_name, (0, 0))
 
     async def start(
         self,
@@ -62,6 +69,13 @@ class ExperimentRunner:
         exp_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = exp_dir / "run.log"
         self.exp_name = exp_name
+        self.total_rounds = int(config_manager.get_config()["num-server-rounds"])
+        self.run_id = None
+
+        # Truncate before returning from start, so a reconnect cannot replay old logs.
+        self._log_generation += 1
+        self._log_runs[exp_name] = (self._log_generation, time.time_ns())
+        self.log_file.write_text("", encoding="utf-8")
 
         snapshot_path = exp_dir / "config_snapshot.toml"
         try:
@@ -100,45 +114,24 @@ class ExperimentRunner:
         if not self.process or not self.log_file or not self.process.stdout:
             return
 
-        # 用于合并 \r 进度条行的缓冲区
-        progress_buffer = ""
-
-        with open(self.log_file, "w", encoding="utf-8") as f:
+        # Bind this reader to its own process/file, not a later run's mutable fields.
+        process = self.process
+        log_file = self.log_file
+        with open(log_file, "a", encoding="utf-8") as f:
             while True:
                 try:
-                    line = await asyncio.to_thread(self.process.stdout.readline)
+                    line = await asyncio.to_thread(process.stdout.readline)
                 except Exception as e:
                     print(f"[Runner] stdout read failed: {e}", flush=True)
                     break
 
                 if line == "":
-                    if self.process.poll() is not None:
+                    if process.poll() is not None:
                         break
                     await asyncio.sleep(0.05)
                     continue
 
-                # 合并 \r 行 
-                # 如果行以 \r 结尾（不包含 \n），说明是进度条更新，缓存起来
-                if line.endswith("\r") or (line.endswith("\r\n") and "\n" not in line.strip("\r\n")):
-                    # 纯 \r 结尾的行：进度条更新
-                    progress_buffer = line.rstrip("\r\n")
-                    continue
-                elif progress_buffer:
-                    # 前一行是进度条，当前行是后续内容
-                    # 把缓存的进度条行和当前行合并推送
-                    combined = progress_buffer + "\n" + line.rstrip("\n")
-                    f.write(combined + "\n")
-                    f.flush()
-                    progress_buffer = ""
-                    # 推送合并后的行
-                    if self._on_log_line:
-                        try:
-                            await self._on_log_line(combined)
-                        except Exception as e:
-                            print(f"[Runner] Failed to send log line: {e}", flush=True)
-                    continue
-
-                # 正常行处理
+                # text=True already normalizes CR/CRLF; never hold a line until EOF.
                 clean_line = line.rstrip("\r\n")
                 f.write(clean_line + "\n")
                 f.flush()
@@ -156,7 +149,7 @@ class ExperimentRunner:
                         print(f"[Runner] Failed to send log line: {e}", flush=True)
 
         try:
-            self.process.stdout.close()
+            process.stdout.close()
         except Exception:
             pass
 
@@ -241,11 +234,12 @@ class ExperimentRunner:
         if self.process is None:
             return {"status": "idle", "exp_name": None}
         if self.is_running():
-            return {"status": "running", "exp_name": self.exp_name}
+            return {"status": "running", "exp_name": self.exp_name, "total_rounds": self.total_rounds}
         return {
             "status": "finished",
             "exp_name": self.exp_name,
             "exit_code": self.process.returncode,
+            "total_rounds": self.total_rounds,
         }
 
     def get_log_tail(self, lines: int = 50) -> list[str]:

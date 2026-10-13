@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useImperativeHandle, forwardRef } from 'react';
+import { useEffect, useState, useImperativeHandle, forwardRef } from 'react';
 import {
   Form,
   Select,
@@ -32,6 +32,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import { getConfigSchema, getConfig, updateConfig } from '../../api/client';
+import { getBackendUrl } from '../../api/endpoints';
 import type { UploadFile } from 'antd/es/upload/interface';
 import type { MenuProps } from 'antd';
 
@@ -126,7 +127,7 @@ const GROUP_LABELS: Record<string, string> = {
   other: '其他配置',
 };
 
-const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
+const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
   const [schema, setSchema] = useState<Record<string, FieldSchema>>({});
   const [groups, setGroups] = useState<string[]>([]);
   const [currentConfig, setCurrentConfig] = useState<Record<string, any>>({});
@@ -147,7 +148,6 @@ const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
   const [backups, setBackups] = useState<any[]>([]);
   const [backupLoading, setBackupLoading] = useState(false);
   const [selectedBackup, setSelectedBackup] = useState<string | null>(null);
-  const [backupContent, setBackupContent] = useState('');
   const [viewBackupModalVisible, setViewBackupModalVisible] = useState(false);
   const [editingBackupContent, setEditingBackupContent] = useState('');
 
@@ -196,7 +196,7 @@ const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
   // 获取当前 toml 原始内容（用于高级模式）
   const fetchTomlContent = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/config/raw');
+      const response = await fetch(getBackendUrl('/api/config/raw'));
       const data = await response.json();
       setTomlContent(data.content);
     } catch (error) {
@@ -240,13 +240,13 @@ const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
             const input = document.getElementById('backupNameInput') as HTMLInputElement;
             const customName = input?.value?.trim();
             // 1. 写入 pyproject.toml（应用配置）
-            await fetch('http://localhost:8000/api/config/raw', {
+            await fetch(getBackendUrl('/api/config/raw'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ content: tomlContent }),
             });
             // 2. 创建当前配置的备份
-            await fetch('http://localhost:8000/api/config/backups', {
+            await fetch(getBackendUrl('/api/config/backups'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name: customName || undefined }),
@@ -258,7 +258,7 @@ const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
           },
           onCancel: async () => {
             // 仅保存并应用，不备份
-            await fetch('http://localhost:8000/api/config/raw', {
+            await fetch(getBackendUrl('/api/config/raw'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ content: tomlContent }),
@@ -296,7 +296,7 @@ const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
             const input = document.getElementById('backupNameInput') as HTMLInputElement;
             const customName = input?.value?.trim();
             
-            const res = await fetch('http://localhost:8000/api/config/backups/content', {
+            const res = await fetch(getBackendUrl('/api/config/backups/content'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ 
@@ -316,7 +316,7 @@ const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
                 cancelText: '覆盖',
                 onOk: async () => {
                   // 重新请求，使用 auto 策略
-                  const retryRes = await fetch('http://localhost:8000/api/config/backups/content', {
+                  const retryRes = await fetch(getBackendUrl('/api/config/backups/content'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
@@ -331,7 +331,7 @@ const ConfigForm = forwardRef<ConfigFormHandle>((props, ref) => {
                 },
                 onCancel: async () => {
                   // 覆盖
-                  const retryRes = await fetch('http://localhost:8000/api/config/backups/content', {
+                  const retryRes = await fetch(getBackendUrl('/api/config/backups/content'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
@@ -627,7 +627,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
   const loadBackups = async () => {
     setBackupLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/api/config/backups');
+      const res = await fetch(getBackendUrl('/api/config/backups'));
       const data = await res.json();
       setBackups(data.backups);
     } catch (error) {
@@ -639,7 +639,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
 
   const handleCreateBackup = async (customName?: string, onConflict: string = 'ask'): Promise<void> => {
     try {
-      const res = await fetch('http://localhost:8000/api/config/backups', {
+      const res = await fetch(getBackendUrl('/api/config/backups'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: customName, on_conflict: onConflict }),
@@ -700,10 +700,9 @@ const renderDefenseGroup = (defenseFields: string[]) => {
 
   const handleViewBackup = async (filename: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/config/backups/${filename}`);
+      const res = await fetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(filename)}`));
       const data = await res.json();
       setSelectedBackup(filename);
-      setBackupContent(data.content);
       setEditingBackupContent(data.content);
       setViewBackupModalVisible(true);
     } catch (error) {
@@ -714,7 +713,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
   const handleSaveBackupContent = async () => {
     if (!selectedBackup) return;
     try {
-      const response = await fetch(`http://localhost:8000/api/config/backups/${selectedBackup}`, {
+      const response = await fetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(selectedBackup)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editingBackupContent }),
@@ -748,7 +747,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       cancelText: '仅恢复不备份',
       onOk: async () => {
         try {
-          const res = await fetch('http://localhost:8000/api/config/restore', {
+          const res = await fetch(getBackendUrl('/api/config/restore'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename, backup_current: true, backup_name: backupNameInput || undefined }),
@@ -763,7 +762,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       },
       onCancel: async () => {
         try {
-          const res = await fetch('http://localhost:8000/api/config/restore', {
+          const res = await fetch(getBackendUrl('/api/config/restore'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename, backup_current: false }),
@@ -795,7 +794,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
-          await fetch(`http://localhost:8000/api/config/backups/${filename}`, { method: 'DELETE' });
+          await fetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(filename)}`), { method: 'DELETE' });
           message.success('备份已删除');
           loadBackups();
         } catch (error) {
@@ -849,7 +848,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
         onOk: async () => {
           try {
             await onFinish(form.getFieldsValue());
-            await fetch('http://localhost:8000/api/config/backups', {
+            await fetch(getBackendUrl('/api/config/backups'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name: backupNameInput || undefined }),
@@ -918,7 +917,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
           cancelText: '仅恢复不备份',
           onOk: async () => {
             try {
-              const res = await fetch('http://localhost:8000/api/config/restore', {
+              const res = await fetch(getBackendUrl('/api/config/restore'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ filename, backup_current: true, backup_name: backupNameInput || undefined }),
@@ -933,7 +932,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
           },
           onCancel: async () => {
             try {
-              const res = await fetch('http://localhost:8000/api/config/restore', {
+              const res = await fetch(getBackendUrl('/api/config/restore'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ filename, backup_current: false }),

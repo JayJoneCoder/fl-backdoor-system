@@ -2,11 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Card, Progress, Tag, Alert, Space, Typography } from 'antd';
 import { SyncOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import LogViewer from '../LogViewer';
+import { getWebSocketUrl } from '../../api/endpoints';
+import { useBufferedLogs } from '../../hooks/useBufferedLogs';
 
 const { Text } = Typography;
-
-const MAX_LOG_LINES = 1000;
-const RENDER_INTERVAL = 200;
 
 interface BatchStatus {
   batch_id: string;
@@ -19,46 +18,48 @@ interface BatchStatus {
 
 const BatchMonitor: React.FC<{ batchId: string; onComplete?: () => void }> = ({ batchId, onComplete }) => {
   const [status, setStatus] = useState<BatchStatus | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
+  const { logs, queueLog, flushLogs, resetLogs } = useBufferedLogs();
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const bufferRef = useRef<string[]>([]);
-  const lastRenderRef = useRef(0);
+  const onCompleteRef = useRef(onComplete);
 
   useEffect(() => {
-    const socket = new WebSocket(`ws://127.0.0.1:8000/ws/batch/${batchId}`);
-    wsRef.current = socket;
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  useEffect(() => {
+    resetLogs();
+    let active = true;
+    let completed = false;
+    const socket = new WebSocket(getWebSocketUrl(`/ws/batch/${encodeURIComponent(batchId)}`));
 
     socket.onmessage = (event) => {
+      if (!active) return;
       try {
         const data = JSON.parse(event.data);
 
         if (data.type === 'status') {
           setStatus(data.data);
-          if (data.data.status === 'completed' || data.data.status === 'failed') {
-            onComplete?.();
+          if (!completed && (data.data.status === 'completed' || data.data.status === 'failed')) {
+            completed = true;
+            flushLogs();
+            onCompleteRef.current?.();
           }
           return;
         }
       } catch {
+        // Preserve ANSI color escapes, but remove terminal-only backspace/VT/FF.
+        // eslint-disable-next-line no-control-regex
         const clean = event.data.replace(/[\x08\x0B\x0C]/g, '');
-        bufferRef.current.push(clean);
-      }
-
-      const now = Date.now();
-      if (now - lastRenderRef.current > RENDER_INTERVAL) {
-        lastRenderRef.current = now;
-
-        setLogs(prev => {
-          const merged = [...prev, ...bufferRef.current];
-          bufferRef.current = [];
-          return merged.length > MAX_LOG_LINES ? merged.slice(-MAX_LOG_LINES) : merged;
-        });
+        queueLog(clean);
       }
     };
 
-    return () => socket.close();
-  }, [batchId, onComplete]);
+    socket.onclose = () => { if (active) flushLogs(); };
+    return () => {
+      active = false;
+      socket.close();
+    };
+  }, [batchId, queueLog, flushLogs, resetLogs]);
 
   const progress = status ? Math.round((status.current_index / status.total) * 100) : 0;
 

@@ -33,6 +33,7 @@ import {
   downloadSummaryZip,
   getSummaryDetail,
 } from '../api/client';
+import { getBackendUrl } from '../api/endpoints';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 
 interface ExperimentItem {
@@ -190,7 +191,7 @@ const SummaryPage: React.FC = () => {
       icon: <FileTextOutlined />,
       onClick: (e) => {
         e.domEvent.stopPropagation();
-        window.open(`http://localhost:8000/results/summaries/${record.name}/summary.csv`);
+        window.open(getBackendUrl(`/results/summaries/${encodeURIComponent(record.name)}/summary.csv`));
       },
     },
     {
@@ -199,7 +200,7 @@ const SummaryPage: React.FC = () => {
       icon: <CodeOutlined />,
       onClick: (e) => {
         e.domEvent.stopPropagation();
-        window.open(`http://localhost:8000/results/summaries/${record.name}/summary_table.tex`);
+        window.open(getBackendUrl(`/results/summaries/${encodeURIComponent(record.name)}/summary_table.tex`));
       },
     },
     {
@@ -404,12 +405,12 @@ const SummaryPage: React.FC = () => {
                               <Button
                                 size="small"
                                 icon={<DownloadOutlined />}
-                                onClick={() => downloadFile(`http://localhost:8000/results/summaries/${detailData.name}/${img}`, img)}
+                                onClick={() => downloadFile(getBackendUrl(`/results/summaries/${encodeURIComponent(detailData.name)}/${encodeURIComponent(img)}`), img)}
                               />
                             }
                           >
                             <Image
-                              src={`http://localhost:8000/results/summaries/${detailData.name}/${img}`}
+                              src={getBackendUrl(`/results/summaries/${encodeURIComponent(detailData.name)}/${encodeURIComponent(img)}`)}
                               alt={img}
                               style={{ width: '100%', cursor: 'pointer' }}
                             />

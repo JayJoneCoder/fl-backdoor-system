@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Upload, Button, Space, message, Table, Progress, Alert, Input, Row, Col } from 'antd';
+import { Card, Upload, Button, Space, message, Table, Alert, Input, Row, Col } from 'antd';
 import { UploadOutlined, PlayCircleOutlined, EditOutlined, EyeOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { parseBatchConfig, runBatchExperiments, getBatchStatus } from '../api/client';
@@ -79,19 +79,14 @@ const BatchPage: React.FC = () => {
     if (experiments.length === 0) return;
     setLoading(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/batch/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ experiments }),
-      });
-      const data = await res.json();
-      console.log('[Fetch] Response:', data);
+      const res = await runBatchExperiments(experiments);
+      const data = res.data;
       setBatchId(data.batch_id);
       setBatchRunning(true);
       message.success(`批量实验已启动，批次ID: ${data.batch_id}`);
     } catch (error: any) {
-      console.error('[Fetch] Error:', error);
-      message.error('启动失败: ' + (error?.message || '未知错误'));
+      console.error('[Batch] Error:', error);
+      message.error('启动失败: ' + (error?.response?.data?.detail || error?.message || '未知错误'));
     } finally {
       setLoading(false);
     }

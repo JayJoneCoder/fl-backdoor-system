@@ -17,9 +17,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from watchfiles import awatch
 from fastapi.responses import StreamingResponse, JSONResponse
-from starlette.websockets import WebSocketDisconnect, WebSocketClose
 
 
 # Add project root to sys.path for importing fl_backdoor modules
@@ -28,6 +26,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend import config_manager
 from backend.experiment_runner import ExperimentRunner
+from backend.log_stream import LogFileReader, MetricFileReader, read_total_rounds
 from backend.results_scanner import (
     get_experiment_detail,
     list_experiments,
@@ -86,36 +85,27 @@ async def websocket_logs(websocket: WebSocket, exp_name: str):
     await websocket.accept()
 
     exp_dir = RESULTS_DIR / exp_name
-    log_file = exp_dir / "run.log"
-
-    # Set callback to forward subprocess stdout to WebSocket
-    async def send_log_line(line: str):
-        await websocket.send_text(line)
-
-    runner.set_log_callback(send_log_line)
-
-    # Send initial status
-    await websocket.send_json({"type": "status", "data": await runner.get_status()})
-
-    # Watch for CSV file changes (metrics updates)
-    watch_task = asyncio.create_task(_watch_csv_files(websocket, exp_dir))
-
-    # If log file exists, start streaming its new lines
-    if log_file.exists():
-        await _stream_log_file(websocket, log_file)
-    else:
+    if not (exp_dir / "run.log").exists():
         await websocket.send_text("[System] Waiting for log file...")
 
-    # Keep connection alive until client disconnects
+    # One log source per connection. Never replace the runner's batch callback.
+    send_lock = asyncio.Lock()
+    tasks = [
+        asyncio.create_task(_stream_log_file(websocket, exp_dir / "run.log", send_lock)),
+        asyncio.create_task(_watch_csv_files(websocket, exp_dir, send_lock)),
+        asyncio.create_task(_stream_experiment_status(websocket, exp_dir, send_lock)),
+        asyncio.create_task(_wait_for_disconnect(websocket)),
+    ]
     try:
-        while True:
-            await asyncio.sleep(1)
-            # Could also send periodic status updates here
-    except (WebSocketDisconnect, WebSocketClose):
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    except (WebSocketDisconnect, OSError, RuntimeError):
         pass
     finally:
-        watch_task.cancel()
-        runner.set_log_callback(None)  # Clear callback
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 @app.websocket("/ws/batch/{batch_id}")
 async def websocket_batch_logs(websocket: WebSocket, batch_id: str):
@@ -161,47 +151,60 @@ async def websocket_batch_logs(websocket: WebSocket, batch_id: str):
         except:
             pass
 
-async def _stream_log_file(websocket: WebSocket, log_path: Path) -> None:
-    """Stream new lines appended to log file."""
-    with open(log_path, "r", encoding="utf-8") as f:
-        f.seek(0, 2)  # Seek to end
-        while True:
-            line = f.readline()
-            if line:
-                await websocket.send_text(line.rstrip())
-            else:
-                await asyncio.sleep(0.1)
+async def _wait_for_disconnect(websocket: WebSocket) -> None:
+    while True:
+        await websocket.receive_text()
 
 
-async def _watch_csv_files(websocket: WebSocket, exp_dir: Path) -> None:
-    """Watch the main CSV log file for changes and send structured updates."""
+async def _stream_log_file(
+    websocket: WebSocket, log_path: Path, send_lock: asyncio.Lock | None = None
+) -> None:
+    """Replay complete lines and follow new runs, truncations, and replacements."""
+    reader = LogFileReader(log_path)
+    lock = send_lock or asyncio.Lock()
+    while True:
+        generation, _ = runner.get_log_context(log_path.parent.name)
+        lines = await asyncio.to_thread(reader.read_lines, generation)
+        for line in lines:
+            async with lock:
+                await websocket.send_text(line)
+        await asyncio.sleep(0.1)
+
+
+async def _watch_csv_files(
+    websocket: WebSocket, exp_dir: Path, send_lock: asyncio.Lock | None = None
+) -> None:
+    """Replay metrics on connect; polling also works before the directory exists."""
     main_csv = exp_dir / f"{exp_dir.name}.csv"
-    
-    try:
-        async for changes in awatch(exp_dir):
-            for change_type, path_str in changes:
-                changed_path = Path(path_str)
-                # 只处理主日志 CSV，忽略 _clients.csv 和 _metrics.csv
-                if changed_path.name != main_csv.name:
-                    continue
-                
-                try:
-                    df = pd.read_csv(changed_path)
-                    if df.empty:
-                        continue
-                    last_row = df.iloc[-1].to_dict()
-                    if websocket.client_state.name == "CONNECTED":
-                        await websocket.send_json({
-                            "type": "csv_update",
-                            "file": changed_path.name,
-                            "data": last_row,
-                        })
-                except Exception as e:
-                    print(f"Error reading CSV {changed_path}: {e}")
-    except (WebSocketDisconnect, WebSocketClose, RuntimeError):
-        pass
-    except Exception as e:
-        print(f"[CSV Watch] Unexpected error: {e}")
+    reader = MetricFileReader(main_csv)
+    lock = send_lock or asyncio.Lock()
+    while True:
+        generation, started_at_ns = runner.get_log_context(exp_dir.name)
+        rows = await asyncio.to_thread(reader.read_rows, generation, started_at_ns)
+        for row in rows:
+            async with lock:
+                await websocket.send_json({"type": "csv_update", "file": main_csv.name, "data": row})
+        await asyncio.sleep(0.5)
+
+
+async def _stream_experiment_status(
+    websocket: WebSocket, exp_dir: Path, send_lock: asyncio.Lock
+) -> None:
+    previous = None
+    while True:
+        status = await runner.get_status()
+        if status.get("exp_name") != exp_dir.name:
+            status = {"status": "idle", "exp_name": exp_dir.name}
+        if not status.get("total_rounds"):
+            status["total_rounds"] = await asyncio.to_thread(
+                read_total_rounds, exp_dir / "config_snapshot.toml"
+            )
+        status["log_generation"] = runner.get_log_context(exp_dir.name)[0]
+        if status != previous:
+            async with send_lock:
+                await websocket.send_json({"type": "status", "data": status})
+            previous = status
+        await asyncio.sleep(0.5)
 
 # ------------------------------
 # REST API Endpoints

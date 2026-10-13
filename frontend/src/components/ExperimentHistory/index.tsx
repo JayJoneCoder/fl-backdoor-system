@@ -33,6 +33,7 @@ import {
   downloadExperimentImages,
   downloadExperimentAllFiles,
 } from '../../api/client';
+import { getBackendUrl } from '../../api/endpoints';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 
 // 指标中文映射
@@ -192,7 +193,7 @@ const ExperimentHistory: React.FC = () => {
       icon: <FileTextOutlined />,
       onClick: (e) => {
         e.domEvent.stopPropagation();
-        window.open(`http://localhost:8000/results/${exp.name}/${exp.name}.csv`);
+        window.open(getBackendUrl(`/results/${encodeURIComponent(exp.name)}/${encodeURIComponent(exp.name)}.csv`));
       },
     },
     {
@@ -201,7 +202,7 @@ const ExperimentHistory: React.FC = () => {
       icon: <FileTextOutlined />,
       onClick: (e) => {
         e.domEvent.stopPropagation();
-        window.open(`http://localhost:8000/results/${exp.name}/${exp.name}_clients.csv`);
+        window.open(getBackendUrl(`/results/${encodeURIComponent(exp.name)}/${encodeURIComponent(exp.name)}_clients.csv`));
       },
     },
     {
@@ -210,7 +211,7 @@ const ExperimentHistory: React.FC = () => {
       icon: <FileTextOutlined />,
       onClick: (e) => {
         e.domEvent.stopPropagation();
-        window.open(`http://localhost:8000/results/${exp.name}/${exp.name}_metrics.csv`);
+        window.open(getBackendUrl(`/results/${encodeURIComponent(exp.name)}/${encodeURIComponent(exp.name)}_metrics.csv`));
       },
     },
     {
@@ -219,7 +220,7 @@ const ExperimentHistory: React.FC = () => {
       icon: <FileTextOutlined />,
       onClick: (e) => {
         e.domEvent.stopPropagation();
-        window.open(`http://localhost:8000/results/${exp.name}/run.log`);
+        window.open(getBackendUrl(`/results/${encodeURIComponent(exp.name)}/run.log`));
       },
     },
     {
@@ -461,7 +462,7 @@ const ExperimentHistory: React.FC = () => {
                   icon={<FileTextOutlined />}
                   onClick={() =>
                     window.open(
-                      `http://localhost:8000/results/${selectedExp}/${selectedExp}.csv`
+                      getBackendUrl(`/results/${encodeURIComponent(selectedExp!)}/${encodeURIComponent(selectedExp!)}.csv`)
                     )
                   }
                 >
@@ -486,7 +487,7 @@ const ExperimentHistory: React.FC = () => {
                                 icon={<DownloadOutlined />}
                                 onClick={() =>
                                   downloadFile(
-                                    `http://localhost:8000/results/${selectedExp}/${img}`,
+                                    getBackendUrl(`/results/${encodeURIComponent(selectedExp!)}/${encodeURIComponent(img)}`),
                                     img
                                   )
                                 }
@@ -494,7 +495,7 @@ const ExperimentHistory: React.FC = () => {
                             }
                           >
                             <Image
-                              src={`http://localhost:8000/results/${selectedExp}/${img}`}
+                              src={getBackendUrl(`/results/${encodeURIComponent(selectedExp!)}/${encodeURIComponent(img)}`)}
                               alt={img}
                               style={{ width: '100%', cursor: 'pointer' }}
                             />

@@ -1,6 +1,5 @@
 import axios from 'axios';
-
-const API_BASE = 'http://localhost:8000';
+import { API_BASE } from './endpoints';
 
 export const apiClient = axios.create({
   baseURL: API_BASE,
@@ -97,5 +96,5 @@ export const getSummaryDetail = (summaryName: string) =>
 
 //CSV轮询接口
 export const getLatestCSV = (expName: string) => {
-  return axios.get(`/api/experiments/${expName}/csv/latest`);
+  return apiClient.get(`/api/experiments/${expName}/csv/latest`);
 };

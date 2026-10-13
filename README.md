@@ -67,7 +67,7 @@ pip install "flwr[simulation]"
 
 # 6. 启动后端 API 服务（命令行界面可忽略）
 cd backend
-uvicorn main:app --reload --port 8000
+uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 # 我未来可能会加个 setup_env.py 一类的脚本，实现检测 cuda，安装 torch 一类的功能。
 ```
