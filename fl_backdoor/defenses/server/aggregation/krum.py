@@ -50,13 +50,15 @@ def _krum_select(
         indices of selected clients
     """
     n = len(flat_updates)
-    if n < 2:
-        raise ValueError("Need at least 2 clients for Krum.")
-
-    if n <= f + 2:
+    if f < 0:
+        raise ValueError("Krum requires f >= 0.")
+    if n <= 2 * f + 2:
         raise ValueError(
-            f"Krum requires n > f + 2, got n={n}, f={f}."
+            f"Krum requires n > 2*f + 2 after detection, got n={n}, f={f}. "
+            "Increase participating clients or revise the defense configuration."
         )
+    if not 1 <= k <= n - f - 2:
+        raise ValueError(f"Multi-Krum requires 1 <= k <= n-f-2, got n={n}, f={f}, k={k}.")
 
     # Pairwise distance matrix
     distances = np.zeros((n, n), dtype=np.float64)
@@ -171,7 +173,7 @@ class KrumFedAvg(FedAvg):
 
         n = len(flat_updates)
         f = self.num_malicious
-        k = min(self.krum_k, n)
+        k = self.krum_k
 
         selected_indices = _krum_select(flat_updates, f=f, k=k)
 

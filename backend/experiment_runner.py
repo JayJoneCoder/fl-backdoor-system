@@ -55,14 +55,12 @@ class ExperimentRunner:
         if self.is_running():
             raise RuntimeError("An experiment is already running")
 
-        # 应用配置覆盖（不涉及 num-clients）
-        if config_overrides:
-            config_manager.update_config(config_overrides)
-        else:
-            config_manager.update_config({"run-name": exp_name})
-
+        # Save the original configuration before applying this experiment's overrides.
         if backup_config:
             config_manager.backup_config()
+        overrides = dict(config_overrides or {})
+        overrides["run-name"] = exp_name
+        config_manager.update_config(overrides)
 
         # 保存配置快照到实验目录
         exp_dir = RESULTS_DIR / exp_name

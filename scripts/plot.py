@@ -32,6 +32,9 @@ import numpy as np
 from matplotlib.colors import Normalize
 
 PROJECT_ROOT = Path(__file__).parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from fl_backdoor.utils.metrics import auc as _auc, roc_curve as _roc_curve
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 # -----------------------------
@@ -68,79 +71,8 @@ def _legend_outside(ax: plt.Axes, *, title: str | None = None, ncol: int = 1) ->
 
 
 # -----------------------------
-# ROC and AUC (pure numpy, no sklearn)
+# Data conversion helpers
 # -----------------------------
-def _roc_curve(y_true, y_score):
-    """Compute ROC curve using numpy.
-
-    Args:
-        y_true: 1D array of true labels (0 or 1)
-        y_score: 1D array of scores (higher = more suspicious)
-
-    Returns:
-        fpr, tpr, thresholds
-    """
-    y_true = np.asarray(y_true)
-    y_score = np.asarray(y_score)
-
-    # Sort by score descending
-    desc_idx = np.argsort(y_score)[::-1]
-    y_true_sorted = y_true[desc_idx]
-
-    # Unique thresholds (scores)
-    thresholds = np.unique(y_score)[::-1]
-
-    tpr_list = []
-    fpr_list = []
-
-    total_pos = np.sum(y_true == 1)
-    total_neg = np.sum(y_true == 0)
-
-    if total_pos == 0 or total_neg == 0:
-        return np.array([0, 1]), np.array([0, 1]), np.array([np.inf, -np.inf])
-
-    tp = 0
-    fp = 0
-    prev_score = None
-
-    for i, score in enumerate(y_score[desc_idx]):
-        if prev_score is not None and score != prev_score:
-            tpr_list.append(tp / total_pos)
-            fpr_list.append(fp / total_neg)
-
-        if y_true_sorted[i] == 1:
-            tp += 1
-        else:
-            fp += 1
-        prev_score = score
-
-    tpr_list.append(tp / total_pos)
-    fpr_list.append(fp / total_neg)
-
-    fpr = np.array([0] + fpr_list)
-    tpr = np.array([0] + tpr_list)
-    thresholds = np.array([np.inf] + list(thresholds) + [-np.inf])
-
-    fpr = np.clip(fpr, 0, 1)
-    tpr = np.clip(tpr, 0, 1)
-
-    return fpr, tpr, thresholds
-
-
-def _auc(fpr, tpr):
-    """Compute AUC using trapezoidal rule (pure numpy, no trapz/trapezoid)."""
-    order = np.argsort(fpr)
-    fpr_sorted = fpr[order]
-    tpr_sorted = tpr[order]
-
-    auc_value = 0.0
-    for i in range(1, len(fpr_sorted)):
-        width = fpr_sorted[i] - fpr_sorted[i-1]
-        height = (tpr_sorted[i] + tpr_sorted[i-1]) / 2.0
-        auc_value += width * height
-    return auc_value
-
-
 def _to_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     out = df.copy()
     for c in cols:
@@ -512,7 +444,9 @@ def plot_roc_from_clients_csv(csv_path: Path, df: pd.DataFrame) -> None:
         print(f"[SKIP] {csv_path}: missing columns for ROC {sorted(required - set(df.columns))}")
         return
 
-    df_valid = df[df["is_malicious"] >= 0].copy()
+    df_valid = df[df["is_malicious"].isin([0, 1])].copy()
+    df_valid["score"] = pd.to_numeric(df_valid["score"], errors="coerce")
+    df_valid = df_valid[np.isfinite(df_valid["score"])]
     if df_valid.empty:
         print(f"[SKIP] {csv_path}: no valid ground truth for ROC")
         return
@@ -522,6 +456,9 @@ def plot_roc_from_clients_csv(csv_path: Path, df: pd.DataFrame) -> None:
 
     fpr, tpr, _ = _roc_curve(y_true, y_score)
     roc_auc = _auc(fpr, tpr)
+    if not np.isfinite(roc_auc):
+        print(f"[SKIP] {csv_path}: ROC requires both benign and malicious clients")
+        return
 
     fig, ax = plt.subplots(figsize=(7.0, 6.0))
     ax.plot(fpr, tpr, lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
