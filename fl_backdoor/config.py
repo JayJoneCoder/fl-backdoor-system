@@ -1,6 +1,8 @@
 """统一配置层，从 run_config 字典解析所有实验参数。"""
 
+import ast
 from dataclasses import dataclass, field
+from numbers import Integral
 from typing import Any, Optional, Union
 
 
@@ -44,6 +46,7 @@ class ExperimentConfig:
     dba_sub_pattern_size: Optional[int] = None
     dba_global_trigger_value: float = 1.0
     dba_split_strategy: str = "grid"
+    dba_global_trigger_location: Optional[tuple[int, int]] = None
 
     # ---------- FCBA 参数 ----------
     fcba_num_sub_blocks: int = 4
@@ -120,15 +123,17 @@ class ExperimentConfig:
             raise ValueError(f"Cannot parse as int list: {raw}")
 
         def parse_tuple(raw) -> Optional[tuple[int, int]]:
-            if raw is None:
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
                 return None
             if isinstance(raw, str):
-                parts = raw.strip("[]() ").split(",")
-                if len(parts) >= 2:
-                    return int(parts[0].strip()), int(parts[1].strip())
-            if isinstance(raw, (list, tuple)) and len(raw) >= 2:
-                return int(raw[0]), int(raw[1])
-            return None
+                try:
+                    raw = ast.literal_eval(raw.strip())
+                except (ValueError, SyntaxError) as exc:
+                    raise ValueError("Trigger location must be two integer coordinates, e.g. [2, 3].") from exc
+            if (not isinstance(raw, (list, tuple)) or len(raw) != 2
+                    or any(isinstance(value, bool) or not isinstance(value, Integral) for value in raw)):
+                raise ValueError("Trigger location must be two integer coordinates, e.g. [2, 3].")
+            return int(raw[0]), int(raw[1])
 
         return cls(
             # 基础
@@ -162,6 +167,7 @@ class ExperimentConfig:
             dba_sub_pattern_size=get("dba-sub-pattern-size", None, lambda x: int(x) if x is not None else None),
             dba_global_trigger_value=get("dba-global-trigger-value", 1.0, float),
             dba_split_strategy=get("dba-split-strategy", "grid", str),
+            dba_global_trigger_location=parse_tuple(get("dba-global-trigger-location")),
             # FCBA
             fcba_num_sub_blocks=get("fcba-num-sub-blocks", 4, int),
             fcba_sub_block_size=get("fcba-sub-block-size", None, lambda x: int(x) if x is not None else None),
@@ -223,6 +229,7 @@ class ExperimentConfig:
             "dba_sub_pattern_size": self.dba_sub_pattern_size,
             "dba_global_trigger_value": self.dba_global_trigger_value,
             "dba_split_strategy": self.dba_split_strategy,
+            "dba_global_trigger_location": self.dba_global_trigger_location,
             "fcba_num_sub_blocks": self.fcba_num_sub_blocks,
             "fcba_sub_block_size": self.fcba_sub_block_size,
             "fcba_global_trigger_value": self.fcba_global_trigger_value,
