@@ -35,6 +35,7 @@ def build_attack(
     fcba_global_trigger_value: float = 1.0,
     fcba_split_strategy: str = "grid",
     fcba_global_trigger_location: tuple[int, int] | None = None,
+    dba_global_trigger_location: tuple[int, int] | None = None,
 ):
     """Generic attack factory.
 
@@ -160,6 +161,7 @@ def build_attack(
             sub_pattern_size=dba_sub_pattern_size,
             global_trigger_value=dba_global_trigger_value,
             split_strategy=dba_split_strategy,
+            global_trigger_location=dba_global_trigger_location,
             dataset_meta=dataset_meta,
         )
     

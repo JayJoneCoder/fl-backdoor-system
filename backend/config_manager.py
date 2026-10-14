@@ -239,7 +239,7 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
         "default": 1.0,
         "depends_on": {"attack": ["dba"]},
         "group": "attack",
-        "description": "DBA 触发器像素值（通常 1.0 为白色）",
+        "description": "DBA 原始像素值 (0~1，1.0 为白色)，按数据集归一化参数转换",
     },
     "dba-split-strategy": {
         "type": "string",
@@ -252,10 +252,10 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     },
     "dba-global-trigger-location": {
         "type": "string",  # "[row, col]"
-        "default": "[28, 28]",
+        "default": "",
         "depends_on": {"attack": ["dba"]},
         "group": "attack",
-        "description": "DBA 全局触发器左上角坐标，格式如 [28, 28]",
+        "description": "DBA 触发器坐标 [行, 列]；留空自动放右下角，手动坐标必须在图像内",
     },
 
     # FCBA
@@ -278,7 +278,7 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
         "default": 1.0,
         "depends_on": {"attack": ["fcba"]},
         "group": "attack",
-        "description": "FCBA 触发器像素值",
+        "description": "FCBA 原始像素叠加强度 (0~1)，仅在触发区域叠加并裁剪",
     },
     "fcba-split-strategy": {
         "type": "string",
@@ -291,10 +291,10 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     },
     "fcba-global-trigger-location": {
         "type": "string",
-        "default": "[28, 28]",
+        "default": "",
         "depends_on": {"attack": ["fcba"]},
         "group": "attack",
-        "description": "FCBA 全局触发器左上角坐标，格式如 [28, 28]",
+        "description": "FCBA 触发器坐标 [行, 列]；留空自动放右下角，手动坐标必须在图像内",
     },
 
     # ---------- 客户端防御参数 ----------

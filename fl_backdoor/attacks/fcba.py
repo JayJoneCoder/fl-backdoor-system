@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .base import AttackBase, AttackConfig
+from .pixel_trigger import apply_pixel_trigger, get_image_shape, resolve_trigger_location, validate_trigger_value
 from .selection import normalize_fixed_malicious_clients, select_malicious_clients
 
 
@@ -29,6 +30,7 @@ class FCBAPoisonedDataset(Dataset):
         seed: int = 42,
         exclude_target_label: bool = True,
         image_size: int = 32,
+        dataset_meta=None,
     ) -> None:
         self.base_dataset = base_dataset
         self.poison_rate = float(poison_rate)
@@ -38,6 +40,7 @@ class FCBAPoisonedDataset(Dataset):
         self.trigger_location = trigger_config["location"]  # (row, col) top-left corner
         self.exclude_target_label = bool(exclude_target_label)
         self.image_size = image_size
+        self.dataset_meta = dataset_meta
 
         rng = np.random.default_rng(seed)
         self.poison_flags = rng.random(len(base_dataset)) < self.poison_rate
@@ -55,16 +58,10 @@ class FCBAPoisonedDataset(Dataset):
             should_poison = False
 
         if should_poison:
-            # Create full-size mask
-            full_mask = torch.zeros(3, self.image_size, self.image_size)
-            r, c = self.trigger_location
-            h, w = self.trigger_mask_small.shape[1], self.trigger_mask_small.shape[2]
-            # Ensure the mask fits within image boundaries
-            r_end = min(r + h, self.image_size)
-            c_end = min(c + w, self.image_size)
-            full_mask[:, r:r_end, c:c_end] = self.trigger_mask_small[:, :r_end-r, :c_end-c]
-            image = image + self.trigger_value * full_mask.to(image.device)
-            image = torch.clamp(image, 0.0, 1.0)
+            image = apply_pixel_trigger(
+                image, self.trigger_mask_small, self.trigger_value, self.trigger_location,
+                dataset_meta=self.dataset_meta, additive=True,
+            )
             label = torch.tensor(self.target_label, dtype=torch.long)
 
         return {"img": image, "label": label}
@@ -74,19 +71,13 @@ class FCBATriggeredDataset(Dataset):
     """Apply the FULL global trigger for ASR evaluation."""
 
     def __init__(self, base_dataset, global_mask_small: torch.Tensor, value: float,
-                 location: tuple[int, int], image_size: int = 32):
+                 location: tuple[int, int], image_size: int = 32, dataset_meta=None):
         self.base_dataset = base_dataset
         self.value = value
         self.location = location
         self.image_size = image_size
-        # Create full-size mask once
-        full_mask = torch.zeros(3, image_size, image_size)
-        r, c = location
-        h, w = global_mask_small.shape[1], global_mask_small.shape[2]
-        r_end = min(r + h, image_size)
-        c_end = min(c + w, image_size)
-        full_mask[:, r:r_end, c:c_end] = global_mask_small[:, :r_end-r, :c_end-c]
-        self.full_mask = full_mask
+        self.dataset_meta = dataset_meta
+        self.trigger_mask_small = global_mask_small
 
     def __len__(self) -> int:
         return len(self.base_dataset)
@@ -95,8 +86,10 @@ class FCBATriggeredDataset(Dataset):
         sample = self.base_dataset[idx]
         image = sample["img"].clone()
         label = torch.as_tensor(sample["label"]).long()
-        image = image + self.value * self.full_mask.to(image.device)
-        image = torch.clamp(image, 0.0, 1.0)
+        image = apply_pixel_trigger(
+            image, self.trigger_mask_small, self.value, self.location,
+            dataset_meta=self.dataset_meta, additive=True,
+        )
         return {"img": image, "label": label}
 
 
@@ -107,11 +100,11 @@ class FCBAAttack(AttackBase):
         num_sub_blocks (int): number of sub-blocks to split the trigger (m >= 2).
         sub_block_size (int): size of each sub-block (square). If not provided,
             automatically computed from trigger_size and num_sub_blocks.
-        global_trigger_value (float): pixel value for the trigger (default 1.0).
+        global_trigger_value (float): additive intensity in raw [0, 1] pixel space (default 1.0).
         split_strategy (str): 'grid' or 'random' for sub-block positions.
         global_trigger_location (tuple): (row, col) of top-left corner of global trigger.
-            Default is bottom-right corner (image_size - trigger_size).
-        image_size (int): size of input images (default 32 for CIFAR-10).
+            Default is bottom-right corner of the dataset image.
+        image_size (int): legacy square-image fallback, used only without dataset metadata.
     """
 
     def __init__(self, config: AttackConfig):
@@ -119,12 +112,14 @@ class FCBAAttack(AttackBase):
         self.trigger_size = config.trigger_size
         self.num_sub_blocks = config.extra.get("num_sub_blocks", 4)
         self.sub_block_size = config.extra.get("sub_block_size", None)
-        self.global_trigger_value = config.extra.get("global_trigger_value", 1.0)
+        self.global_trigger_value = validate_trigger_value(config.extra.get("global_trigger_value", 1.0))
         self.split_strategy = config.extra.get("split_strategy", "grid")
-        self.image_size = config.extra.get("image_size", 32)  # assume CIFAR-10 size
-        # Default location: bottom-right corner
-        default_loc = (self.image_size - self.trigger_size, self.image_size - self.trigger_size)
-        self.global_trigger_location = config.extra.get("global_trigger_location", default_loc)
+        self.input_shape = get_image_shape(config.dataset_meta, config.extra.get("image_size", 32))
+        self.channels, self.image_size, _ = self.input_shape
+        self.global_trigger_location = resolve_trigger_location(
+            self.input_shape, (self.trigger_size, self.trigger_size),
+            config.extra.get("global_trigger_location"),
+        )
 
         if self.num_sub_blocks < 2:
             raise ValueError("num_sub_blocks must be >= 2 for FCBA.")
@@ -140,6 +135,12 @@ class FCBAAttack(AttackBase):
             self.sub_block_size = self.trigger_size // n
             if self.sub_block_size <= 0:
                 raise ValueError("Trigger too small to split into given number of sub-blocks.")
+
+        if not 0 < self.sub_block_size <= self.trigger_size:
+            raise ValueError("sub_block_size must be positive and fit within trigger_size.")
+        capacity = (self.trigger_size // self.sub_block_size) ** 2
+        if capacity < self.num_sub_blocks or (self.split_strategy == "grid" and capacity != self.num_sub_blocks):
+            raise ValueError("Grid size must match num_sub_blocks; adjust trigger_size or sub_block_size.")
 
         # Generate the global trigger mask (small)
         self.global_mask_small = self._generate_global_mask()
@@ -159,7 +160,7 @@ class FCBAAttack(AttackBase):
 
     def _generate_global_mask(self) -> torch.Tensor:
         """Create the full global trigger mask (binary, small)."""
-        mask = torch.zeros(3, self.trigger_size, self.trigger_size)
+        mask = torch.zeros(self.channels, self.trigger_size, self.trigger_size)
         mask[:, :, :] = 1.0
         return mask
 
@@ -170,7 +171,7 @@ class FCBAAttack(AttackBase):
             n = self.trigger_size // self.sub_block_size
             for i in range(n):
                 for j in range(n):
-                    mask = torch.zeros(3, self.trigger_size, self.trigger_size)
+                    mask = torch.zeros(self.channels, self.trigger_size, self.trigger_size)
                     row_start = i * self.sub_block_size
                     row_end = row_start + self.sub_block_size
                     col_start = j * self.sub_block_size
@@ -183,7 +184,7 @@ class FCBAAttack(AttackBase):
             positions = [(i, j) for i in range(n) for j in range(n)]
             rng.shuffle(positions)
             for (i, j) in positions[:self.num_sub_blocks]:
-                mask = torch.zeros(3, self.trigger_size, self.trigger_size)
+                mask = torch.zeros(self.channels, self.trigger_size, self.trigger_size)
                 row_start = i * self.sub_block_size
                 row_end = row_start + self.sub_block_size
                 col_start = j * self.sub_block_size
@@ -254,6 +255,7 @@ class FCBAAttack(AttackBase):
             seed=self.config.seed,
             exclude_target_label=True,
             image_size=self.image_size,
+            dataset_meta=self.config.dataset_meta,
         )
         return DataLoader(
             poisoned_dataset,
@@ -273,6 +275,7 @@ class FCBAAttack(AttackBase):
                 global_config["value"],
                 global_config["location"],
                 image_size=self.image_size,
+                dataset_meta=self.config.dataset_meta,
             ),
             batch_size=testloader.batch_size or 1,
             shuffle=False,

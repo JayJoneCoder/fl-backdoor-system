@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .base import AttackBase, AttackConfig
-from .badnets import add_trigger
+from .pixel_trigger import apply_square_trigger, get_image_shape, resolve_trigger_location, validate_trigger_value
 from .selection import normalize_fixed_malicious_clients, select_malicious_clients
 
 
@@ -26,6 +26,7 @@ class DBAPoisonedDataset(Dataset):
         trigger_config: dict,   # contains 'size', 'value', 'location' (top-left corner)
         seed: int = 42,
         exclude_target_label: bool = True,
+        dataset_meta=None,
     ) -> None:
         self.base_dataset = base_dataset
         self.poison_rate = float(poison_rate)
@@ -34,6 +35,7 @@ class DBAPoisonedDataset(Dataset):
         self.trigger_value = trigger_config["value"]
         self.trigger_location = trigger_config["location"]  # (row, col)
         self.exclude_target_label = bool(exclude_target_label)
+        self.dataset_meta = dataset_meta
 
         rng = np.random.default_rng(seed)
         self.poison_flags = rng.random(len(base_dataset)) < self.poison_rate
@@ -52,11 +54,12 @@ class DBAPoisonedDataset(Dataset):
 
         if should_poison:
             # Add trigger at the specified location
-            image = add_trigger(
+            image = apply_square_trigger(
                 image,
-                trigger_size=self.trigger_size,
+                size=self.trigger_size,
                 value=self.trigger_value,
-                location=self.trigger_location,   # add_trigger must support location
+                location=self.trigger_location,
+                dataset_meta=self.dataset_meta,
             )
             label = torch.tensor(self.target_label, dtype=torch.long)
 
@@ -66,11 +69,12 @@ class DBAPoisonedDataset(Dataset):
 class DBATriggeredDataset(Dataset):
     """Apply the FULL trigger for ASR evaluation (at the global trigger location)."""
 
-    def __init__(self, base_dataset, trigger_config: dict):
+    def __init__(self, base_dataset, trigger_config: dict, dataset_meta=None):
         self.base_dataset = base_dataset
         self.trigger_size = trigger_config["size"]
         self.trigger_value = trigger_config["value"]
         self.trigger_location = trigger_config["location"]
+        self.dataset_meta = dataset_meta
 
     def __len__(self) -> int:
         return len(self.base_dataset)
@@ -79,11 +83,12 @@ class DBATriggeredDataset(Dataset):
         sample = self.base_dataset[idx]
         image = sample["img"].clone()
         label = torch.as_tensor(sample["label"]).long()
-        image = add_trigger(
+        image = apply_square_trigger(
             image,
-            trigger_size=self.trigger_size,
+            size=self.trigger_size,
             value=self.trigger_value,
             location=self.trigger_location,
+            dataset_meta=self.dataset_meta,
         )
         return {"img": image, "label": label}
 
@@ -95,7 +100,7 @@ class DBAAttack(AttackBase):
         num_sub_patterns (int): number of sub-patterns to split the trigger.
         sub_pattern_size (int): size of each sub-pattern (square). If not provided,
             it is inferred from trigger_size and num_sub_patterns.
-        global_trigger_value (float): pixel value for the trigger (default 1.0).
+        global_trigger_value (float): raw pixel value in [0, 1] (default 1.0).
         split_strategy (str): 'grid' (split into equal blocks) or 'random' (random masks).
         global_trigger_location (tuple): (row, col) of top-left corner of the global trigger.
     """
@@ -105,12 +110,16 @@ class DBAAttack(AttackBase):
         self.trigger_size = config.trigger_size
         self.num_sub_patterns = config.extra.get("num_sub_patterns", 4)
         self.sub_pattern_size = config.extra.get("sub_pattern_size", None)
-        self.global_trigger_value = config.extra.get("global_trigger_value", 1.0)
+        self.global_trigger_value = validate_trigger_value(config.extra.get("global_trigger_value", 1.0))
         self.split_strategy = config.extra.get("split_strategy", "grid")
         
-        # Default trigger location: bottom-right corner (assume image size 32x32, e.g., CIFAR-10)
-        default_loc = (32 - self.trigger_size, 32 - self.trigger_size)
-        self.global_trigger_location = config.extra.get("global_trigger_location", default_loc)
+        self.input_shape = get_image_shape(config.dataset_meta)
+        self.global_trigger_location = resolve_trigger_location(
+            self.input_shape, (self.trigger_size, self.trigger_size),
+            config.extra.get("global_trigger_location"),
+        )
+        if self.num_sub_patterns <= 0:
+            raise ValueError("num_sub_patterns must be positive.")
 
         # Compute sub-pattern size if not given
         if self.sub_pattern_size is None:
@@ -123,6 +132,12 @@ class DBAAttack(AttackBase):
             self.sub_pattern_size = self.trigger_size // n
             if self.sub_pattern_size <= 0:
                 raise ValueError("Trigger too small to split into given number of sub-patterns.")
+
+        if not 0 < self.sub_pattern_size <= self.trigger_size:
+            raise ValueError("sub_pattern_size must be positive and fit within trigger_size.")
+        if (self.split_strategy == "grid"
+                and (self.trigger_size // self.sub_pattern_size) ** 2 != self.num_sub_patterns):
+            raise ValueError("Grid size must match num_sub_patterns; adjust trigger_size or sub_pattern_size.")
 
         # Generate sub-trigger locations (top-left corners) for each sub-pattern
         self.sub_trigger_locations = self._compute_sub_locations()
@@ -196,6 +211,7 @@ class DBAAttack(AttackBase):
             trigger_config=sub_config,
             seed=self.config.seed,
             exclude_target_label=True,
+            dataset_meta=self.config.dataset_meta,
         )
         return DataLoader(
             poisoned_dataset,
@@ -211,6 +227,7 @@ class DBAAttack(AttackBase):
         triggered_dataset = DBATriggeredDataset(
             base_dataset=testloader.dataset,
             trigger_config=global_config,
+            dataset_meta=self.config.dataset_meta,
         )
         return DataLoader(
             triggered_dataset,
