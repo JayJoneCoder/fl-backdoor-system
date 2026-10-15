@@ -16,13 +16,14 @@ const hookCode = compile('../src/hooks/useBufferedLogs.ts');
 const utilityCode = compile('../src/utils/experimentStream.ts');
 const copy = value => JSON.parse(JSON.stringify(value));
 
-const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name', total_rounds: 10 }) => {
+const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name', total_rounds: 10 }, props = {}) => {
   const slots = [];
   const pendingEffects = [];
   const frames = new Map();
   const intervals = new Map();
   const charts = [];
   const sockets = [];
+  const starts = [];
   let cursor = 0;
   let nextId = 1;
   let dirty = false;
@@ -86,7 +87,7 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
   const api = {
     getExperimentStatus: async () => ({ data: { ...currentStatus } }),
     getConfig: async () => ({ data: { 'num-server-rounds': 10 } }),
-    startExperiment: async () => {},
+    startExperiment: async (...args) => { starts.push(args); },
     stopExperiment: async () => {},
   };
   const globals = {
@@ -129,7 +130,7 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
     do {
       dirty = false;
       cursor = 0;
-      tree = component({});
+      tree = component(props);
       visit(tree, node => {
         if (node.props?.ref && !node.props.ref.current) node.props.ref.current = {};
       });
@@ -138,9 +139,10 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
   };
   const settle = async () => {
     // Drain status polling's promise continuations, then React state updates.
-    await Promise.resolve();
-    await Promise.resolve();
-    render();
+    for (let i = 0; i < 4; i++) {
+      await Promise.resolve();
+      render();
+    }
   };
   const runFrames = () => {
     const pending = [...frames.values()];
@@ -166,7 +168,27 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
   };
   render();
   return {
-    sockets, charts, settle, runFrames, runLastFrame, tick,
+    sockets, charts, settle, runFrames, runLastFrame, tick, starts,
+    start: async () => {
+      let button;
+      visit(tree, node => {
+        if (node.type === 'Button' && node.props.children === '启动实验') button = node;
+      });
+      await button.props.onClick();
+      await settle();
+    },
+    startDisabled: () => {
+      let button;
+      visit(tree, node => { if (node.type === 'Button' && node.props.children === '启动实验') button = node; });
+      return button.props.disabled;
+    },
+    stop: async () => {
+      let button;
+      visit(tree, node => { if (node.type === 'Button' && ['停止实验', '重试清理'].includes(node.props.children)) button = node; });
+      await button.props.onClick();
+      await settle();
+    },
+    stopResponse: response => { api.stopExperiment = async () => response; },
     setStatus: status => { currentStatus = status; },
     logs: () => copy(find('LogViewer').props.logs),
     progress: () => find('Progress')?.props.percent,
@@ -312,4 +334,45 @@ test('后端切换活动实验时不混入前一个实验的图表与日志', as
     assert.equal(harness.progress(), 0);
     assert.deepEqual(harness.logs(), ['another run']);
   } finally { harness.unmount(); }
+});
+
+test('停止或清理失败期间不能再次启动，只有后端终态才能释放按钮', async () => {
+  const harness = createHarness({ status: 'stopping', exp_name: 'same_name' });
+  try {
+    await harness.settle();
+    assert.equal(harness.startDisabled(), true);
+    await harness.start();
+    assert.equal(harness.starts.length, 0);
+    harness.setStatus({ status: 'cleanup_failed', exp_name: 'same_name', error: 'cleanup failure' });
+    await harness.tick(5000);
+    assert.equal(harness.startDisabled(), true);
+    harness.stopResponse({ data: { status: 'stopping' } });
+    await harness.stop();
+    assert.equal(harness.startDisabled(), true);
+    harness.setStatus({ status: 'cancelled', exp_name: 'same_name' });
+    await harness.tick(5000);
+    assert.equal(harness.startDisabled(), false);
+  } finally { harness.unmount(); }
+});
+
+test('停止请求失败不擅自宣称空闲或解除启动限制', async () => {
+  const harness = createHarness();
+  try {
+    await harness.settle();
+    harness.stopResponse(undefined);
+    await harness.stop();
+    assert.equal(harness.startDisabled(), true);
+  } finally { harness.unmount(); }
+});
+
+test('配置检查返回取消时，实际启动按钮不发起实验请求或日志连接', async () => {
+  const h = createHarness({ status: 'idle' }, {
+    onBeforeStart: async () => ({ action: 'cancel' }),
+  });
+  try {
+    await h.settle();
+    await h.start();
+    assert.equal(h.starts.length, 0);
+    assert.equal(h.sockets.length, 0);
+  } finally { h.unmount(); }
 });

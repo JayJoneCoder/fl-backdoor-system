@@ -2,14 +2,17 @@ import React, { useState, useEffect } from 'react';
 import { Card, Upload, Button, Space, message, Table, Alert, Input, Row, Col } from 'antd';
 import { UploadOutlined, PlayCircleOutlined, EditOutlined, EyeOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
-import { parseBatchConfig, runBatchExperiments, getBatchStatus } from '../api/client';
+import { parseBatchConfig, runBatchExperiments, getBatchStatus, cancelBatch } from '../api/client';
 import BatchMonitor from '../components/BatchMonitor';
+import type { BatchStatus } from '../components/BatchMonitor';
+import { getConfigErrorMessage } from '../api/checkedFetch';
 
 const { TextArea } = Input;
+type BatchExperiment = { name: string } & Record<string, unknown>;
 
 const BatchPage: React.FC = () => {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
-  const [experiments, setExperiments] = useState<any[]>([]);
+  const [experiments, setExperiments] = useState<BatchExperiment[]>([]);
   const [loading, setLoading] = useState(false);
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -23,14 +26,13 @@ const BatchPage: React.FC = () => {
         if (res.data.status !== 'idle' && res.data.batch_id) {
           // 有正在运行的批量任务，恢复状态
           setBatchId(res.data.batch_id);
-          setBatchRunning(true);
+          setBatchRunning(['pending', 'running', 'stopping'].includes(res.data.status));
           // 从后端返回的数据中恢复实验列表（如果有）
           if (res.data.experiments && res.data.experiments.length > 0) {
             setExperiments(res.data.experiments);
           }
-          message.info(`检测到正在运行的批量实验 ${res.data.batch_id}，已恢复监控`);
         }
-      } catch (error) {
+      } catch {
         // 忽略错误
       }
     };
@@ -50,7 +52,7 @@ const BatchPage: React.FC = () => {
       setExperiments(res.data.experiments);
       message.success(`成功解析 ${res.data.count} 个实验`);
       setEditMode(false);
-    } catch (error) {
+    } catch {
       message.error('解析失败，请检查 JSON 格式');
     } finally {
       setLoading(false);
@@ -68,7 +70,7 @@ const BatchPage: React.FC = () => {
       setExperiments(res.data.experiments);
       message.success(`成功解析 ${res.data.count} 个实验`);
       setEditMode(false);
-    } catch (error) {
+    } catch {
       message.error('解析失败，请检查 JSON 格式');
     } finally {
       setLoading(false);
@@ -84,17 +86,31 @@ const BatchPage: React.FC = () => {
       setBatchId(data.batch_id);
       setBatchRunning(true);
       message.success(`批量实验已启动，批次ID: ${data.batch_id}`);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('[Batch] Error:', error);
-      message.error('启动失败: ' + (error?.response?.data?.detail || error?.message || '未知错误'));
+      message.error('启动失败: ' + getConfigErrorMessage(error));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleBatchComplete = () => {
+  const handleBatchComplete = (status: BatchStatus) => {
     setBatchRunning(false);
-    message.success('批量实验已完成');
+    if (status.status === 'completed') message.success('批量实验全部成功');
+    else if (status.status === 'cancelled') message.info('批量实验已取消');
+    else message.error(`批量实验有失败项：${status.error ?? '请查看明细和日志'}`);
+  };
+
+  const handleCancel = async () => {
+    if (!batchId) return;
+    setLoading(true);
+    try {
+      const response = await cancelBatch(batchId);
+      if (['completed', 'failed', 'cancelled'].includes(response.data.status)) setBatchRunning(false);
+      else message.info('正在停止并清理，完成前不会启动下一项');
+    } catch {
+      message.error('取消／清理失败，可重试；新任务仍被阻止');
+    } finally { setLoading(false); }
   };
 
   const columns = [
@@ -103,8 +119,8 @@ const BatchPage: React.FC = () => {
       title: '配置',
       dataIndex: 'config',
       key: 'config',
-      render: (_: any, record: any) => {
-        const { name, ...config } = record;
+      render: (_: unknown, record: BatchExperiment) => {
+        const config = Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'name'));
         return (
           <pre style={{ maxHeight: 100, overflow: 'auto', fontSize: 11 }}>
             {JSON.stringify(config, null, 2)}
@@ -196,10 +212,11 @@ const BatchPage: React.FC = () => {
               </Button>
             </div>
           )}
+          {batchRunning && <Button danger onClick={handleCancel} loading={loading}>取消整批／重试清理</Button>}
         </Space>
       </Card>
 
-      {batchRunning && batchId && (
+      {batchId && (
         <BatchMonitor batchId={batchId} onComplete={handleBatchComplete} />
       )}
     </div>

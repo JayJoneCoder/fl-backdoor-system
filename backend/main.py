@@ -3,6 +3,7 @@ FastAPI backend for FL backdoor experiment platform.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import subprocess
 from datetime import datetime
 import os
@@ -25,6 +26,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend import config_manager
+from backend.config_validation import parse_boolean
 from backend.experiment_runner import ExperimentRunner
 from backend.log_stream import LogFileReader, MetricFileReader, read_total_rounds
 from backend.results_scanner import (
@@ -37,7 +39,21 @@ from backend.batch_manager import batch_manager, BatchTask
 # ------------------------------
 # FastAPI app setup
 # ------------------------------
-app = FastAPI(title="FL Backdoor Platform API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        # Normal backend shutdown must not abandon an owned worker/cleanup task.
+        task = batch_manager.get_active_task()
+        if task:
+            task.cancel_requested = True
+        await runner.stop()
+        if task and task.job and not task.job.done():
+            await asyncio.shield(task.job)
+
+
+app = FastAPI(title="FL Backdoor Platform API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +91,7 @@ app.mount("/results", StaticFiles(directory=str(RESULTS_DIR)), name="results")
 # Global experiment runner instance
 # ------------------------------
 runner = ExperimentRunner()
+execution_lock = asyncio.Lock()
 
 
 # ------------------------------
@@ -134,7 +151,7 @@ async def websocket_batch_logs(websocket: WebSocket, batch_id: str):
                     await websocket.send_text(line)
                 except asyncio.TimeoutError:
                     await websocket.send_json({"type": "status", "data": task.to_dict()})
-                    if task.status in ("completed", "failed"):
+                    if task.status in ("completed", "failed", "cancelled"):
                         await asyncio.sleep(1)
                         break
         except WebSocketDisconnect:
@@ -224,31 +241,33 @@ async def get_current_config():
 
 
 @app.post("/api/config")
-async def update_current_config(updates: dict[str, Any]):
+async def update_current_config(updates: dict[str, Any], backup_name: str | None = None):
     """Update configuration in pyproject.toml."""
     try:
-        config_manager.backup_config()
-        config_manager.update_config(updates)
+        config_manager.update_config(updates, backup_current=True, backup_name=backup_name)
         return {"status": "success"}
-    except Exception as e:
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
+    except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 @app.post("/api/config/upload")
 async def upload_config_file(file: UploadFile):
     """Replace entire pyproject.toml with uploaded file."""
-    if not file.filename.endswith(".toml"):
+    if not file.filename or not file.filename.lower().endswith(".toml"):
         raise HTTPException(400, "Only .toml files are accepted")
     try:
         content = await file.read()
         # 将 Windows 换行符 \r\n 统一转换为 \n
         text_content = content.decode('utf-8').replace('\r\n', '\n')
-        config_manager.backup_config()
-        with open(config_manager.TOML_PATH, "w", encoding='utf-8', newline='') as f:
-            f.write(text_content)
+        config_manager.replace_config(text_content, backup_current=True)
         return {"status": "success", "message": "Configuration uploaded"}
+    except (ValueError, UnicodeError) as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
-        config_manager.restore_config()
         raise HTTPException(500, str(e))
 
 
@@ -259,36 +278,45 @@ async def start_experiment(request: dict[str, Any]):
     if not exp_name:
         raise HTTPException(400, "Experiment name is required")
 
-    config_overrides = request.get("config", {})
+    config_overrides = request.get("config")
+    if config_overrides is None:
+        config_overrides = {}
+    if not isinstance(config_overrides, dict):
+        raise HTTPException(400, "Experiment config must be an object")
+    config_overrides = dict(config_overrides)
     config_overrides["run-name"] = exp_name
 
     try:
-        await runner.start(exp_name, config_overrides, backup_config=True)
+        async with execution_lock:
+            if batch_manager.get_active_task():
+                raise HTTPException(409, "A batch task is running or stopping")
+            await runner.start(exp_name, config_overrides, backup_config=True)
         return {"status": "started", "name": exp_name}
+    except HTTPException:
+        raise
     except RuntimeError as e:
         raise HTTPException(409, str(e))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.post("/api/experiment/stop")
 async def stop_experiment():
-    """Stop the currently running experiment."""
-    print("[API] ========================================", flush=True)
-    print("[API] Received stop request at", datetime.now(), flush=True)
-    print("[API] ========================================", flush=True)
+    """Await owned cleanup; a timeout never releases the execution slot."""
+    batch = batch_manager.get_active_task()
+    if batch:
+        return await cancel_batch_task(batch.batch_id)
     try:
-        # 设置总超时 15 秒
-        await asyncio.wait_for(runner.stop(), timeout=15.0)
-        print("[API] Stop operation completed successfully", flush=True)
+        result = await asyncio.wait_for(asyncio.shield(runner.stop()), timeout=15)
     except asyncio.TimeoutError:
-        print("[API] Stop operation timed out, forcing cleanup", flush=True)
-        runner.process = None
-        runner._status = "idle"
+        return JSONResponse(status_code=202, content={"status": "stopping", "message": "Cleanup is still in progress; new experiments remain blocked."})
     except Exception as e:
-        print(f"[API] Error during stop: {e}", flush=True)
         raise HTTPException(500, str(e))
-    return {"status": "stopped"}
+    if result["status"] == "cleanup_failed":
+        raise HTTPException(503, result["error"])
+    return result
 
 
 @app.get("/api/experiment/status")
@@ -355,24 +383,27 @@ async def run_batch_experiments(request: dict[str, Any]):
     """Run a batch of experiments sequentially."""
     try:
         experiments = request.get("experiments", [])
-        if not experiments:
+        if not isinstance(experiments, list) or not experiments:
             raise HTTPException(400, "No experiments provided")
-
-        if runner.is_running():
-            raise HTTPException(409, "An experiment is already running")
-
-        if batch_manager.get_active_task():
-            raise HTTPException(409, "A batch task is already running")
-
-        task = batch_manager.create_task(experiments)
-        async def delayed_start():
-            await asyncio.sleep(0.1)   
-            await _run_batch_sequence(task)
-
-        asyncio.create_task(delayed_start())
+        async with execution_lock:
+            if runner.is_busy():
+                raise HTTPException(409, "An experiment is running or cleanup is not finished")
+            if batch_manager.get_active_task():
+                raise HTTPException(409, "A batch task is already running or stopping")
+            baseline = config_manager.TOML_PATH.read_bytes()
+            for idx, exp in enumerate(experiments):
+                if not isinstance(exp, dict) or not isinstance(exp.get("name"), str) or not exp["name"].strip():
+                    raise ValueError(f"Experiment {idx + 1}: name is required")
+                config = {k: v for k, v in exp.items() if k != "name"}
+                config["run-name"] = exp["name"]
+                config_manager.build_run_config(baseline, config)
+            task = batch_manager.create_task(experiments, baseline)
+            task.job = asyncio.create_task(_run_batch_sequence(task))
         return {"status": "batch_started", "batch_id": task.batch_id, "total": len(experiments)}
     except HTTPException:
         raise
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -380,65 +411,126 @@ async def run_batch_experiments(request: dict[str, Any]):
 
 
 async def _run_batch_sequence(task: BatchTask) -> None:
-    """Internal: run experiments sequentially with status updates."""
-    task.status = "running"
-    task.start_time = datetime.now()
-    batch_manager.update_task(task)
-    task.add_log(f"[Batch] Started batch task {task.batch_id} with {len(task.experiments)} experiments.")
-
-    for idx, exp in enumerate(task.experiments):
-        exp_name = exp.get("name")
-        if not exp_name:
-            task.add_log(f"[Batch] ERROR: Experiment at index {idx} has no name, skipping.")
-            continue
-
-        task.current_index = idx
-        task.current_exp_name = exp_name
+    """Finish owned cleanup before each next item; ordinary failures may continue."""
+    try:
+        task.start_time = datetime.now()
+        task.status = "stopping" if task.cancel_requested else "running"
         batch_manager.update_task(task)
-        task.add_log(f"[Batch] Starting experiment {idx+1}/{len(task.experiments)}: {exp_name}")
+        task.add_log(f"[Batch] Started {task.batch_id} with {len(task.experiments)} experiments.")
+        for idx, exp in enumerate(task.experiments):
+            if task.cancel_requested:
+                break
+            exp_name = exp["name"]
+            item = task.results[idx]
+            task.current_index = idx
+            task.current_exp_name = exp_name
+            item.update(status="running", start_time=datetime.now().isoformat())
+            batch_manager.update_task(task)
+            config = {k: v for k, v in exp.items() if k != "name"}
+            config["run-name"] = exp_name
+            original_callback = runner._on_log_line
 
-        # 构建配置覆盖，并显式设置 run-name
-        config = {k: v for k, v in exp.items() if k != "name"}
-        config["run-name"] = exp_name   # 关键修复：确保子实验使用正确目录名
+            async def forward_log(line: str):
+                task.add_log(f"[{exp_name}] {line}")
+                if original_callback:
+                    await original_callback(line)
 
-        # 保存原有回调，设置日志转发
-        original_callback = runner._on_log_line
-        async def forward_log(line: str):
-            task.add_log(f"[{exp_name}] {line}")
-            if original_callback:
-                await original_callback(line)
-
-        runner.set_log_callback(forward_log)
-
-        try:
-            await runner.start(exp_name, config, backup_config=True)
-            while runner.is_running():
-                await asyncio.sleep(2)
-            task.add_log(f"[Batch] Finished experiment: {exp_name}")
-        except Exception as e:
-            error_msg = f"Batch experiment {exp_name} failed: {e}"
-            print(error_msg)
-            task.add_log(f"[Batch] ERROR: {error_msg}")
-            task.error = error_msg
-        finally:
-            # 恢复原有回调
-            runner.set_log_callback(original_callback)
+            runner.set_log_callback(forward_log)
             try:
-                await runner.stop()
-            except:
-                pass
+                task.add_log(f"[Batch] Starting {idx + 1}/{len(task.experiments)}: {exp_name}")
+                async with execution_lock:
+                    if task.cancel_requested:
+                        item["status"] = "cancelled"
+                        break
+                    await runner.start(exp_name, config, backup_config=False, base_config=task.base_config)
+                result = await runner.wait()
+                item.update(exit_code=result.get("exit_code"), error=result.get("error"))
+                item["status"] = "completed" if result["status"] == "finished" else (
+                    "cancelled" if result["status"] == "cancelled" else "failed")
+                if item["status"] == "cancelled":
+                    task.cancel_requested = True
+                if item["status"] == "failed":
+                    task.error = item["error"] or f"Experiment {exp_name} failed."
+                if runner.is_busy():
+                    task.status = "stopping"
+                    task.error = result.get("error") or "Owned cleanup is not finished. Retry cancellation."
+                    batch_manager.update_task(task)
+                    return
+            except Exception as exc:
+                item.update(status="failed", error=str(exc))
+                task.error = f"Experiment {exp_name} failed: {exc}"
+                if runner.is_busy():
+                    task.status = "stopping"
+                    batch_manager.update_task(task)
+                    return
+            finally:
+                runner.set_log_callback(original_callback)
+                item["end_time"] = datetime.now().isoformat()
+            task.add_log(f"[Batch] {exp_name}: {item['status']}; exit_code={item['exit_code']}")
+            batch_manager.update_task(task)
+        _finish_batch(task)
+    except asyncio.CancelledError:
+        task.cancel_requested = True
+        await asyncio.shield(runner.stop())
+        if runner.is_busy():
+            task.status = "stopping"
+            batch_manager.update_task(task)
+        else:
+            _finish_batch(task)
+        raise
+    except Exception as exc:
+        task.error = f"Batch controller failed: {exc}"
+        task.cancel_requested = True
+        await runner.stop()
+        if runner.is_busy():
+            task.status = "stopping"
+            batch_manager.update_task(task)
+        else:
+            _finish_batch(task, failed=True)
 
-    task.status = "completed"
+
+def _finish_batch(task: BatchTask, *, failed: bool = False) -> None:
+    for item in task.results:
+        if item["status"] in {"pending", "running"}:
+            item.update(status="cancelled", error="Batch cancelled before completion.", end_time=datetime.now().isoformat())
+    task.status = "failed" if failed else ("cancelled" if task.cancel_requested else (
+        "completed" if all(item["status"] == "completed" for item in task.results) else "failed"))
     task.end_time = datetime.now()
     task.current_index = len(task.experiments)
     task.current_exp_name = None
+    task.add_log(f"[Batch] Batch {task.batch_id}: {task.status}.")
     batch_manager.update_task(task)
-    task.add_log(f"[Batch] Batch task {task.batch_id} completed.")
+
+
+@app.post("/api/batch/{batch_id}/cancel")
+async def cancel_batch_task(batch_id: str):
+    task = batch_manager.get_task(batch_id)
+    if task is None:
+        raise HTTPException(404, "Batch task not found")
+    async with execution_lock:
+        if task.status not in {"pending", "running", "stopping"}:
+            return task.to_dict()
+        task.cancel_requested = True
+        task.status = "stopping"
+        batch_manager.update_task(task)
+    try:
+        result = await asyncio.wait_for(asyncio.shield(runner.stop()), timeout=15)
+        if result["status"] == "cleanup_failed":
+            task.error = result["error"]
+            batch_manager.update_task(task)
+            raise HTTPException(503, task.error)
+        if task.job and not task.job.done():
+            await asyncio.wait_for(asyncio.shield(task.job), timeout=15)
+        if task.status == "stopping":
+            _finish_batch(task)
+    except asyncio.TimeoutError:
+        return JSONResponse(status_code=202, content=task.to_dict())
+    return task.to_dict()
 
 @app.get("/api/batch/status")
 async def get_batch_status():
     """Get current batch task status."""
-    task = batch_manager.get_active_task()
+    task = batch_manager.get_active_task() or batch_manager.get_latest_task()
     if task is None:
         return {"status": "idle"}
     return task.to_dict()
@@ -670,17 +762,19 @@ async def get_raw_config():
         raise HTTPException(500, str(e))
 
 @app.post("/api/config/raw")
-async def update_raw_config(data: dict[str, str]):
-    """用原始文本覆盖 pyproject.toml（不自动备份，备份由前端显式触发）"""
+async def update_raw_config(data: dict[str, Any]):
+    """Validate and atomically save raw TOML; optional backup precedes replace."""
     content = data.get("content")
     if content is None:
         raise HTTPException(400, "Missing 'content' field")
     try:
-        # 统一换行符
-        content = content.replace('\r\n', '\n')
-        with open(config_manager.TOML_PATH, "w", encoding="utf-8", newline='') as f:
-            f.write(content)
+        backup = parse_boolean(data.get("backup_current", False), "backup_current")
+        config_manager.replace_config(content, backup_current=backup, backup_name=data.get("backup_name"))
         return {"status": "success"}
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
     
@@ -708,6 +802,8 @@ async def create_backup_file(data: dict[str, Any] | None = None):
                 content={"status": "conflict", "message": "文件已存在"}
             )
         return {"status": "success", "filename": backup_path.name}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -719,6 +815,8 @@ async def get_backup_content(filename: str):
         return {"content": content}
     except FileNotFoundError:
         raise HTTPException(404, "Backup not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -730,6 +828,23 @@ async def delete_backup_file(filename: str):
         return {"status": "success"}
     except FileNotFoundError:
         raise HTTPException(404, "Backup not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.put("/api/config/backups/{filename}")
+async def update_backup_file(filename: str, data: dict[str, Any]):
+    content = data.get("content")
+    if content is None:
+        raise HTTPException(400, "Missing content")
+    try:
+        config_manager.update_backup_content(filename, content)
+        return {"status": "success"}
+    except FileNotFoundError:
+        raise HTTPException(404, "Backup not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -739,13 +854,17 @@ async def restore_config_from_backup(data: dict[str, Any]):
     filename = data.get("filename")
     if not filename:
         raise HTTPException(400, "Missing filename")
-    backup_current = data.get("backup_current", True)
     backup_name = data.get("backup_name")
     try:
+        backup_current = parse_boolean(data.get("backup_current", True), "backup_current")
         config_manager.restore_from_backup(filename, backup_current, backup_name)
         return {"status": "success"}
     except FileNotFoundError:
         raise HTTPException(404, "Backup not found")
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
     
@@ -766,6 +885,8 @@ async def create_backup_from_content(data: dict[str, Any]):
                 content={"status": "conflict", "message": "文件已存在"}
             )
         return {"status": "success", "filename": backup_path.name}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 

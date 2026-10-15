@@ -13,8 +13,10 @@ export const getConfigSchema = () => apiClient.get('/api/config/schema');
 export const getConfig = () => apiClient.get('/api/config');
 
 // 更新配置
-export const updateConfig = (updates: Record<string, any>) =>
-  apiClient.post('/api/config', updates);
+export const updateConfig = (updates: Record<string, any>, backupName?: string) =>
+  apiClient.post('/api/config', updates, {
+    params: backupName === undefined ? undefined : { backup_name: backupName },
+  });
 
 // 启动实验
 export const startExperiment = (name: string, config?: Record<string, any>) =>
@@ -48,6 +50,9 @@ export const runBatchExperiments = (experiments: any[]) =>
 
 // 获取批量实验状态
 export const getBatchStatus = () => apiClient.get('/api/batch/status');
+
+export const cancelBatch = (batchId: string) =>
+  apiClient.post(`/api/batch/${encodeURIComponent(batchId)}/cancel`);
 
 // 上传整个 toml 文件（高级模式）
 export const uploadConfigFile = (file: File) => {

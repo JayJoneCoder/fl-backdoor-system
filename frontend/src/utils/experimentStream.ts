@@ -59,7 +59,12 @@ export const getProgressPercent = (
   return Math.round(Math.min(1, Math.max(0, round / total)) * 100);
 };
 
-export const normalizeExperimentStatus = (value: unknown): 'idle' | 'running' | 'finished' => {
+export type ExperimentStatus = 'idle' | 'running' | 'stopping' | 'cleaning' | 'cleanup_failed' | 'finished' | 'failed' | 'cancelled';
+
+export const isExperimentBusy = (status: ExperimentStatus): boolean =>
+  ['running', 'stopping', 'cleaning', 'cleanup_failed'].includes(status);
+
+export const normalizeExperimentStatus = (value: unknown): ExperimentStatus => {
   switch (String(value ?? '').toLowerCase()) {
     case 'starting':
     case 'running':
@@ -67,6 +72,11 @@ export const normalizeExperimentStatus = (value: unknown): 'idle' | 'running' | 
     case 'completed':
     case 'finished':
       return 'finished';
+    case 'stopping': return 'stopping';
+    case 'cleaning': return 'cleaning';
+    case 'cleanup_failed': return 'cleanup_failed';
+    case 'failed': return 'failed';
+    case 'cancelled': return 'cancelled';
     default:
       return 'idle';
   }

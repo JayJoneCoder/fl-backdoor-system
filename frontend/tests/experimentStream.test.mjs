@@ -61,6 +61,14 @@ test('starting 与完成状态映射到组件支持的状态', () => {
   for (const value of ['idle', undefined, null]) assert.equal(normalizeExperimentStatus(value), 'idle');
 });
 
+test('清理中、失败和取消不能映射为空闲或成功', () => {
+  for (const value of ['stopping', 'cleaning', 'cleanup_failed', 'failed', 'cancelled']) {
+    assert.equal(normalizeExperimentStatus(value), value);
+  }
+  for (const value of ['running', 'stopping', 'cleaning', 'cleanup_failed']) assert.equal(stream.isExperimentBusy(value), true);
+  for (const value of ['idle', 'finished', 'failed', 'cancelled']) assert.equal(stream.isExperimentBusy(value), false);
+});
+
 test('完整历史与实时数据按轮次合并，重复回放不会产生重复点', () => {
   const point = round => ({ round, accuracy: round / 10, asr: 0.2, loss: 1.5 });
   const previous = [point(0), point(1), point(2)];

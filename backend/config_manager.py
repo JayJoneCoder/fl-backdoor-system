@@ -3,20 +3,24 @@ Configuration manager for reading/writing pyproject.toml.
 Also provides schema for frontend dynamic form generation.
 """
 
-import shutil
+import os
+import re
+import tempfile
+from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import tomli
 import tomli_w
-
-import re
-import os
-from datetime import datetime
+from backend.config_validation import (
+    OPTIONAL_FIELDS, normalize_values, parse_integer, validate_constraints,
+)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 TOML_PATH = PROJECT_ROOT / "pyproject.toml"
 BACKUP_PATH = PROJECT_ROOT / "pyproject.toml.bak"
+_CONFIG_LOCK = RLock()
 
 # ----------------------------------------------------------------------
 # Configuration schema for frontend dynamic forms
@@ -498,13 +502,70 @@ CONFIG_GROUPS = ["core", "federated", "attack", "defense", "management"]
 
 
 def _read_toml() -> dict[str, Any]:
-    with open(TOML_PATH, "rb") as f:
-        return tomli.load(f)
+    with _CONFIG_LOCK:
+        with open(TOML_PATH, "rb") as f:
+            return tomli.load(f)
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    """Write in the same directory, then replace; failures never truncate path."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as f:
+            temporary = Path(f.name)
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        if path.exists() and os.name != "nt":
+            os.chmod(temporary, path.stat().st_mode)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _write_toml(data: dict[str, Any]) -> None:
-    with open(TOML_PATH, "wb") as f:
-        tomli_w.dump(data, f)
+    # Serialize completely before creating/opening any destination file.
+    content = tomli_w.dumps(data).encode("utf-8")
+    with _CONFIG_LOCK:
+        _atomic_write(TOML_PATH, content)
+
+
+def validate_document(content: str) -> dict[str, Any]:
+    """Validate syntax and usable project/app sections without touching files."""
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Configuration content cannot be empty.")
+    try:
+        data = tomli.loads(content.lstrip("\ufeff"))
+    except tomli.TOMLDecodeError as exc:
+        raise ValueError(f"Invalid TOML: {exc}") from exc
+    try:
+        project = data["project"]
+        app = data["tool"]["flwr"]["app"]
+        section = app["config"]
+        components = app["components"]
+        if not isinstance(project.get("name"), str) or not project["name"].strip():
+            raise ValueError("Missing project.name.")
+        if not isinstance(section, dict) or not isinstance(components, dict):
+            raise ValueError("Flower config and components must be TOML tables.")
+        for key in ("serverapp", "clientapp"):
+            if not isinstance(components.get(key), str) or not components[key].strip():
+                raise ValueError(f"Missing tool.flwr.app.components.{key}.")
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError("Configuration must include project and tool.flwr.app config/components tables.") from exc
+    normalized = normalize_values(section, CONFIG_SCHEMA, strict=True)
+    validate_constraints(normalized, CONFIG_SCHEMA)
+    return data
+
+
+def replace_config(content: str, *, backup_current: bool = False, backup_name: str | None = None) -> None:
+    """Validate first; optionally back up old bytes; atomically install raw TOML."""
+    validate_document(content)
+    encoded = content.lstrip("\ufeff").replace("\r\n", "\n").encode("utf-8")
+    with _CONFIG_LOCK:
+        if backup_current:
+            _backup_before_save(backup_name)
+        _atomic_write(TOML_PATH, encoded)
 
 
 def _get_config_section(data: dict[str, Any]) -> dict[str, Any]:
@@ -557,38 +618,62 @@ def get_ui_config() -> dict[str, Any]:
     return config
 
 
-def update_config(updates: dict[str, Any]) -> None:
-    """Update configuration after converting UI-only fields."""
-    storage_updates = _prepare_storage_updates(updates)
-    data = _read_toml()
+def build_run_config(content: bytes, updates: dict[str, Any]) -> bytes:
+    """Build a complete run config from an immutable baseline, without writing."""
+    if not isinstance(updates, dict):
+        raise ValueError("Configuration updates must be an object.")
+    # Validate the merged document, so a valid update can repair an invalid
+    # legacy value instead of rejecting the baseline before applying updates.
+    try:
+        data = tomli.loads(content.decode("utf-8"))
+    except tomli.TOMLDecodeError as exc:
+        raise ValueError(f"Invalid TOML: {exc}") from exc
     config_section = _get_config_section(data)
-
-    for key, value in storage_updates.items():
-        if key not in CONFIG_SCHEMA:
-            continue
-        schema = CONFIG_SCHEMA[key]
-        if schema["type"] == "boolean":
-            value = bool(value)
-        elif schema["type"] == "integer":
-            value = int(value) if value is not None else None
-        elif schema["type"] == "float":
-            value = float(value) if value is not None else None
-        elif schema["type"] == "string":
-            value = str(value) if value is not None else ""
-        config_section[key] = value
-
-    _write_toml(data)
+    storage_updates = _prepare_storage_updates(updates, config_section)
+    normalized = normalize_values(storage_updates, CONFIG_SCHEMA)
+    for key in storage_updates:
+        if key in OPTIONAL_FIELDS and key not in normalized:
+            config_section.pop(key, None)
+    config_section.update(normalized)
+    checked = normalize_values(config_section, CONFIG_SCHEMA, strict=True)
+    validate_constraints(checked, CONFIG_SCHEMA)
+    serialized = tomli_w.dumps(data)
+    validate_document(serialized)
+    return serialized.encode("utf-8")
 
 
-def _prepare_storage_updates(updates: dict[str, Any]) -> dict[str, Any]:
+def restore_run_config(original: bytes, applied: bytes) -> bool:
+    """Restore only our own write; never overwrite a user's later config save."""
+    with _CONFIG_LOCK:
+        if TOML_PATH.read_bytes() != applied:
+            return False
+        _atomic_write(TOML_PATH, original)
+        return True
+
+
+def update_config(updates: dict[str, Any], *, backup_current: bool = False, backup_name: str | None = None) -> None:
+    """Update configuration after converting UI-only fields."""
+    with _CONFIG_LOCK:
+        content = build_run_config(TOML_PATH.read_bytes(), updates)
+        # All validation and serialization precedes backup mutation, too.
+        if backup_current:
+            _backup_before_save(backup_name)
+        _atomic_write(TOML_PATH, content)
+
+
+def _prepare_storage_updates(updates: dict[str, Any], current: dict[str, Any] | None = None) -> dict[str, Any]:
     """Convert UI-only fields to actual toml fields."""
     storage = updates.copy()
 
     # 处理 malicious-count → malicious-ratio
     if "malicious-count" in storage:
-        num_clients = int(updates.get("num-clients", 10))
-        count = int(storage.pop("malicious-count"))
-        storage["malicious-ratio"] = count / num_clients if num_clients > 0 else 0.0
+        num_clients = parse_integer(
+            updates.get("num-clients", (current or {}).get("num-clients", 10)), "num-clients", minimum=1,
+        )
+        count = parse_integer(storage.pop("malicious-count"), "malicious-count")
+        if count > num_clients:
+            raise ValueError("malicious-count: cannot exceed num-clients.")
+        storage["malicious-ratio"] = count / num_clients
 
     # 移除所有 ui_only 字段
     for key, schema in CONFIG_SCHEMA.items():
@@ -599,13 +684,22 @@ def _prepare_storage_updates(updates: dict[str, Any]) -> dict[str, Any]:
 
 
 def backup_config() -> None:
-    shutil.copy2(TOML_PATH, BACKUP_PATH)
+    with _CONFIG_LOCK:
+        _atomic_write(BACKUP_PATH, TOML_PATH.read_bytes())
+
+
+def _backup_before_save(name: str | None) -> None:
+    if name is not None:
+        if create_backup(name) is None:
+            raise FileExistsError("Backup name already exists; choose another name.")
+    backup_config()
 
 
 def restore_config() -> None:
-    if BACKUP_PATH.exists():
-        shutil.copy2(BACKUP_PATH, TOML_PATH)
-        BACKUP_PATH.unlink()
+    with _CONFIG_LOCK:
+        if BACKUP_PATH.exists():
+            replace_config(BACKUP_PATH.read_text(encoding="utf-8"))
+            BACKUP_PATH.unlink()
 
 
 def get_config_schema() -> dict[str, Any]:
@@ -677,37 +771,67 @@ def list_backups() -> list[dict[str, Any]]:
     backups.sort(key=lambda x: x["timestamp"], reverse=True)
     return backups
 
+def _backup_path(filename: str, *, allow_legacy: bool = False) -> Path:
+    if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename:
+        raise ValueError("Backup filename must not contain a directory path.")
+    if filename.casefold() == TOML_PATH.name.casefold() or ":" in filename:
+        raise ValueError("The active project configuration cannot be used as a backup.")
+    if not BACKUP_PATTERN.fullmatch(filename) and not (allow_legacy and filename == "pyproject.toml.bak"):
+        raise ValueError("Backup filename must end in .toml.")
+    path = PROJECT_ROOT / filename
+    if path.resolve() == TOML_PATH.resolve():
+        raise ValueError("The active project configuration cannot be used as a backup.")
+    if path.resolve().parent != PROJECT_ROOT.resolve():
+        raise ValueError("Backup must be inside the project directory.")
+    return path
+
+
 def read_backup_content(filename: str) -> str:
     """读取指定备份文件的内容"""
-    backup_path = PROJECT_ROOT / filename
-    if not backup_path.exists() or not BACKUP_PATTERN.match(filename):
+    backup_path = _backup_path(filename, allow_legacy=True)
+    if not backup_path.is_file():
         raise FileNotFoundError(f"Backup file '{filename}' not found")
     with open(backup_path, "r", encoding="utf-8") as f:
         return f.read()
 
 def delete_backup(filename: str) -> None:
     """删除指定的备份文件"""
-    backup_path = PROJECT_ROOT / filename
-    if not backup_path.exists() or not BACKUP_PATTERN.match(filename):
+    backup_path = _backup_path(filename)
+    if not backup_path.is_file():
         raise FileNotFoundError(f"Backup file '{filename}' not found")
     backup_path.unlink()
 
 def restore_from_backup(filename: str, backup_current: bool = True, backup_name: str | None = None) -> None:
     """从指定备份恢复配置，可选择是否先备份当前配置"""
-    backup_path = PROJECT_ROOT / filename
-    if not backup_path.exists():
+    backup_path = _backup_path(filename, allow_legacy=True)
+    if not backup_path.is_file():
         raise FileNotFoundError(f"Backup file '{filename}' not found")
-    if backup_current:
-        create_backup(backup_name)   # 传递自定义名称
-    shutil.copy2(backup_path, TOML_PATH)
+    # Read first: backing up current config may overwrite the legacy .bak source.
+    with _CONFIG_LOCK:
+        content = backup_path.read_text(encoding="utf-8")
+        replace_config(content, backup_current=backup_current,
+                       backup_name=(backup_name or "") if backup_current else None)
+
+
+def update_backup_content(filename: str, content: str) -> None:
+    path = _backup_path(filename)
+    if not path.is_file():
+        raise FileNotFoundError(f"Backup file '{filename}' not found")
+    validate_document(content)
+    with _CONFIG_LOCK:
+        _atomic_write(path, content.lstrip("\ufeff").replace("\r\n", "\n").encode("utf-8"))
 
 def _generate_backup_filename(custom_name: str | None = None, auto_suffix: str | None = None) -> str:
     """生成备份文件名，处理重名冲突"""
+    if custom_name is not None and not isinstance(custom_name, str):
+        raise ValueError("Backup name must be text.")
     if custom_name:
         safe_name = re.sub(r"[^\w\-_\.]", "_", custom_name)
         # 确保扩展名为 .toml
-        if not safe_name.endswith('.toml'):
+        if not safe_name.lower().endswith('.toml'):
             safe_name += '.toml'
+        else:
+            safe_name = safe_name[:-5] + '.toml'
         filename = safe_name
     else:
         now = datetime.now()
@@ -727,6 +851,8 @@ def _resolve_backup_path(filename: str, on_conflict: str = 'ask') -> Path | None
     on_conflict: 'ask' (返回 None 表示需询问), 'auto' (自动加后缀), 'overwrite' (直接覆盖)
     返回 None 表示需要用户决策，否则返回最终路径。
     """
+    if on_conflict not in {"ask", "auto", "overwrite"}:
+        raise ValueError("on_conflict must be ask, auto or overwrite.")
     path = PROJECT_ROOT / filename
     if not path.exists():
         return path
@@ -752,11 +878,13 @@ def create_backup(custom_name: str | None = None, on_conflict: str = 'ask') -> P
     返回备份路径，如果重名且 on_conflict='ask' 则返回 None。
     """
     filename = _generate_backup_filename(custom_name)
-    path = _resolve_backup_path(filename, on_conflict)
-    if path is None:
-        return None
-    shutil.copy2(TOML_PATH, path)
-    return path
+    with _CONFIG_LOCK:
+        _backup_path(filename)
+        path = _resolve_backup_path(filename, on_conflict)
+        if path is None:
+            return None
+        _atomic_write(path, TOML_PATH.read_bytes())
+        return path
 
 
 def create_backup_from_content(content: str, custom_name: str | None = None, on_conflict: str = 'ask') -> Path | None:
@@ -764,10 +892,12 @@ def create_backup_from_content(content: str, custom_name: str | None = None, on_
     从给定内容创建备份文件。
     返回备份路径，如果重名且 on_conflict='ask' 则返回 None。
     """
+    validate_document(content)
     filename = _generate_backup_filename(custom_name)
-    path = _resolve_backup_path(filename, on_conflict)
-    if path is None:
-        return None
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
+    with _CONFIG_LOCK:
+        _backup_path(filename)
+        path = _resolve_backup_path(filename, on_conflict)
+        if path is None:
+            return None
+        _atomic_write(path, content.lstrip("\ufeff").replace("\r\n", "\n").encode("utf-8"))
+        return path

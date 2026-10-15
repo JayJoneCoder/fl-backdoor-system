@@ -268,22 +268,26 @@ class RunnerLogTests(unittest.IsolatedAsyncioTestCase):
             log = exp_dir / "run.log"
             log.write_text("previous experiment log\n", encoding="utf-8")
             snapshot = root / "source.toml"
-            snapshot.write_text("[tool.flwr.app.config]\nnum-server-rounds = 7\n", encoding="utf-8")
+            snapshot.write_text(
+                '[project]\nname = "test-project"\nversion = "1.0"\n'
+                '[tool.flwr.app.components]\nserverapp = "fl_backdoor.server.server:app"\n'
+                'clientapp = "fl_backdoor.client.client:app"\n'
+                '[tool.flwr.app.config]\nnum-server-rounds = 7\n', encoding="utf-8")
             process = Mock(returncode=0)
             process.stdout = io.StringIO("")
             process.poll.return_value = 0
             runner = ExperimentRunner()
+            owner = Mock()
+            owner.spawn.return_value = process
             with patch("backend.experiment_runner.RESULTS_DIR", root), \
                  patch("backend.experiment_runner.config_manager.TOML_PATH", snapshot), \
-                 patch("backend.experiment_runner.config_manager.update_config"), \
                  patch("backend.experiment_runner.config_manager.backup_config"), \
-                 patch("backend.experiment_runner.config_manager.get_config", return_value={"num-server-rounds": 7}), \
-                 patch("backend.experiment_runner.subprocess.Popen", return_value=process):
+                 patch("backend.experiment_runner.OwnedProcessTree", return_value=owner):
                 await runner.start("same_name")
                 self.assertEqual(log.read_text(encoding="utf-8"), "")
                 self.assertEqual((await runner.get_status())["total_rounds"], 7)
                 self.assertEqual(runner.get_log_context("same_name")[0], 1)
-                await runner._stdout_task
+                await runner.wait()
 
 
 if __name__ == "__main__":
