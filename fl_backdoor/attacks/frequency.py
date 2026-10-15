@@ -16,15 +16,16 @@ structured spectral trigger that is easier for the model to learn,
 which usually makes ASR much more stable.
 
 Important:
-- If `img_raw` exists in the dataset sample, this attack operates on the
-  raw image domain first, then re-normalizes to model space.
-- This keeps the attack visible to the model before normalization, which
-  improves backdoor learnability without affecting BadNets / WaNet.
+- Triggers operate in raw [0, 1] pixel space, then use dataset metadata to
+  normalize back to model space. Normalized-only samples are denormalized first.
+- Unselected training samples are returned unchanged.
+- Without metadata, legacy callers retain the CIFAR-style mean/std of 0.5.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
+from math import isfinite
 from typing import Literal
 
 import numpy as np
@@ -32,6 +33,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .base import AttackBase, AttackConfig
+from .pixel_trigger import normalization_stats
 from .selection import normalize_fixed_malicious_clients, select_malicious_clients
 
 FrequencyMode = Literal["dct", "fft"]
@@ -72,18 +74,38 @@ def _restore_shape(image: torch.Tensor, was_2d: bool) -> torch.Tensor:
     return image
 
 
-def _normalize_cifar10(x: torch.Tensor) -> torch.Tensor:
-    """Map [0, 1] image tensor to CIFAR-10 model space [-1, 1]."""
-    return torch.clamp((x - 0.5) / 0.5, -1.0, 1.0)
+def _normalization_tensors(image: torch.Tensor, dataset_meta):
+    """Return per-channel stats; missing metadata preserves the legacy contract."""
+    image3d, _ = _ensure_channel_first(image)
+    channels = image3d.shape[0]
+    if dataset_meta is None:
+        mean, std = (0.5,) * channels, (0.5,) * channels
+    else:
+        mean, std = normalization_stats(dataset_meta, channels)
+    return image3d.new_tensor(mean).view(-1, 1, 1), image3d.new_tensor(std).view(-1, 1, 1)
+
+
+def _to_raw(image: torch.Tensor, dataset_meta) -> torch.Tensor:
+    image3d, was_2d = _ensure_channel_first(image)
+    mean, std = _normalization_tensors(image3d, dataset_meta)
+    return _restore_shape(image3d * std + mean, was_2d)
+
+
+def _to_model(image: torch.Tensor, dataset_meta) -> torch.Tensor:
+    image3d, was_2d = _ensure_channel_first(image)
+    mean, std = _normalization_tensors(image3d, dataset_meta)
+    return _restore_shape((image3d - mean) / std, was_2d)
 
 
 @lru_cache(maxsize=None)
-def _dct_matrices(h: int, w: int, device_str: str) -> tuple[torch.Tensor, torch.Tensor]:
+def _dct_matrices(
+    h: int, w: int, device_str: str, dtype: torch.dtype = torch.float32,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Return orthonormal DCT-II matrices for height and width."""
     device = torch.device(device_str)
 
     def make_matrix(n: int) -> torch.Tensor:
-        mat = torch.empty((n, n), dtype=torch.float32, device=device)
+        mat = torch.empty((n, n), dtype=dtype, device=device)
         scale0 = np.sqrt(1.0 / n)
         scale = np.sqrt(2.0 / n)
         for k in range(n):
@@ -98,28 +120,27 @@ def _dct_matrices(h: int, w: int, device_str: str) -> tuple[torch.Tensor, torch.
 def _dct2(x: torch.Tensor) -> torch.Tensor:
     """Apply orthonormal 2D DCT to x with shape [C, H, W] or [H, W]."""
     x3d, was_2d = _ensure_channel_first(x)
-    if not x3d.is_floating_point():
+    if x3d.dtype not in (torch.float32, torch.float64):
         x3d = x3d.float()
 
     h, w = x3d.shape[-2], x3d.shape[-1]
-    dh, dw = _dct_matrices(int(h), int(w), str(x3d.device))
+    dh, dw = _dct_matrices(int(h), int(w), str(x3d.device), x3d.dtype)
 
-    coeffs = torch.einsum("uh,chw->cuw", dh, x3d)
-    coeffs = torch.einsum("cuw,vw->cuv", coeffs, dw.t())
+    # DCT-II: D_h @ image @ D_w.T. Matmul avoids mismatched einsum axes.
+    coeffs = dh @ x3d @ dw.t()
     return _restore_shape(coeffs, was_2d)
 
 
 def _idct2(x: torch.Tensor) -> torch.Tensor:
     """Inverse of _dct2."""
     x3d, was_2d = _ensure_channel_first(x)
-    if not x3d.is_floating_point():
+    if x3d.dtype not in (torch.float32, torch.float64):
         x3d = x3d.float()
 
     h, w = x3d.shape[-2], x3d.shape[-1]
-    dh, dw = _dct_matrices(int(h), int(w), str(x3d.device))
+    dh, dw = _dct_matrices(int(h), int(w), str(x3d.device), x3d.dtype)
 
-    image = torch.einsum("cuw,vw->cuv", x3d, dw)
-    image = torch.einsum("uh,cuv->chv", dh.t(), image)
+    image = dh.t() @ x3d @ dw
     return _restore_shape(image, was_2d)
 
 
@@ -275,16 +296,19 @@ def _apply_frequency_trigger(
     mix_alpha: float,
     trigger_style: str,
     input_domain: str = "normalized",
+    dataset_meta=None,
 ) -> torch.Tensor:
     """Apply a fixed spectral trigger to one image.
 
     input_domain:
         - "raw": image is in [0, 1], output is clamped to [0, 1]
-        - "normalized": image is in model space, output is clamped to [-1, 1]
+        - "normalized": denormalize using dataset stats, apply the trigger in
+          raw space, then normalize back without clipping valid model values.
     """
     image3d, was_2d = _ensure_channel_first(image)
     original_dtype = image3d.dtype
-    if not image3d.is_floating_point():
+    # CPU FFT and matrix multiplication need float32/64; cast back at the end.
+    if image3d.dtype not in (torch.float32, torch.float64):
         image3d = image3d.float()
 
     h, w = _get_image_hw(image3d)
@@ -294,6 +318,17 @@ def _apply_frequency_trigger(
     intensity = float(intensity)
     mix_alpha = float(mix_alpha)
     input_domain = _normalize_name(input_domain)
+    if input_domain not in {"raw", "normalized"}:
+        raise ValueError("input_domain must be 'raw' or 'normalized'.")
+    if not isfinite(intensity) or intensity < 0:
+        raise ValueError("frequency_intensity must be finite and non-negative.")
+    if not isfinite(mix_alpha) or not 0 < mix_alpha <= 1:
+        raise ValueError("mix_alpha must be in (0.0, 1.0].")
+    _resolve_style(trigger_style)
+    if intensity == 0:
+        return image.clone()
+    if input_domain == "normalized":
+        image3d = _to_raw(image3d, dataset_meta)
 
     if mode == "dct":
         coeffs = _dct2(image3d)
@@ -333,15 +368,30 @@ def _apply_frequency_trigger(
     if mix_alpha < 1.0:
         out = (1.0 - mix_alpha) * image3d + mix_alpha * out
 
-    if input_domain == "raw":
-        out = torch.clamp(out, 0.0, 1.0)
-    else:
-        out = torch.clamp(out, -1.0, 1.0)
+    out = torch.clamp(out, 0.0, 1.0)
+    if input_domain == "normalized":
+        out = _to_model(out, dataset_meta)
 
     if original_dtype.is_floating_point:
         out = out.to(original_dtype)
 
     return _restore_shape(out, was_2d)
+
+
+def _trigger_sample_image(sample, *, dataset_meta, **trigger_kwargs) -> torch.Tensor:
+    """Shared training/ASR path: edit raw pixels and return model-space input."""
+    model_image = sample["img"]
+    if trigger_kwargs["intensity"] == 0:
+        return model_image.clone()
+    raw_image = sample.get("img_raw")
+    if raw_image is None:
+        return _apply_frequency_trigger(
+            model_image, input_domain="normalized", dataset_meta=dataset_meta, **trigger_kwargs,
+        )
+    # Normalize in the working dtype before restoring a low-precision input.
+    working = raw_image if model_image.dtype in (torch.float32, torch.float64) else raw_image.float()
+    triggered = _apply_frequency_trigger(working, input_domain="raw", **trigger_kwargs)
+    return _to_model(triggered, dataset_meta).to(dtype=model_image.dtype)
 
 
 class PoisonedFrequencyDataset(Dataset):
@@ -360,6 +410,7 @@ class PoisonedFrequencyDataset(Dataset):
         trigger_style: str,
         seed: int = 42,
         exclude_target_label: bool = True,
+        dataset_meta=None,
     ) -> None:
         self.base_dataset = base_dataset
         self.poison_rate = float(poison_rate)
@@ -372,6 +423,7 @@ class PoisonedFrequencyDataset(Dataset):
         self.trigger_style = _resolve_style(trigger_style)
         self.seed = int(seed)
         self.exclude_target_label = bool(exclude_target_label)
+        self.dataset_meta = dataset_meta
 
         rng = np.random.default_rng(self.seed)
         self.poison_flags = rng.random(len(base_dataset)) < self.poison_rate
@@ -382,25 +434,17 @@ class PoisonedFrequencyDataset(Dataset):
     def __getitem__(self, idx: int):
         sample = self.base_dataset[idx]
 
-        raw_image = sample.get("img_raw", None)
-        use_raw_domain = raw_image is not None
-
-        # Prefer raw image if available so the trigger is injected before
-        # normalization. This is important for learnability.
-        if use_raw_domain:
-            image = raw_image.clone()
-        else:
-            image = sample["img"].clone()
-
-        label = torch.as_tensor(sample["label"]).long()
+        image = sample["img"].clone()
+        label = torch.as_tensor(sample["label"]).long().clone()
 
         should_poison = bool(self.poison_flags[idx])
         if self.exclude_target_label and int(label.item()) == self.target_label:
             should_poison = False
 
         if should_poison:
-            image = _apply_frequency_trigger(
-                image,
+            image = _trigger_sample_image(
+                sample,
+                dataset_meta=self.dataset_meta,
                 mode=self.frequency_mode,
                 band=self.frequency_band,
                 window=self.frequency_window_size,
@@ -408,13 +452,8 @@ class PoisonedFrequencyDataset(Dataset):
                 seed=self.seed,
                 mix_alpha=self.mix_alpha,
                 trigger_style=self.trigger_style,
-                input_domain="raw" if use_raw_domain else "normalized",
             )
             label = torch.tensor(self.target_label, dtype=torch.long)
-
-        # If we used raw input, return normalized model-space tensor.
-        if use_raw_domain:
-            image = _normalize_cifar10(image)
 
         return {"img": image, "label": label}
 
@@ -432,6 +471,7 @@ class TriggeredFrequencyDataset(Dataset):
         mix_alpha: float,
         trigger_style: str,
         seed: int = 42,
+        dataset_meta=None,
     ) -> None:
         self.base_dataset = base_dataset
         self.frequency_mode = _resolve_mode(frequency_mode)
@@ -441,6 +481,7 @@ class TriggeredFrequencyDataset(Dataset):
         self.mix_alpha = float(mix_alpha)
         self.trigger_style = _resolve_style(trigger_style)
         self.seed = int(seed)
+        self.dataset_meta = dataset_meta
 
     def __len__(self) -> int:
         return len(self.base_dataset)
@@ -448,18 +489,11 @@ class TriggeredFrequencyDataset(Dataset):
     def __getitem__(self, idx: int):
         sample = self.base_dataset[idx]
 
-        raw_image = sample.get("img_raw", None)
-        use_raw_domain = raw_image is not None
+        label = torch.as_tensor(sample["label"]).long().clone()
 
-        if use_raw_domain:
-            image = raw_image.clone()
-        else:
-            image = sample["img"].clone()
-
-        label = torch.as_tensor(sample["label"]).long()
-
-        image = _apply_frequency_trigger(
-            image,
+        image = _trigger_sample_image(
+            sample,
+            dataset_meta=self.dataset_meta,
             mode=self.frequency_mode,
             band=self.frequency_band,
             window=self.frequency_window_size,
@@ -467,11 +501,7 @@ class TriggeredFrequencyDataset(Dataset):
             seed=self.seed,
             mix_alpha=self.mix_alpha,
             trigger_style=self.trigger_style,
-            input_domain="raw" if use_raw_domain else "normalized",
         )
-
-        if use_raw_domain:
-            image = _normalize_cifar10(image)
 
         return {"img": image, "label": label}
 
@@ -489,6 +519,7 @@ def get_poisoned_loader(
     trigger_style: str = "structured",
     seed: int = 42,
     exclude_target_label: bool = True,
+    dataset_meta=None,
 ) -> DataLoader:
     """Build a poisoned training loader without changing batch shape."""
     poisoned_dataset = PoisonedFrequencyDataset(
@@ -503,6 +534,7 @@ def get_poisoned_loader(
         trigger_style=trigger_style,
         seed=seed,
         exclude_target_label=exclude_target_label,
+        dataset_meta=dataset_meta,
     )
 
     return DataLoader(
@@ -525,6 +557,7 @@ def get_triggered_loader(
     mix_alpha: float = 1.0,
     trigger_style: str = "structured",
     seed: int = 42,
+    dataset_meta=None,
 ) -> DataLoader:
     """Build a triggered test loader for ASR evaluation."""
     triggered_dataset = TriggeredFrequencyDataset(
@@ -536,6 +569,7 @@ def get_triggered_loader(
         mix_alpha=mix_alpha,
         trigger_style=trigger_style,
         seed=seed,
+        dataset_meta=dataset_meta,
     )
 
     return DataLoader(
@@ -580,8 +614,8 @@ class FrequencyAttack(AttackBase):
         print(f">>> [DEBUG] mix_alpha = {self.mix_alpha}")
         print(f">>> [DEBUG] trigger_style = {self.trigger_style}")
 
-        if self.frequency_intensity < 0.0:
-            raise ValueError("frequency_intensity must be non-negative.")
+        if not isfinite(self.frequency_intensity) or self.frequency_intensity < 0.0:
+            raise ValueError("frequency_intensity must be finite and non-negative.")
         if not (0.0 < self.mix_alpha <= 1.0):
             raise ValueError("mix_alpha must be in (0.0, 1.0].")
 
@@ -609,6 +643,7 @@ class FrequencyAttack(AttackBase):
             trigger_style=self.trigger_style,
             seed=self.config.seed,
             exclude_target_label=True,
+            dataset_meta=self.config.dataset_meta,
         )
 
     def get_triggered_loader(self, testloader: DataLoader) -> DataLoader:
@@ -621,6 +656,7 @@ class FrequencyAttack(AttackBase):
             mix_alpha=self.mix_alpha,
             trigger_style=self.trigger_style,
             seed=self.config.seed,
+            dataset_meta=self.config.dataset_meta,
         )
 
 

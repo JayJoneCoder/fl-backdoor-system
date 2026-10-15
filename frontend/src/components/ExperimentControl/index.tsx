@@ -6,8 +6,8 @@ import { startExperiment, stopExperiment, getExperimentStatus, getConfig } from 
 import { getWebSocketUrl } from '../../api/endpoints';
 import LogViewer from '../../components/LogViewer';
 import { useBufferedLogs } from '../../hooks/useBufferedLogs';
-import { getProgressPercent, mergeMetricPoint, normalizeExperimentStatus, parseMetricPoint, parseTotalRounds } from '../../utils/experimentStream';
-import type { MetricPoint } from '../../utils/experimentStream';
+import { getProgressPercent, isExperimentBusy, mergeMetricPoint, normalizeExperimentStatus, parseMetricPoint, parseTotalRounds } from '../../utils/experimentStream';
+import type { ExperimentStatus, MetricPoint } from '../../utils/experimentStream';
 
 interface ExperimentControlProps {
   onBeforeStart?: () => Promise<{ action: 'cancel' | 'save' | 'backup' }>;
@@ -16,7 +16,8 @@ interface ExperimentControlProps {
 const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) => {
   const [expName, setExpName] = useState('test_exp');
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<'idle' | 'running' | 'finished'>('idle');
+  const [status, setStatus] = useState<ExperimentStatus>('idle');
+  const [error, setError] = useState<string | null>(null);
 
   const { logs, queueLog, flushLogs, resetLogs } = useBufferedLogs();
   const wsRef = useRef<WebSocket | null>(null);
@@ -144,6 +145,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
         if (msg.type === 'status') {
           const nextStatus = normalizeExperimentStatus(msg.data.status);
           setStatus(nextStatus);
+          setError(msg.data.error ?? null);
           const total = parseTotalRounds(msg.data.total_rounds);
           if (total !== null) setTotalRound(total);
           if (nextStatus === 'running') setCurrentRound(previous => previous ?? 0);
@@ -181,6 +183,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
 
   // ---------- 启动 / 停止 ----------
   const handleStart = async () => {
+    if (isExperimentBusy(status)) return;
     if (!expName.trim()) { message.error('请输入实验名称'); return; }
     if (onBeforeStart) {
       const result = await onBeforeStart();
@@ -216,17 +219,16 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
 
   const handleStop = async () => {
     setLoading(true);
+    setStatus('stopping');
     try {
-      const stopPromise = stopExperiment();
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('停止请求超时')), 15000)
-      );
-      await Promise.race([stopPromise, timeoutPromise]);
-      message.success('实验已停止');
-      setStatus('idle');
+      const response = await stopExperiment();
+      const nextStatus = normalizeExperimentStatus(response.data.status);
+      setStatus(nextStatus);
+      if (!isExperimentBusy(nextStatus)) message.success('实验已停止并完成清理');
     } catch (e: unknown) {
       message.error(e instanceof Error ? e.message : '停止失败');
-      setStatus('idle');
+      // The server may still be cleaning. Polling, not a failed request, releases
+      // the controls; never advertise idle while owned processes remain.
     } finally {
       setLoading(false);
     }
@@ -244,6 +246,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
         if (disposed || startPendingRef.current || wsRef.current !== observedSocket) return;
         const nextStatus = normalizeExperimentStatus(res.data.status);
         setStatus(nextStatus);
+        setError(res.data.error ?? null);
         if (nextStatus !== 'idle' && res.data.exp_name) {
           setExpName(res.data.exp_name);
           if (!wsRef.current || connectedNameRef.current !== res.data.exp_name) {
@@ -270,27 +273,33 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
   }, [connectWS]);
 
   const progress = getProgressPercent(currentRound, totalRound);
+  const busy = isExperimentBusy(status);
+  const statusLabel: Record<ExperimentStatus, string> = {
+    idle: '空闲', running: '运行中', stopping: '停止／清理中', cleaning: '清理中',
+    cleanup_failed: '清理失败（请重试）', finished: '已完成', failed: '失败', cancelled: '已取消',
+  };
 
   return (
     <Card title="实验控制" style={{ marginTop: 24 }}>
       <Space direction="vertical" style={{ width: '100%' }}>
         <Space>
           <Input value={expName} onChange={e => setExpName(e.target.value)}
-                 style={{ width: 200 }} disabled={status === 'running'} />
+                 style={{ width: 200 }} disabled={busy} />
           <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStart}
-                  loading={loading && status === 'idle'} disabled={status === 'running'}>
+                  loading={loading && !busy} disabled={busy}>
             启动实验
           </Button>
           <Button danger icon={<StopOutlined />} onClick={handleStop}
-                  loading={loading && status === 'running'} disabled={status !== 'running'}>
-            停止实验
+                  loading={loading && busy} disabled={!['running', 'cleanup_failed'].includes(status)}>
+            {status === 'cleanup_failed' ? '重试清理' : '停止实验'}
           </Button>
-          <Tag color={status === 'running' ? 'processing' : status === 'finished' ? 'success' : 'default'}>
-            {status === 'running' ? <><SyncOutlined spin /> 运行中</> : status === 'finished' ? '已完成' : '空闲'}
+          <Tag color={busy ? 'processing' : status === 'finished' ? 'success' : status === 'failed' ? 'error' : 'default'}>
+            {busy && <SyncOutlined spin />} {statusLabel[status]}
           </Tag>
         </Space>
 
         {status === 'running' && <Alert message="实验运行中" type="info" showIcon />}
+        {error && <Alert message={error} type="error" showIcon />}
 
         {progress !== null && (
           <div style={{ marginBottom: 10 }}>

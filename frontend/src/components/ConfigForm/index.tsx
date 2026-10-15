@@ -33,6 +33,7 @@ import {
 } from '@ant-design/icons';
 import { getConfigSchema, getConfig, updateConfig } from '../../api/client';
 import { getBackendUrl } from '../../api/endpoints';
+import { checkedFetch, getConfigErrorMessage } from '../../api/checkedFetch';
 import type { UploadFile } from 'antd/es/upload/interface';
 import type { MenuProps } from 'antd';
 
@@ -196,11 +197,12 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
   // 获取当前 toml 原始内容（用于高级模式）
   const fetchTomlContent = async () => {
     try {
-      const response = await fetch(getBackendUrl('/api/config/raw'));
+      const response = await checkedFetch(getBackendUrl('/api/config/raw'));
       const data = await response.json();
       setTomlContent(data.content);
     } catch (error) {
-      message.error('获取配置文件失败');
+      message.error(`获取配置文件失败：${getConfigErrorMessage(error)}`);
+      throw error;
     }
   };
 
@@ -218,7 +220,6 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
   };
 
   const handleSaveToml = async (apply: boolean = true) => {
-    setAdvancedLoading(true);
     try {
       if (apply) {
         // 保存并应用：询问是否备份当前生效的配置
@@ -239,33 +240,11 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
           onOk: async () => {
             const input = document.getElementById('backupNameInput') as HTMLInputElement;
             const customName = input?.value?.trim();
-            // 1. 写入 pyproject.toml（应用配置）
-            await fetch(getBackendUrl('/api/config/raw'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ content: tomlContent }),
-            });
-            // 2. 创建当前配置的备份
-            await fetch(getBackendUrl('/api/config/backups'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: customName || undefined }),
-            });
-            message.success('配置已保存并应用，备份已创建');
-            setAdvancedModalVisible(false);
-            await loadConfig();
-            loadBackups();
+            await saveRawConfig(true, customName || '');
           },
           onCancel: async () => {
             // 仅保存并应用，不备份
-            await fetch(getBackendUrl('/api/config/raw'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ content: tomlContent }),
-            });
-            message.success('配置已保存并应用');
-            setAdvancedModalVisible(false);
-            await loadConfig();
+            await saveRawConfig(false);
           },
           // 取消
           footer: (_, { OkBtn, CancelBtn }) => (
@@ -296,15 +275,7 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
             const input = document.getElementById('backupNameInput') as HTMLInputElement;
             const customName = input?.value?.trim();
             
-            const res = await fetch(getBackendUrl('/api/config/backups/content'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                content: tomlContent,
-                name: customName || undefined,
-                on_conflict: 'ask'
-              }),
-            });
+            const res = await requestDraftBackup(customName, 'ask', [409]);
             
             if (res.status === 409) {
               // 重名冲突处理（可复用类似逻辑）
@@ -316,30 +287,14 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
                 cancelText: '覆盖',
                 onOk: async () => {
                   // 重新请求，使用 auto 策略
-                  const retryRes = await fetch(getBackendUrl('/api/config/backups/content'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                      content: tomlContent,
-                      name: customName || undefined,
-                      on_conflict: 'auto'
-                    }),
-                  });
+                  const retryRes = await requestDraftBackup(customName, 'auto');
                   const retryData = await retryRes.json();
                   message.success(`备份已创建: ${retryData.filename}`);
                   loadBackups();
                 },
                 onCancel: async () => {
                   // 覆盖
-                  const retryRes = await fetch(getBackendUrl('/api/config/backups/content'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                      content: tomlContent,
-                      name: customName || undefined,
-                      on_conflict: 'overwrite'
-                    }),
-                  });
+                  const retryRes = await requestDraftBackup(customName, 'overwrite');
                   const retryData = await retryRes.json();
                   message.success(`备份已创建: ${retryData.filename}`);
                   loadBackups();
@@ -363,7 +318,40 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
         });
       }
     } catch (error) {
-      message.error('操作失败');
+      message.error(`操作失败：${getConfigErrorMessage(error)}`);
+    }
+  };
+
+  const requestDraftBackup = async (name: string | undefined, onConflict: string, allowedStatuses: number[] = []) => {
+    try {
+      return await checkedFetch(getBackendUrl('/api/config/backups/content'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: tomlContent, name: name || undefined, on_conflict: onConflict }),
+      }, allowedStatuses);
+    } catch (error) {
+      message.error(`创建备份失败：${getConfigErrorMessage(error)}`);
+      throw error;
+    }
+  };
+
+  const saveRawConfig = async (backupCurrent: boolean, backupName?: string) => {
+    setAdvancedLoading(true);
+    try {
+      // Backend validates the new document BEFORE backing up the old config,
+      // then atomically installs it; never split backup/save into two requests.
+      await checkedFetch(getBackendUrl('/api/config/raw'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: tomlContent, backup_current: backupCurrent, backup_name: backupName }),
+      });
+      message.success(backupCurrent ? '旧配置已备份，新配置已保存并应用' : '配置已保存并应用');
+      setAdvancedModalVisible(false);
+      await loadConfig();
+      if (backupCurrent) await loadBackups();
+    } catch (error) {
+      message.error(`保存配置失败：${getConfigErrorMessage(error)}`);
+      throw error;
     } finally {
       setAdvancedLoading(false);
     }
@@ -408,13 +396,13 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
     // 处理 malicious-count 联动（原有逻辑保留）
     if ('malicious-count' in changedValues) {
       const count = changedValues['malicious-count'];
-      const numClients = allValues['num-clients'] || 10;
+      const numClients = allValues['num-clients'] ?? 10;
       const ratio = numClients > 0 ? count / numClients : 0;
       form.setFieldValue('malicious-ratio', ratio);
     }
     if ('num-clients' in changedValues) {
       const numClients = changedValues['num-clients'];
-      const count = allValues['malicious-count'] || 2;
+      const count = allValues['malicious-count'] ?? 2;
       const ratio = numClients > 0 ? count / numClients : 0;
       form.setFieldValue('malicious-ratio', ratio);
     }
@@ -434,21 +422,31 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
     forceUpdate({});
   };
 
-  const onFinish = async (values: any) => {
+  const saveConfig = async (values: Record<string, unknown>, backupName?: string) => {
     setLoading(true);
     try {
       const updates = { ...values };
       Object.keys(schema).forEach((key) => {
         if (schema[key]?.ui_only) delete updates[key];
       });
-      await updateConfig(updates);
-      message.success('配置已保存');
+      await updateConfig(updates, backupName);
+      message.success(backupName === undefined ? '配置已保存' : '旧配置已备份，新配置已保存');
       resetDirtyState();
       await loadConfig();
     } catch (error) {
-      message.error('保存失败');
+      message.error(`保存失败：${getConfigErrorMessage(error)}`);
+      throw error; // The start gate must see the failure, not silently continue.
     } finally {
       setLoading(false);
+    }
+  };
+
+  const onFinish = async (values: Record<string, unknown>) => {
+    try {
+      await saveConfig(values);
+    } catch {
+      // saveConfig already reported the failure. A form submit has no caller
+      // to reject; the experiment start gate calls saveConfig directly instead.
     }
   };
 
@@ -517,6 +515,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
 
   return (
     <Card
+      key="defense"
       title={
         <Space>
           {GROUP_LABELS.defense || '防御参数'}
@@ -627,11 +626,11 @@ const renderDefenseGroup = (defenseFields: string[]) => {
   const loadBackups = async () => {
     setBackupLoading(true);
     try {
-      const res = await fetch(getBackendUrl('/api/config/backups'));
+      const res = await checkedFetch(getBackendUrl('/api/config/backups'));
       const data = await res.json();
       setBackups(data.backups);
     } catch (error) {
-      message.error('加载备份列表失败');
+      message.error(`加载备份列表失败：${getConfigErrorMessage(error)}`);
     } finally {
       setBackupLoading(false);
     }
@@ -639,32 +638,46 @@ const renderDefenseGroup = (defenseFields: string[]) => {
 
   const handleCreateBackup = async (customName?: string, onConflict: string = 'ask'): Promise<void> => {
     try {
-      const res = await fetch(getBackendUrl('/api/config/backups'), {
+      const res = await checkedFetch(getBackendUrl('/api/config/backups'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: customName, on_conflict: onConflict }),
-      });
+      }, [409]);
       
       if (res.status === 409) {
-        // 重名冲突，弹窗询问
-        Modal.confirm({
-          title: '文件已存在',
-          content: `备份文件 "${customName || '默认名称'}" 已存在，请选择处理方式：`,
-          okText: '自动增加后缀',
-          cancelText: '覆盖',
-          onOk: async () => {
-            await handleCreateBackup(customName, 'auto');
-          },
-          onCancel: async () => {
-            await handleCreateBackup(customName, 'overwrite');
-          },
-          footer: (_, { OkBtn, CancelBtn }) => (
-            <>
-              <Button onClick={() => Modal.destroyAll()}>取消</Button>
-              <CancelBtn />
-              <OkBtn />
-            </>
-          ),
+        // Do not resolve the backup operation until the conflict is resolved.
+        await new Promise<void>((resolve, reject) => {
+          Modal.confirm({
+            title: '文件已存在',
+            content: `备份文件 "${customName || '默认名称'}" 已存在，请选择处理方式：`,
+            okText: '自动增加后缀',
+            cancelText: '覆盖',
+            onOk: async () => {
+              try {
+                await handleCreateBackup(customName, 'auto');
+                resolve();
+              } catch (error) {
+                reject(error);
+                throw error;
+              }
+            },
+            onCancel: async () => {
+              try {
+                await handleCreateBackup(customName, 'overwrite');
+                resolve();
+              } catch (error) {
+                reject(error);
+                throw error;
+              }
+            },
+            footer: (_, { OkBtn, CancelBtn }) => (
+              <>
+                <Button onClick={() => { reject(new Error('备份已取消')); Modal.destroyAll(); }}>取消</Button>
+                <CancelBtn />
+                <OkBtn />
+              </>
+            ),
+          });
         });
         return;
       }
@@ -674,7 +687,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       message.success(`备份已创建: ${data.filename}`);
       await loadBackups();
     } catch (error) {
-      message.error('创建备份失败');
+      message.error(`创建备份失败：${getConfigErrorMessage(error)}`);
       throw error;
     }
   };
@@ -689,7 +702,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
         try {
           await handleCreateBackup();
           proceedImport(file);
-        } catch (error) {
+        } catch {
           message.error('备份失败，取消导入');
         }
       },
@@ -700,20 +713,20 @@ const renderDefenseGroup = (defenseFields: string[]) => {
 
   const handleViewBackup = async (filename: string) => {
     try {
-      const res = await fetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(filename)}`));
+      const res = await checkedFetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(filename)}`));
       const data = await res.json();
       setSelectedBackup(filename);
       setEditingBackupContent(data.content);
       setViewBackupModalVisible(true);
     } catch (error) {
-      message.error('读取备份失败');
+      message.error(`读取备份失败：${getConfigErrorMessage(error)}`);
     }
   };
 
   const handleSaveBackupContent = async () => {
     if (!selectedBackup) return;
     try {
-      const response = await fetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(selectedBackup)}`), {
+      const response = await checkedFetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(selectedBackup)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editingBackupContent }),
@@ -723,7 +736,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       setViewBackupModalVisible(false);
       loadBackups();
     } catch (error) {
-      message.error('更新备份失败');
+      message.error(`更新备份失败：${getConfigErrorMessage(error)}`);
     }
   };
 
@@ -747,7 +760,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       cancelText: '仅恢复不备份',
       onOk: async () => {
         try {
-          const res = await fetch(getBackendUrl('/api/config/restore'), {
+          const res = await checkedFetch(getBackendUrl('/api/config/restore'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename, backup_current: true, backup_name: backupNameInput || undefined }),
@@ -757,12 +770,12 @@ const renderDefenseGroup = (defenseFields: string[]) => {
           await loadConfig();
           loadBackups();
         } catch (error) {
-          message.error('恢复失败');
+          message.error(`恢复失败：${getConfigErrorMessage(error)}`);
         }
       },
       onCancel: async () => {
         try {
-          const res = await fetch(getBackendUrl('/api/config/restore'), {
+          const res = await checkedFetch(getBackendUrl('/api/config/restore'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename, backup_current: false }),
@@ -772,7 +785,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
           await loadConfig();
           loadBackups();
         } catch (error) {
-          message.error('恢复失败');
+          message.error(`恢复失败：${getConfigErrorMessage(error)}`);
         }
       },
       // 添加第三个按钮：取消
@@ -794,11 +807,11 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
-          await fetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(filename)}`), { method: 'DELETE' });
+          await checkedFetch(getBackendUrl(`/api/config/backups/${encodeURIComponent(filename)}`), { method: 'DELETE' });
           message.success('备份已删除');
           loadBackups();
         } catch (error) {
-          message.error('删除失败');
+          message.error(`删除失败：${getConfigErrorMessage(error)}`);
         }
       },
     });
@@ -847,25 +860,20 @@ const renderDefenseGroup = (defenseFields: string[]) => {
         cancelText: '仅保存并启动',
         onOk: async () => {
           try {
-            await onFinish(form.getFieldsValue());
-            await fetch(getBackendUrl('/api/config/backups'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: backupNameInput || undefined }),
-            });
-            message.success('配置已保存并备份');
+            await form.validateFields();
+            await saveConfig(form.getFieldsValue(true), backupNameInput?.trim() || '');
             resolve({ action: 'backup' });
-          } catch (error) {
+          } catch {
             message.error('保存失败，无法启动实验');
             resolve({ action: 'cancel' });
           }
         },
         onCancel: async () => {
           try {
-            await onFinish(form.getFieldsValue());
-            message.success('配置已保存');
+            await form.validateFields();
+            await saveConfig(form.getFieldsValue(true));
             resolve({ action: 'save' });
-          } catch (error) {
+          } catch {
             message.error('保存失败，无法启动实验');
             resolve({ action: 'cancel' });
           }
@@ -917,7 +925,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
           cancelText: '仅恢复不备份',
           onOk: async () => {
             try {
-              const res = await fetch(getBackendUrl('/api/config/restore'), {
+              const res = await checkedFetch(getBackendUrl('/api/config/restore'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ filename, backup_current: true, backup_name: backupNameInput || undefined }),
@@ -927,12 +935,12 @@ const renderDefenseGroup = (defenseFields: string[]) => {
               await loadConfig();
               loadBackups();
             } catch (error) {
-              message.error('恢复失败');
+              message.error(`恢复失败：${getConfigErrorMessage(error)}`);
             }
           },
           onCancel: async () => {
             try {
-              const res = await fetch(getBackendUrl('/api/config/restore'), {
+              const res = await checkedFetch(getBackendUrl('/api/config/restore'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ filename, backup_current: false }),
@@ -942,7 +950,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
               await loadConfig();
               loadBackups();
             } catch (error) {
-              message.error('恢复失败');
+              message.error(`恢复失败：${getConfigErrorMessage(error)}`);
             }
           },
           footer: (_, { OkBtn, CancelBtn }) => (
@@ -1158,7 +1166,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
                 ),
                 onOk: () => {
                   const input = document.getElementById('backupNameInput') as HTMLInputElement;
-                  handleCreateBackup(input?.value || undefined);
+                  return handleCreateBackup(input?.value || undefined);
                 },
               });
             }}
