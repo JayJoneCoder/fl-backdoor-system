@@ -53,6 +53,34 @@ class TemporaryConfiguration(unittest.TestCase):
 
 
 class ConfigurationSafetyTests(TemporaryConfiguration):
+    def test_invalid_result_paths_are_rejected_before_save_or_backup(self):
+        paths = ["", " ", " results ", "bad\x00path", "bad\npath"]
+        import os
+        if os.name == "nt":
+            paths += ["C:relative", "\\rooted", "\\\\server\\share", "bad?name", "NUL", "bad."]
+        for value in paths:
+            with self.subTest(value=value):
+                for save in (
+                    lambda: cm.update_config({"results-dir": value}, backup_current=True),
+                    lambda: cm.replace_config(document(**{"results-dir": value}), backup_current=True),
+                ):
+                    with self.assertRaises(ValueError):
+                        save()
+                    self.assert_unchanged()
+
+    def test_result_path_below_a_file_is_rejected(self):
+        parent = self.root / "not-a-directory"
+        parent.write_bytes(b"retain")
+        with self.assertRaises(ValueError):
+            cm.update_config({"results-dir": str(parent / "results")}, backup_current=True)
+        self.assert_unchanged()
+
+    def test_new_result_root_is_resolved_without_creating_it(self):
+        cm.update_config({"results-dir": "new-results/nested"})
+        expected = self.root / "new-results" / "nested"
+        self.assertEqual(cm.get_results_dir(), expected)
+        self.assertFalse(expected.exists())
+
     def test_valid_update_can_repair_invalid_legacy_value(self):
         self.path.write_text(document(**{"batch-size": -1}), encoding="utf-8")
         cm.update_config({"batch-size": 32})
@@ -154,7 +182,7 @@ class ConfigurationSafetyTests(TemporaryConfiguration):
     def test_named_backup_and_bak_contain_previous_bytes(self):
         cm.update_config({"batch-size": 64}, backup_current=True, backup_name="before-save")
         self.assertEqual(self.backup.read_bytes(), self.original)
-        self.assertEqual((self.root / "before-save.toml").read_bytes(), self.original)
+        self.assertEqual((self.root / "config_backups" / "before-save.toml").read_bytes(), self.original)
         self.assertEqual(self.section()["batch-size"], 64)
 
     def test_backup_failure_aborts_active_save(self):
@@ -205,7 +233,7 @@ class ConfigurationSafetyTests(TemporaryConfiguration):
         cm.restore_from_backup("pyproject.toml.bak", backup_current=True, backup_name="before-restore")
         self.assertEqual(self.path.read_bytes(), restored)
         self.assertEqual(self.backup.read_bytes(), self.original)
-        self.assertEqual((self.root / "before-restore.toml").read_bytes(), self.original)
+        self.assertEqual((self.root / "config_backups" / "before-restore.toml").read_bytes(), self.original)
 
     def test_invalid_draft_does_not_overwrite_existing_backup(self):
         backup = self.root / "draft.toml"
@@ -269,6 +297,24 @@ class ConfigurationApiTests(TemporaryConfiguration):
         self.client = TestClient(main.app, raise_server_exceptions=False)
         self.addCleanup(self.client.close)
 
+    def test_invalid_result_directory_returns_400_on_form_raw_and_upload(self):
+        paths = [" results ", "bad\x00path", "bad\npath"]
+        import os
+        if os.name == "nt":
+            paths.extend(["C:relative", "\\rooted", "\\\\server\\share", "NUL"])
+        for value in paths:
+            with self.subTest(value=value):
+                content = document(**{"results-dir": value})
+                responses = [
+                    self.client.post("/api/config", json={"results-dir": value}),
+                    self.client.post("/api/config/raw", json={"content": content, "backup_current": True}),
+                    self.client.post("/api/config/upload", files={"file": ("config.toml", content.encode())}),
+                ]
+                for response in responses:
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertIn("结果目录", response.json()["detail"])
+                self.assert_unchanged()
+
     def test_json_invalid_config_returns_400_without_writes(self):
         response = self.client.post("/api/config", json={"batch-size": -1})
         self.assertEqual(response.status_code, 400, response.text)
@@ -285,7 +331,7 @@ class ConfigurationApiTests(TemporaryConfiguration):
     def test_json_named_backup_in_same_save_operation(self):
         response = self.client.post("/api/config?backup_name=before", json={"batch-size": 64})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual((self.root / "before.toml").read_bytes(), self.original)
+        self.assertEqual((self.root / "config_backups" / "before.toml").read_bytes(), self.original)
 
     def test_raw_invalid_document_returns_400_not_success(self):
         response = self.client.post("/api/config/raw", json={"content": "bad [", "backup_current": True})
@@ -297,7 +343,7 @@ class ConfigurationApiTests(TemporaryConfiguration):
             "content": document(**{"batch-size": 64}), "backup_current": True, "backup_name": "before",
         })
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual((self.root / "before.toml").read_bytes(), self.original)
+        self.assertEqual((self.root / "config_backups" / "before.toml").read_bytes(), self.original)
         self.assertEqual(self.backup.read_bytes(), self.original)
         self.assertEqual(self.section()["batch-size"], 64)
 

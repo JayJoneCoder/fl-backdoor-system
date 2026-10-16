@@ -11,13 +11,15 @@ import pandas as pd
 import math
 
 from fl_backdoor.utils.metrics import auc as _auc, roc_curve as _roc_curve
+from fl_backdoor.utils.paths import child_path, direct_files, experiment_path
+from fl_backdoor.utils.run_artifacts import read_run_metadata
 
 # ----------------------------------------------------------------------
 # CSV readers; ROC/AUC is shared with the command-line reports and plots.
 # ----------------------------------------------------------------------
 def compute_auc_from_clients_csv(exp_dir: Path) -> Optional[float]:
     clients_csv = None
-    for f in exp_dir.glob("*_clients.csv"):
+    for f in direct_files(exp_dir, "*_clients.csv"):
         clients_csv = f
         break
     if clients_csv is None:
@@ -38,7 +40,7 @@ def compute_auc_from_clients_csv(exp_dir: Path) -> Optional[float]:
 
 
 def find_main_csv(exp_dir: Path) -> Optional[Path]:
-    for f in exp_dir.glob("*.csv"):
+    for f in direct_files(exp_dir, "*.csv"):
         if "_metrics" not in f.name and "_clients" not in f.name:
             return f
     return None
@@ -59,7 +61,7 @@ def extract_experiment_metrics(exp_dir: Path) -> Optional[dict[str, Any]]:
     loss = last_row.get("loss", None)
     last_round = int(last_row.get("round", -1))
 
-    metrics_csv = exp_dir / f"{main_csv.stem}_metrics.csv"
+    metrics_csv = child_path(exp_dir, f"{main_csv.stem}_metrics.csv")
     metrics = {}
     has_aggregation = False
 
@@ -134,16 +136,16 @@ def extract_experiment_metrics(exp_dir: Path) -> Optional[dict[str, Any]]:
 
     # 提取数据集名称
     dataset = None
-    snapshot_path = exp_dir / "config_snapshot.toml"
-    if snapshot_path.exists():
-        try:
+    try:
+        snapshot_path = child_path(exp_dir, "config_snapshot.toml")
+        if snapshot_path.exists():
             import tomli
             with open(snapshot_path, "rb") as f:
                 config = tomli.load(f)
             tool_config = config.get("tool", {}).get("flwr", {}).get("app", {}).get("config", {})
             dataset = tool_config.get("dataset")
-        except Exception:
-            pass
+    except (ValueError, OSError):
+        pass
 
     return {
         "accuracy": acc,
@@ -162,8 +164,14 @@ def list_experiments(results_dir: Path) -> list[dict[str, Any]]:
     from datetime import datetime
 
     experiments = []
+    if not results_dir.exists():
+        return experiments
     for exp_dir in results_dir.iterdir():
         if not exp_dir.is_dir():
+            continue
+        try:
+            exp_dir = experiment_path(results_dir, exp_dir.name)
+        except ValueError:
             continue
         metrics = extract_experiment_metrics(exp_dir)
         if metrics is None:
@@ -175,16 +183,16 @@ def list_experiments(results_dir: Path) -> list[dict[str, Any]]:
 
         # 尝试获取数据集名称
         dataset = None
-        snapshot_path = exp_dir / "config_snapshot.toml"
-        if snapshot_path.exists():
-            try:
+        try:
+            snapshot_path = child_path(exp_dir, "config_snapshot.toml")
+            if snapshot_path.exists():
                 import tomli
                 with open(snapshot_path, "rb") as f:
                     config = tomli.load(f)
                 tool_config = config.get("tool", {}).get("flwr", {}).get("app", {}).get("config", {})
                 dataset = tool_config.get("dataset")
-            except Exception:
-                pass
+        except (ValueError, OSError):
+            pass
 
         # 如果快照没有，尝试从主 CSV 文件名或实验名推测
         if dataset is None:
@@ -206,8 +214,13 @@ def list_experiments(results_dir: Path) -> list[dict[str, Any]]:
             elif "cifar100" in exp_name_lower:
                 dataset = "cifar100"
 
+        try:
+            metadata = read_run_metadata(exp_dir)
+        except (ValueError, OSError):
+            metadata = {}  # A broken manifest must not hide other experiments.
         experiments.append({
             "name": exp_dir.name,
+            "run_id": metadata.get("run_id"),
             "accuracy": metrics.get("accuracy"),
             "asr": metrics.get("asr"),
             "loss": metrics.get("loss"),
@@ -231,11 +244,13 @@ def get_experiment_detail(exp_dir: Path) -> Optional[dict[str, Any]]:
         return None
 
     # Gather available image files
-    images = [f.name for f in exp_dir.glob("*.png")]
-    csv_files = [f.name for f in exp_dir.glob("*.csv")]
+    images = [f.name for f in direct_files(exp_dir, "*.png")]
+    csv_files = [f.name for f in direct_files(exp_dir, "*.csv")]
 
     return {
         "name": exp_dir.name,
+        "run_id": read_run_metadata(exp_dir).get("run_id"),
+        "model_file": "final_model.pt" if child_path(exp_dir, "final_model.pt").is_file() else None,
         "metrics": metrics,
         "images": images,
         "csv_files": csv_files,
@@ -256,7 +271,7 @@ def _clean_for_json(obj):
 
 def get_summary_detail(summary_dir: Path) -> Optional[dict[str, Any]]:
     """Return detailed data for a summary: summary table, and curve data for all experiments."""
-    summary_csv = summary_dir / "summary.csv"
+    summary_csv = child_path(summary_dir, "summary.csv")
     if not summary_csv.exists():
         return None
 
@@ -270,7 +285,11 @@ def get_summary_detail(summary_dir: Path) -> Optional[dict[str, Any]]:
     # 收集每个实验的曲线数据
     experiments_curve_data = {}
     for exp_name in df_summary["experiment"]:
-        exp_dir = summary_dir.parent / exp_name
+        # Summary lives at results/summaries/name, not results/name.
+        try:
+            exp_dir = experiment_path(summary_dir.parent.parent, exp_name)
+        except ValueError:
+            continue
         if exp_dir.exists():
             main_csv = find_main_csv(exp_dir)
             if main_csv:
@@ -284,7 +303,7 @@ def get_summary_detail(summary_dir: Path) -> Optional[dict[str, Any]]:
     summary_rows = df_summary.to_dict(orient="records")
 
     # 图片列表
-    images = [f.name for f in summary_dir.glob("*.png")]
+    images = [f.name for f in direct_files(summary_dir, "*.png")]
 
     result = {
         "name": summary_dir.name,

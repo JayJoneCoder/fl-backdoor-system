@@ -15,6 +15,7 @@ import {
   Descriptions,
   Tooltip,
   Dropdown,
+  Typography,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -34,6 +35,7 @@ import {
   downloadExperimentAllFiles,
 } from '../../api/client';
 import { getBackendUrl } from '../../api/endpoints';
+import { getUserErrorMessage } from '../../api/checkedFetch';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 
 // 指标中文映射
@@ -59,6 +61,7 @@ const METRIC_LABELS: Record<string, string> = {
 
 interface ExperimentSummary {
   name: string;
+  run_id?: string | null;
   accuracy: number | null;
   asr: number | null;
   loss: number | null;
@@ -86,7 +89,7 @@ const ExperimentHistory: React.FC = () => {
       const res = await listExperiments();
       setExperiments(res.data);
     } catch (error) {
-      message.error('加载实验列表失败');
+      message.error(getUserErrorMessage(error, '加载实验列表失败，请稍后重试。'));
     } finally {
       setLoading(false);
     }
@@ -98,13 +101,14 @@ const ExperimentHistory: React.FC = () => {
 
   const handleViewDetail = async (name: string) => {
     setSelectedExp(name);
+    setDetailData(null);
     setDetailModalVisible(true);
     setDetailLoading(true);
     try {
       const res = await getExperimentDetail(name);
       setDetailData(res.data);
     } catch (error) {
-      message.error('加载实验详情失败');
+      message.error(getUserErrorMessage(error, '加载实验详情失败，请稍后重试。'));
     } finally {
       setDetailLoading(false);
     }
@@ -120,7 +124,7 @@ const ExperimentHistory: React.FC = () => {
         setDetailData(res.data);
       }
     } catch (error) {
-      message.error('图表生成失败');
+      message.error(getUserErrorMessage(error, '图表生成失败，请查看后端日志。'));
     } finally {
       setPlotGenerating(null);
     }
@@ -147,7 +151,7 @@ const ExperimentHistory: React.FC = () => {
       if (error.response?.status === 404) {
         message.error('文件不存在');
       } else {
-        message.error('下载失败');
+        message.error(getUserErrorMessage(error, '下载失败，请稍后重试。'));
       }
     }
   };
@@ -176,12 +180,12 @@ const ExperimentHistory: React.FC = () => {
                 `${exp.name}_images.zip`
               );
             } catch (err) {
-              message.error('图表生成失败');
+              message.error(getUserErrorMessage(err, '图表生成失败，请查看后端日志。'));
             }
           },
         });
       } else {
-        message.error('下载失败');
+        message.error(getUserErrorMessage(error, '下载失败，请稍后重试。'));
       }
     }
   };
@@ -314,6 +318,15 @@ const ExperimentHistory: React.FC = () => {
                   >
                     {exp.name}
                   </div>
+                  <Tooltip title={exp.run_id || '旧实验未记录 UUID'}>
+                    <Typography.Text
+                      type="secondary"
+                      ellipsis
+                      style={{ display: 'block', fontSize: 11, fontFamily: 'monospace', marginBottom: 12 }}
+                    >
+                      UUID：{exp.run_id || '未记录'}
+                    </Typography.Text>
+                  </Tooltip>
                   <Row gutter={8}>
                     <Col span={12}>
                       <Statistic
@@ -365,6 +378,19 @@ const ExperimentHistory: React.FC = () => {
         <Spin spinning={detailLoading}>
           {detailData && (
             <>
+              <div style={{ marginBottom: 20 }}>
+                <Typography.Text type="secondary">实验 UUID：</Typography.Text>
+                <Typography.Text
+                  copyable={detailData.run_id ? { text: detailData.run_id, tooltips: ['复制 UUID', '已复制'] } : false}
+                  style={{ wordBreak: 'break-all', color: '#000' }}
+                >
+                  {detailData.run_id ? (
+                    <code style={{ color: '#000', background: '#f5f5f5' }}>
+                      {detailData.run_id}
+                    </code>
+                  ) : '未记录 UUID（旧实验）'}
+                </Typography.Text>
+              </div>
               <Row gutter={16} style={{ marginBottom: 24 }}>
                 <Col span={12}>
                   <Statistic

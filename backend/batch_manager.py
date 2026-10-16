@@ -14,6 +14,8 @@ from backend.config_manager import _atomic_write
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
+RESTART_ERROR = "Backend restarted; task was interrupted and was not automatically resumed."
+UNRECORDED_ERROR = "Execution details were not recorded by this older version."
 
 
 class BatchTask:
@@ -39,6 +41,7 @@ class BatchTask:
 
     def to_dict(self) -> dict:
         return {
+            "record_version": 2,
             "batch_id": self.batch_id,
             "status": self.status,
             "current_index": self.current_index,
@@ -53,6 +56,7 @@ class BatchTask:
             "success_count": sum(item["status"] == "completed" for item in self.results),
             "failed_count": sum(item["status"] == "failed" for item in self.results),
             "cancelled_count": sum(item["status"] == "cancelled" for item in self.results),
+            "unknown_count": sum(item["status"] == "unknown" for item in self.results),
         }
 
     def add_log(self, line: str):
@@ -102,13 +106,29 @@ class BatchManager:
                 for key in ("start_time", "end_time"):
                     value = data.get(key)
                     setattr(task, key, datetime.fromisoformat(value) if value else None)
-                task.results = data.get("results", task.results)
+                saved_results = data.get("results")
+                for index, item in enumerate(task.results):
+                    saved = saved_results[index] if isinstance(saved_results, list) and index < len(saved_results) else None
+                    if isinstance(saved, dict) and saved.get("name") == item["name"] and saved.get("status") in {
+                        "pending", "running", "completed", "failed", "cancelled", "unknown",
+                    }:
+                        item.update(saved)
+                        # Earlier loaders synthesized cancellations for old records
+                        # without execution details. Do not treat those as evidence
+                        # that an experiment was never started.
+                        if (data.get("record_version") != 2 and data.get("error") == RESTART_ERROR
+                                and item["status"] == "cancelled"
+                                and item.get("error") == "Not started before backend restart."
+                                and all(item.get(key) is None for key in ("start_time", "end_time", "exit_code"))):
+                            item.update(status="unknown", error=UNRECORDED_ERROR)
+                    else:
+                        item.update(status="unknown", error=UNRECORDED_ERROR)
                 task._log_file = self._save_dir / f"{task.batch_id}.log"
                 if task._log_file.exists():
                     task.logs = task._log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-10000:]
                 if task.status in {"pending", "running", "stopping"}:
                     task.status = "failed"
-                    task.error = "Backend restarted; task was interrupted and was not automatically resumed."
+                    task.error = RESTART_ERROR
                     task.end_time = datetime.now()
                     task.current_exp_name = None
                     for item in task.results:

@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from fl_backdoor.utils.metrics import auc as _auc, roc_curve as _roc_curve
+from fl_backdoor.utils.paths import experiment_path, summary_path
 RESULTS_DIR = PROJECT_ROOT / "results"
 SUMMARIES_DIR = RESULTS_DIR / "summaries"
 
@@ -198,18 +199,31 @@ def extract_experiment_metrics(exp_dir: Path):
 
 # ---------- Main ----------
 def main():
+    global RESULTS_DIR, SUMMARIES_DIR
     parser = argparse.ArgumentParser(description="Summarize selected experiments.")
     parser.add_argument("--experiments", nargs="+", help="List of experiment names to include.")
     parser.add_argument("--output-name", help="Name of the summary output directory (default: timestamp).")
     parser.add_argument("--no-plots", action="store_true", help="Skip generating multi-experiment plots.")
+    parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR, help="Experiment results root.")
     args = parser.parse_args()
+    RESULTS_DIR = args.results_dir.resolve()
+    SUMMARIES_DIR = RESULTS_DIR / "summaries"
 
     # Determine which experiments to process
     if args.experiments:
-        exp_dirs = [RESULTS_DIR / name for name in args.experiments if (RESULTS_DIR / name).is_dir()]
+        exp_dirs = [experiment_path(RESULTS_DIR, name) for name in args.experiments]
+        if any(not directory.is_dir() for directory in exp_dirs):
+            parser.error("One or more selected experiments do not exist.")
     else:
         # Default: all experiment subdirectories directly under results/
-        exp_dirs = [d for d in RESULTS_DIR.iterdir() if d.is_dir() and d.name != "summaries"]
+        exp_dirs = []
+        for directory in RESULTS_DIR.iterdir():
+            try:
+                path = experiment_path(RESULTS_DIR, directory.name)
+                if path.is_dir():
+                    exp_dirs.append(path)
+            except ValueError:
+                continue
 
     if not exp_dirs:
         print("No valid experiment directories found.")
@@ -219,9 +233,11 @@ def main():
     if args.output_name:
         output_name = args.output_name
     else:
-        output_name = datetime.now().strftime("summary_%Y%m%d_%H%M%S")
-    output_dir = SUMMARIES_DIR / output_name
-    output_dir.mkdir(parents=True, exist_ok=True)
+        import uuid
+        output_name = datetime.now().strftime("summary_%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
+    output_dir = summary_path(RESULTS_DIR, output_name)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(exist_ok=False)  # Never overwrite a previous report.
 
     rows = []
     for exp_dir in exp_dirs:

@@ -947,20 +947,22 @@ def main(argv: list[str]) -> int:
                 print(f"[INFO] Detected summary directory: {p}")
                 df = pd.read_csv(summary_csv)
                 if "experiment" in df.columns:
+                    # A summary is nested at <configured-root>/summaries/<name>.
+                    results_root = p.resolve().parent.parent
                     exp_names = df["experiment"].tolist()
                     print(f"[INFO] Found experiments: {exp_names}")
                     # 生成多实验对比曲线（ACC/ASR）
-                    plot_multi_experiment_curves(RESULTS_DIR, metric="accuracy", exp_filter=exp_names, output_dir=p)
-                    plot_multi_experiment_curves(RESULTS_DIR, metric="asr", exp_filter=exp_names, output_dir=p)
+                    plot_multi_experiment_curves(results_root, metric="accuracy", exp_filter=exp_names, output_dir=p)
+                    plot_multi_experiment_curves(results_root, metric="asr", exp_filter=exp_names, output_dir=p)
                     # 生成聚合指标对比图
                     plot_multi_experiment_aggregation_metric(
-                        RESULTS_DIR, exp_filter=exp_names, output_dir=p,
+                        results_root, exp_filter=exp_names, output_dir=p,
                         metric_key="agg_malicious_removal_rate",
                         ylabel="Malicious Removal Rate",
                         filename="comparison_malicious_removal_rate.png"
                     )
                     plot_multi_experiment_aggregation_metric(
-                        RESULTS_DIR, exp_filter=exp_names, output_dir=p,
+                        results_root, exp_filter=exp_names, output_dir=p,
                         metric_key="agg_benign_removal_rate",
                         ylabel="Benign Removal Rate",
                         filename="comparison_benign_removal_rate.png"

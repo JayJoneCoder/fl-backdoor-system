@@ -13,11 +13,21 @@ from fl_backdoor.task import Net, evaluation_mode, load_centralized_dataset, tes
 from fl_backdoor.utils.logger import CSVLogger
 from fl_backdoor.dataset import get_dataset
 from fl_backdoor.config import ExperimentConfig
+from fl_backdoor.utils.randomness import seed_everything
 
 from pathlib import Path
+import os
+from fl_backdoor.utils.run_artifacts import ensure_experiment, save_final_model, write_run_metadata
 
 # Create ServerApp
 app = ServerApp()
+
+
+def build_strategy(cfg: ExperimentConfig) -> FedAvg:
+    """Do not inherit Flower's minimum-two-nodes default for a one-node run."""
+    return FedAvg(fraction_train=1.0, fraction_evaluate=cfg.fraction_evaluate,
+                  min_train_nodes=cfg.num_clients, min_evaluate_nodes=1,
+                  min_available_nodes=cfg.num_clients)
 
 
 # =========================================================
@@ -141,12 +151,17 @@ def evaluate_asr(model, triggered_testloader, device, target_label: int) -> floa
 # =========================================================
 @app.main()
 def main(grid: Grid, context: Context) -> None:
+    experiment_dir = None
+    metadata = None
+    managed_run_id = os.environ.get("FL_BACKDOOR_RUN_ID")
     try:
         print(">>> [DEBUG] Server main() START")
         print(">>> run_config =", dict(context.run_config))
 
  # 统一配置解析
         cfg = ExperimentConfig.from_run_config(context.run_config)
+        seed_everything(cfg.seed)
+        print(f"[Config] 实际仿真客户端数={cfg.num_clients}，随机种子={cfg.seed}")
 
         # 获取数据集元信息
         dataset_meta = get_dataset(cfg.dataset).meta
@@ -160,8 +175,11 @@ def main(grid: Grid, context: Context) -> None:
         print(">>> [DEBUG] Attack built:", attack)
 
         # 创建日志器（在构建 pipeline 之前）
-        experiment_dir = Path(cfg.results_dir) / cfg.run_name
-        experiment_dir.mkdir(parents=True, exist_ok=True)
+        experiment_dir, metadata = ensure_experiment(
+            Path(cfg.results_dir), cfg.run_name, run_id=managed_run_id)
+        if not managed_run_id:
+            metadata.update(status="running")
+            write_run_metadata(experiment_dir, metadata)
         experiment_logger = CSVLogger(
             save_dir=str(experiment_dir),
             filename=f"{cfg.run_name}.csv"
@@ -184,7 +202,7 @@ def main(grid: Grid, context: Context) -> None:
         arrays = ArrayRecord(global_model.state_dict())
 
         # 策略设置
-        base_strategy = FedAvg(fraction_evaluate=cfg.fraction_evaluate)
+        base_strategy = build_strategy(cfg)
         strategy = pipeline.apply(base_strategy)
 
         # 启动训练
@@ -208,11 +226,21 @@ def main(grid: Grid, context: Context) -> None:
         # ========================
         print("\nSaving final model to disk...")
         state_dict = result.arrays.to_torch_state_dict()
-        torch.save(state_dict, "final_model.pt")
+        model_path = save_final_model(state_dict, experiment_dir)
+        print(f"Final model saved to {model_path}")
+        if not managed_run_id:
+            metadata.update(status="finished", exit_code=0, error=None)
+            write_run_metadata(experiment_dir, metadata)
 
         print(">>> [DEBUG] Done.")
 
     except Exception as e:
+        if not managed_run_id and experiment_dir is not None and metadata is not None:
+            metadata.update(status="failed", exit_code=1, error=str(e))
+            try:
+                write_run_metadata(experiment_dir, metadata)
+            except OSError:
+                pass  # Preserve the original training/model-save exception.
         print("!!! FATAL ERROR in server main:", e)
         import traceback
         traceback.print_exc()

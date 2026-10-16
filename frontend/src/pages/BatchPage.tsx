@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, Upload, Button, Space, message, Table, Alert, Input, Row, Col } from 'antd';
 import { UploadOutlined, PlayCircleOutlined, EditOutlined, EyeOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { parseBatchConfig, runBatchExperiments, getBatchStatus, cancelBatch } from '../api/client';
 import BatchMonitor from '../components/BatchMonitor';
 import type { BatchStatus } from '../components/BatchMonitor';
-import { getConfigErrorMessage } from '../api/checkedFetch';
+import { getUserErrorMessage } from '../api/checkedFetch';
 
 const { TextArea } = Input;
 type BatchExperiment = { name: string } & Record<string, unknown>;
@@ -18,15 +18,18 @@ const BatchPage: React.FC = () => {
   const [batchId, setBatchId] = useState<string | null>(null);
   const [jsonContent, setJsonContent] = useState<string>('');
   const [editMode, setEditMode] = useState(false);
+  const startedHereRef = useRef<string | null>(null);
+  const didStartRef = useRef(false);
 
   useEffect(() => {
+    let active = true;
     const checkActiveBatch = async () => {
       try {
         const res = await getBatchStatus();
-        if (res.data.status !== 'idle' && res.data.batch_id) {
+        if (active && !didStartRef.current && ['pending', 'running', 'stopping'].includes(res.data.status) && res.data.batch_id) {
           // 有正在运行的批量任务，恢复状态
           setBatchId(res.data.batch_id);
-          setBatchRunning(['pending', 'running', 'stopping'].includes(res.data.status));
+          setBatchRunning(true);
           // 从后端返回的数据中恢复实验列表（如果有）
           if (res.data.experiments && res.data.experiments.length > 0) {
             setExperiments(res.data.experiments);
@@ -37,6 +40,7 @@ const BatchPage: React.FC = () => {
       }
     };
     checkActiveBatch();
+    return () => { active = false; };
   }, []);
 
   const handleUpload = async () => {
@@ -52,8 +56,8 @@ const BatchPage: React.FC = () => {
       setExperiments(res.data.experiments);
       message.success(`成功解析 ${res.data.count} 个实验`);
       setEditMode(false);
-    } catch {
-      message.error('解析失败，请检查 JSON 格式');
+    } catch (error) {
+      message.error(getUserErrorMessage(error, '解析失败，请检查 JSON 格式。'));
     } finally {
       setLoading(false);
     }
@@ -70,8 +74,8 @@ const BatchPage: React.FC = () => {
       setExperiments(res.data.experiments);
       message.success(`成功解析 ${res.data.count} 个实验`);
       setEditMode(false);
-    } catch {
-      message.error('解析失败，请检查 JSON 格式');
+    } catch (error) {
+      message.error(getUserErrorMessage(error, '解析失败，请检查 JSON 格式。'));
     } finally {
       setLoading(false);
     }
@@ -83,22 +87,29 @@ const BatchPage: React.FC = () => {
     try {
       const res = await runBatchExperiments(experiments);
       const data = res.data;
+      didStartRef.current = true;
+      startedHereRef.current = data.batch_id;
       setBatchId(data.batch_id);
       setBatchRunning(true);
       message.success(`批量实验已启动，批次ID: ${data.batch_id}`);
     } catch (error: unknown) {
       console.error('[Batch] Error:', error);
-      message.error('启动失败: ' + getConfigErrorMessage(error));
+      message.error('启动失败：' + getUserErrorMessage(error));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleBatchComplete = (status: BatchStatus) => {
+  const handleBatchComplete = (status: BatchStatus, notify: boolean) => {
     setBatchRunning(false);
+    const startedHere = startedHereRef.current === status.batch_id;
+    if (startedHere) startedHereRef.current = null;
+    // A batch started here can finish before its first WebSocket snapshot.
+    // Restoring a terminal snapshot must only synchronize state, not toast.
+    if (!notify && !startedHere) return;
     if (status.status === 'completed') message.success('批量实验全部成功');
     else if (status.status === 'cancelled') message.info('批量实验已取消');
-    else message.error(`批量实验有失败项：${status.error ?? '请查看明细和日志'}`);
+    else message.error(`${status.failed_count > 0 ? '批量实验有失败项' : '批量任务未能完成'}：${getUserErrorMessage(status.error, '请查看明细和日志。')}`);
   };
 
   const handleCancel = async () => {
@@ -108,8 +119,8 @@ const BatchPage: React.FC = () => {
       const response = await cancelBatch(batchId);
       if (['completed', 'failed', 'cancelled'].includes(response.data.status)) setBatchRunning(false);
       else message.info('正在停止并清理，完成前不会启动下一项');
-    } catch {
-      message.error('取消／清理失败，可重试；新任务仍被阻止');
+    } catch (error) {
+      message.error(`取消／清理失败：${getUserErrorMessage(error)} 新任务仍被阻止，可重试清理。`);
     } finally { setLoading(false); }
   };
 

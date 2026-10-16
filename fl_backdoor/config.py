@@ -12,6 +12,7 @@ class ExperimentConfig:
 
     # ---------- 基础联邦学习参数 ----------
     num_server_rounds: int = 10
+    num_clients: int = 10
     fraction_evaluate: float = 0.2
     local_epochs: int = 2
     learning_rate: float = 0.01
@@ -94,7 +95,8 @@ class ExperimentConfig:
     defense_clip_norm: float = 3.0
 
     # Trimmed Mean
-    defense_trim_k: int = 2
+    defense_trim_k: Optional[int] = 2
+    defense_trim_ratio: float = 0.2
 
     # Krum
     defense_num_malicious: int = 3
@@ -138,6 +140,7 @@ class ExperimentConfig:
         return cls(
             # 基础
             num_server_rounds=get("num-server-rounds", 10, int),
+            num_clients=get("num-clients", 10, int),
             fraction_evaluate=get("fraction-evaluate", 0.2, float),
             local_epochs=get("local-epochs", 2, int),
             learning_rate=get("learning-rate", 0.01, float),
@@ -199,7 +202,8 @@ class ExperimentConfig:
             # 聚合防御
             defense=get("defense", "none", str),
             defense_clip_norm=get("defense-clip-norm", 3.0, float),
-            defense_trim_k=get("defense-trim-k", 2, int),
+            defense_trim_k=get("defense-trim-k", None if run_config.get("defense-trim-ratio") is not None else 2, int),
+            defense_trim_ratio=get("defense-trim-ratio", 0.2, float),
             defense_num_malicious=get("defense-num-malicious", 3, int),
             defense_krum_k=get("defense-krum-k", 3, int),
             # 实验管理
@@ -269,6 +273,7 @@ class ExperimentConfig:
             "aggregation_kwargs": {
                 "clip_norm": self.defense_clip_norm,
                 "trim_k": self.defense_trim_k,
+                "trim_ratio": self.defense_trim_ratio,
                 "num_malicious": self.defense_num_malicious,
                 "krum_k": self.defense_krum_k,
             },

@@ -12,6 +12,7 @@ from fl_backdoor.defenses.pipeline import build_defense_pipeline
 from fl_backdoor.attacks.selection import normalize_fixed_malicious_clients
 from fl_backdoor.dataset import get_dataset
 from fl_backdoor.config import ExperimentConfig
+from fl_backdoor.utils.randomness import derived_seed, seed_everything
 
 # Flower ClientApp
 app = ClientApp()
@@ -22,6 +23,10 @@ def train(msg: Message, context: Context):
 
     # Load the model and initialize it with the received weights
     cfg = ExperimentConfig.from_run_config(context.run_config)
+    partition_id = int(context.node_config["partition-id"])
+    server_round = int(msg.content["config"].get("server-round", 0))
+    training_seed = derived_seed(cfg.seed, "train", partition_id, server_round)
+    seed_everything(training_seed)
     dataset_meta = get_dataset(cfg.dataset).meta
 
     model = Net(
@@ -34,7 +39,8 @@ def train(msg: Message, context: Context):
 
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    trainloader, _ = load_data(partition_id, num_partitions, cfg.batch_size, cfg.dataset)
+    trainloader, _ = load_data(partition_id, num_partitions, cfg.batch_size, cfg.dataset,
+                               seed=cfg.seed, shuffle_seed=training_seed)
 
     server_round = int(msg.content["config"].get("server-round", 0))
 
@@ -64,6 +70,8 @@ def train(msg: Message, context: Context):
     print(f">>> [DEBUG] client_defense = {client_defense}")
 
     trainloader, defense_stats = client_defense.apply(model, trainloader, device)
+    # A reused Ray actor must not inherit RNG state from the previous client.
+    seed_everything(training_seed)
 
     train_loss = train_fn(
         model, trainloader, cfg.local_epochs,
@@ -90,7 +98,9 @@ def evaluate(msg: Message, context: Context):
     """Evaluate the model on local data."""
 
     # Load the model and initialize it with the received weights
-    dataset_name = context.run_config.get("dataset", "cifar10")
+    cfg = ExperimentConfig.from_run_config(context.run_config)
+    seed_everything(derived_seed(cfg.seed, "evaluate", context.node_config["partition-id"]))
+    dataset_name = cfg.dataset
     dataset_meta = get_dataset(dataset_name).meta
 
     model = Net(
@@ -105,7 +115,7 @@ def evaluate(msg: Message, context: Context):
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
     batch_size = context.run_config["batch-size"]
-    _, valloader = load_data(partition_id, num_partitions, batch_size, dataset_name)
+    _, valloader = load_data(partition_id, num_partitions, batch_size, dataset_name, seed=cfg.seed)
 
     # Call the evaluation function
     eval_loss, eval_acc = test_fn(

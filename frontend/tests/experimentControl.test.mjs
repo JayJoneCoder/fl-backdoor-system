@@ -14,6 +14,7 @@ const compile = relativePath => ts.transpileModule(
 const componentCode = compile('../src/components/ExperimentControl/index.tsx');
 const hookCode = compile('../src/hooks/useBufferedLogs.ts');
 const utilityCode = compile('../src/utils/experimentStream.ts');
+const requestCode = compile('../src/api/checkedFetch.ts');
 const copy = value => JSON.parse(JSON.stringify(value));
 
 const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name', total_rounds: 10 }, props = {}) => {
@@ -24,6 +25,7 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
   const charts = [];
   const sockets = [];
   const starts = [];
+  const errors = [];
   let cursor = 0;
   let nextId = 1;
   let dirty = false;
@@ -87,7 +89,7 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
   const api = {
     getExperimentStatus: async () => ({ data: { ...currentStatus } }),
     getConfig: async () => ({ data: { 'num-server-rounds': 10 } }),
-    startExperiment: async (...args) => { starts.push(args); },
+    startExperiment: async (...args) => { starts.push(args); return { data: {} }; },
     stopExperiment: async () => {},
   };
   const globals = {
@@ -113,7 +115,7 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
   const utils = load(utilityCode, {});
   const hook = load(hookCode, { react, '../utils/experimentStream': utils });
   const antd = Object.fromEntries(['Button', 'Space', 'Input', 'Card', 'Tag', 'Alert', 'Progress'].map(name => [name, name]));
-  antd.message = { success() {}, error() {} };
+  antd.message = { success() {}, error(value) { errors.push(value); } };
   const component = load(componentCode, {
     react,
     'react/jsx-runtime': { jsx, jsxs: jsx, Fragment: 'Fragment' },
@@ -122,6 +124,7 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
     echarts,
     '../../api/client': api,
     '../../api/endpoints': { getWebSocketUrl: path => `ws://test${path}` },
+    '../../api/checkedFetch': load(requestCode, {}),
     '../../components/LogViewer': { __esModule: true, default: 'LogViewer' },
     '../../hooks/useBufferedLogs': hook,
     '../../utils/experimentStream': utils,
@@ -168,7 +171,7 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
   };
   render();
   return {
-    sockets, charts, settle, runFrames, runLastFrame, tick, starts,
+    sockets, charts, settle, runFrames, runLastFrame, tick, starts, errors,
     start: async () => {
       let button;
       visit(tree, node => {
@@ -189,9 +192,13 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
       await settle();
     },
     stopResponse: response => { api.stopExperiment = async () => response; },
+    stopFailure: error => { api.stopExperiment = async () => { throw error; }; },
+    startFailure: error => { api.startExperiment = async (...args) => { starts.push(args); throw error; }; },
+    setName: value => { find('Input').props.onChange({ target: { value } }); render(); },
     setStatus: status => { currentStatus = status; },
     logs: () => copy(find('LogViewer').props.logs),
     progress: () => find('Progress')?.props.percent,
+    alert: () => find('Alert')?.props.message,
     unmount: () => slots.forEach(slot => slot?.cleanup?.()),
     intervals: () => intervals.size,
     frames: () => frames.size,
@@ -374,5 +381,48 @@ test('配置检查返回取消时，实际启动按钮不发起实验请求或�
     await h.start();
     assert.equal(h.starts.length, 0);
     assert.equal(h.sockets.length, 0);
+  } finally { h.unmount(); }
+});
+
+test('同名启动冲突保留旧曲线、日志、进度及连接，并显示后端原因', async () => {
+  const h = createHarness({ status: 'finished', exp_name: 'same_name', total_rounds: 10 });
+  try {
+    await h.settle();
+    const socket = h.sockets[0];
+    sendStatus(socket, 'finished');
+    [0, 1, 10].forEach(round => sendPoint(socket, round));
+    socket.receive('old experiment retained');
+    await h.tick(200);
+    h.runFrames();
+    h.setName('same_name');
+    h.startFailure({ response: { status: 409, data: { detail: 'Experiment "same_name" already exists. Choose a new name; old results were not changed.' } } });
+    await h.start();
+    h.runFrames();
+    assert.equal(h.starts.length, 1);
+    assert.equal(h.sockets.length, 1);
+    assert.equal(socket.closed, false);
+    assert.equal(h.progress(), 100);
+    assertCharts(h, [0, 1, 10]);
+    assert.deepEqual(h.logs(), ['old experiment retained']);
+    assert.match(h.errors.at(-1), /实验“same_name”已存在.*旧结果未被修改/);
+    assert.equal(h.startDisabled(), false);
+  } finally { h.unmount(); }
+});
+
+test('轮询、WebSocket 和停止请求的报错显示中文，日志保持原文', async () => {
+  const raw = 'Experiment worker exited with code 1. See run.log for details.';
+  const h = createHarness({ status: 'failed', exp_name: 'same_name', error: raw });
+  try {
+    await h.settle();
+    assert.match(h.alert(), /实验运行失败（退出码 1）/);
+    const socket = h.sockets[0];
+    socket.receive({ type: 'status', data: { status: 'cleanup_failed', error: 'Cleanup failed: Owned process termination is not complete.' } });
+    socket.receive(raw);
+    await h.tick(200);
+    assert.match(h.alert(), /清理失败：实验进程尚未完全退出/);
+    assert.deepEqual(h.logs(), [raw]);
+    h.stopFailure(new Error('Network Error'));
+    await h.stop();
+    assert.match(h.errors.at(-1), /无法连接后端/);
   } finally { h.unmount(); }
 });

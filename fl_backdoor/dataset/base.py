@@ -12,7 +12,8 @@ class BaseDataset(ABC):
 
     @abstractmethod
     def load_partition(
-        self, partition_id: int, num_partitions: int, batch_size: int
+        self, partition_id: int, num_partitions: int, batch_size: int, *, seed: int = 42,
+        shuffle_seed: int | None = None, download: bool = True,
     ) -> tuple[DataLoader, DataLoader]:
         """
         Load a partition of the dataset for a specific client.
@@ -23,7 +24,7 @@ class BaseDataset(ABC):
         pass
 
     @abstractmethod
-    def load_centralized_test(self, batch_size: int = 128) -> DataLoader:
+    def load_centralized_test(self, batch_size: int = 128, *, download: bool = True) -> DataLoader:
         """
         Load the centralized test set for global evaluation.
 

@@ -56,10 +56,10 @@ class Net(nn.Module):
         return x
 
 
-def load_data(partition_id: int, num_partitions: int, batch_size: int, dataset_name: str = "cifar10"):
+def load_data(partition_id: int, num_partitions: int, batch_size: int, dataset_name: str = "cifar10", *, seed=42, shuffle_seed=None):
     """Load partition data for a specific client."""
     dataset = get_dataset(dataset_name)
-    return dataset.load_partition(partition_id, num_partitions, batch_size)
+    return dataset.load_partition(partition_id, num_partitions, batch_size, seed=seed, shuffle_seed=shuffle_seed)
 
 
 def load_centralized_dataset(dataset_name: str = "cifar10", batch_size: int = 128):
