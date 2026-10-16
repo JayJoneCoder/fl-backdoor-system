@@ -30,8 +30,8 @@ class AttackConfig:
             raise ValueError("seed must be non-negative.")
 
         mode = str(self.extra.get("malicious_mode", "random")).lower().strip()
-        if mode not in {"random", "fixed"}:
-            raise ValueError("malicious_mode must be 'random' or 'fixed'.")
+        if mode not in {"random", "random_once", "fixed"}:
+            raise ValueError("malicious_mode must be 'random', 'random_once' or 'fixed'.")
 
         # 新增：统一 fixed_malicious_clients 类型
         fixed_clients = self.extra.get("fixed_malicious_clients", None)

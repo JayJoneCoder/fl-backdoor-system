@@ -83,6 +83,9 @@ interface ExperimentSummary {
   dataset?: string;
   created?: string;
   csv_files?: string[];
+  files_available?: boolean;
+  available_files?: string[];
+  attachments_missing?: boolean;
 }
 
 const RUN_STATUS: Record<string, string> = {
@@ -163,7 +166,7 @@ const ExperimentHistory: React.FC = () => {
   const handleDelete = (exp: ExperimentSummary) => {
     Modal.confirm({
       title: `删除实验“${exp.name}”？`,
-      content: '将永久删除该实验的指标、日志、图表、配置快照和模型，无法撤销。已有总结不会一并删除，请先下载需要保留的文件。',
+      content: '将永久删除数据库中的实验记录、指标和配置，以及仍存在的日志、图表和模型，无法撤销。已有总结不会一并删除，请先下载需要保留的文件。',
       okText: '确认删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -289,18 +292,21 @@ const ExperimentHistory: React.FC = () => {
       key: 'run-log',
       label: '下载运行日志',
       icon: <FileTextOutlined />,
+      disabled: exp.available_files ? !exp.available_files.includes('run.log') : exp.files_available === false,
       onClick: () => handleDownloadFile(exp.name, 'run.log'),
     },
     {
       key: 'images-zip',
       label: '下载图表 (ZIP)',
       icon: <FileImageOutlined />,
+      disabled: exp.files_available === false,
       onClick: () => handleDownloadImages(exp),
     },
     {
       key: 'all-files-zip',
       label: '下载全部文件 (ZIP)',
       icon: <FileZipOutlined />,
+      disabled: exp.files_available === false,
       onClick: () => handleDownloadZip(
           () => downloadExperimentAllFiles(exp.name),
           `${exp.name}_all_files.zip`
@@ -350,7 +356,7 @@ const ExperimentHistory: React.FC = () => {
                   style={{ cursor: 'pointer' }}
                   onClick={() => handleViewDetail(exp.name)}
                   actions={[
-                    <Tooltip title={exp.can_plot === false ? '指标不完整，仍可查看详情和下载日志' : '生成图表'} key="plot">
+                    <Tooltip title={exp.can_plot === false ? '缺少可用的原始指标文件，已入库数据仍可在详情查看' : '生成图表'} key="plot">
                       <Button type="text" size="small" icon={<BarChartOutlined />}
                         loading={plotGenerating.includes(exp.name)}
                         disabled={exp.can_plot === false || deleting.includes(exp.name)}
@@ -366,11 +372,11 @@ const ExperimentHistory: React.FC = () => {
                         trigger={['click']}
                       >
                         <Button type="text" size="small" icon={<DownloadOutlined />}
-                          disabled={deleting.includes(exp.name)}
+                          disabled={deleting.includes(exp.name) || exp.files_available === false}
                           onClick={(e) => e.stopPropagation()}>下载文件</Button>
                       </Dropdown>
                     </Tooltip>,
-                    <Tooltip title={ACTIVE_STATUSES.has(exp.status || '') ? '实验运行或清理结束后才可删除' : '永久删除该实验的全部文件'} key="delete">
+                    <Tooltip title={ACTIVE_STATUSES.has(exp.status || '') ? '实验运行或清理结束后才可删除' : '永久删除该实验记录及剩余附件'} key="delete">
                       <Button type="text" size="small" danger icon={<DeleteOutlined />}
                         loading={deleting.includes(exp.name)}
                         disabled={ACTIVE_STATUSES.has(exp.status || '') || plotGenerating.includes(exp.name)}
@@ -400,7 +406,7 @@ const ExperimentHistory: React.FC = () => {
                   {exp.status && <Tag color={exp.status === 'failed' || exp.status === 'cleanup_failed' ? 'error' : 'default'}>
                     {RUN_STATUS[exp.status] || '未记录'}
                   </Tag>}
-                  {!!exp.warnings?.length && <Tooltip title={exp.warnings.join(' ')}><Tag color="warning">指标不完整</Tag></Tooltip>}
+                  {!!exp.warnings?.length && <Tooltip title={exp.warnings.join(' ')}><Tag color="warning">{exp.attachments_missing ? '附件缺失' : '指标不完整'}</Tag></Tooltip>}
                   <Row gutter={8}>
                     <Col span={12}>
                       <Statistic
@@ -556,6 +562,15 @@ const ExperimentHistory: React.FC = () => {
                 style={{ marginBottom: 16 }}
               />
 
+              {detailData.config_toml && (
+                <details style={{ marginBottom: 16 }}>
+                  <summary style={{ cursor: 'pointer' }}>实验配置快照（数据库保存）</summary>
+                  <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 320, overflow: 'auto' }}>
+                    {detailData.config_toml}
+                  </pre>
+                </details>
+              )}
+
               <Space wrap style={{ marginBottom: 16 }}>
                 <Button
                   icon={<BarChartOutlined />}
@@ -569,7 +584,7 @@ const ExperimentHistory: React.FC = () => {
                   <Button key={action.key} icon={action.icon} disabled={action.disabled}
                     onClick={action.onClick}>{action.label}</Button>
                 ))}
-                <Button onClick={() => window.open(
+                <Button disabled={detailData.available_files ? !detailData.available_files.includes('run.log') : detailData.files_available === false} onClick={() => window.open(
                   getBackendUrl(`/results/${encodeURIComponent(selectedExp!)}/run.log`)
                 )}>
                   查看运行日志

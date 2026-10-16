@@ -68,8 +68,9 @@ clientapp = "fl_backdoor.client.client:app"
 
 # 恶意客户端选择模式
 # - random: 每轮随机选择（基于 seed + round 确定性采样）
+# - random_once: 首轮随机选定后固定（基于 seed 确定性采样一次）
 # - fixed: 使用 attack-fixed-clients 指定的固定客户端 ID
-attack-malicious-mode = "fixed"   # random / fixed
+attack-malicious-mode = "fixed"   # random / random_once / fixed
 
 # 固定恶意客户端 ID 列表（仅在 attack-malicious-mode = "fixed" 时生效）
 # 格式：逗号分隔或数组，如 [0,1,2] 或 "0,1,2"

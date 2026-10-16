@@ -28,7 +28,7 @@ class ExperimentConfig:
     trigger_size: int = 4
 
     # ---------- 恶意客户端选择 ----------
-    attack_malicious_mode: str = "random"  # random / fixed
+    attack_malicious_mode: str = "random"  # random / random_once / fixed
     attack_fixed_clients: Optional[list[int]] = None
 
     # ---------- WaNet 参数 ----------

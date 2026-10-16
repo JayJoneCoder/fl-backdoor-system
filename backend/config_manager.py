@@ -31,10 +31,10 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "attack-malicious-mode": {
         "type": "string",
         "default": "fixed",
-        "options": ["random", "fixed"],
-        "option_labels": {"random": "随机选择", "fixed": "固定客户端"},
+        "options": ["random", "random_once", "fixed"],
+        "option_labels": {"random": "每轮随机选择", "random_once": "首轮随机后固定", "fixed": "固定客户端"},
         "group": "core",
-        "description": "恶意客户端选择模式：random 每轮随机选择，fixed 使用固定列表",
+        "description": "恶意客户端选择模式：random 每轮随机选择，random_once 首轮随机选定后固定，fixed 使用固定列表",
     },
     "attack-fixed-clients": {
         "type": "string",  # 逗号分隔的 ID 列表，如 "0,1,2"
@@ -46,9 +46,9 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "malicious-ratio": {
         "type": "float",
         "default": 0.2,
-        "depends_on": {"attack-malicious-mode": ["random"]},
+        "depends_on": {"attack-malicious-mode": ["random", "random_once"]},
         "group": "core",
-        "description": "恶意客户端比例（仅在随机选择模式使用）",
+        "description": "恶意客户端比例（在每轮随机选择与首轮随机后固定模式使用）",
     },
     "attack": {
         "type": "string",
@@ -491,7 +491,7 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
         "type": "integer",
         "default": 2,
         "ui_only": True,
-        "depends_on": {"attack-malicious-mode": ["random"]},
+        "depends_on": {"attack-malicious-mode": ["random", "random_once"]},
         "group": "core",
         "description": "恶意客户端数量（系统将自动计算比例）",
         "compute_from": "malicious-ratio",

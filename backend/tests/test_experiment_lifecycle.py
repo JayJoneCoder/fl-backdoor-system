@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from backend import config_manager as cm, experiment_runner as er, main
 from backend.batch_manager import BatchManager, BatchTask
+from backend.catalog import Catalog
 from backend.experiment_worker import verified_exit_code
 
 
@@ -246,6 +247,12 @@ class BatchLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.manager = BatchManager(self.root / "batches")
+        for replacement in (
+            patch.object(main, "get_catalog", return_value=Catalog(self.root / "catalog.sqlite3")),
+            patch.object(main, "_results_root", return_value=self.root / "results"),
+        ):
+            replacement.start()
+            self.addCleanup(replacement.stop)
         self.runner = Mock()
         self.runner.run_id = "test-run-id"
         self.runner._on_log_line = None
@@ -442,9 +449,17 @@ class BatchLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_backend_shutdown_waits_for_batch_and_owned_cleanup(self):
         task = self.task()
         task.status = "running"
+        stopping = asyncio.Event()
+
+        async def stop():
+            stopping.set()
+            return {"status": "cancelled"}
+
+        self.runner.stop.side_effect = stop
 
         async def complete():
-            await asyncio.sleep(0.01)
+            await stopping.wait()
+            self.assertTrue(task.cancel_requested)
             task.status = "cancelled"
 
         task.job = asyncio.create_task(complete())

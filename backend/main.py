@@ -19,7 +19,7 @@ import uuid
 import pandas as pd
 import tomli
 
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -30,6 +30,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend import config_manager
+from backend.catalog import get_catalog
 from backend.config_validation import parse_boolean
 from backend.experiment_runner import ExperimentRunner
 from backend.log_stream import LogFileReader, MetricFileReader, read_total_rounds
@@ -48,6 +49,13 @@ from fl_backdoor.utils.run_artifacts import read_run_metadata
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
+        await _sync_catalog(_results_root())
+    except HTTPException:
+        # Keep diagnostics and the existing runner reachable; history requests
+        # report 503 until the database is repaired and synchronization retries.
+        pass
+    catalog_job = asyncio.create_task(_refresh_catalog())
+    try:
         yield
     finally:
         # Normal backend shutdown must not abandon an owned worker/cleanup task.
@@ -57,6 +65,12 @@ async def lifespan(app: FastAPI):
         await runner.stop()
         if task and task.job and not task.job.done():
             await asyncio.shield(task.job)
+        catalog_job.cancel()
+        await asyncio.gather(catalog_job, return_exceptions=True)
+        try:
+            await _sync_catalog(_results_root())
+        except HTTPException:
+            pass
 
 
 app = FastAPI(title="FL Backdoor Platform API", version="1.0.0", lifespan=lifespan)
@@ -95,6 +109,40 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 def _results_root() -> Path:
     return config_manager.get_results_dir(default=RESULTS_DIR)
+
+
+async def _sync_catalog(root: Path, *, force: bool = False) -> dict:
+    """Only importers write the SQLite read model; never change run artifacts."""
+    try:
+        catalog = get_catalog()
+        report = await asyncio.to_thread(catalog.sync_root, root, force=force)
+        catalog.record_sync(root, report)
+        return report
+    except Exception as exc:
+        print(f"[Catalog] Synchronization failed: {exc}", flush=True)
+        raise HTTPException(503, "实验数据库暂时不可用，原始结果文件未改变，请检查磁盘、权限或数据库备份。") from exc
+
+
+async def _refresh_catalog():
+    while True:
+        await asyncio.sleep(5)
+        try:
+            await _sync_catalog(_results_root())
+        except Exception as exc:
+            print(f"[Catalog] Background refresh will retry: {exc}", flush=True)
+
+
+@app.get("/api/catalog/status")
+async def catalog_status():
+    try:
+        return await asyncio.to_thread(get_catalog().stats)
+    except Exception as exc:
+        raise HTTPException(503, "无法读取实验数据库状态，请检查后端日志。") from exc
+
+
+@app.post("/api/catalog/sync")
+async def synchronize_catalog():
+    return await _sync_catalog(_results_root(), force=True)
 
 
 class ConfiguredResults:
@@ -421,29 +469,40 @@ async def get_experiment_status():
 
 
 @app.get("/api/experiments")
-async def list_all_experiments():
-    """Return list of all experiments with summary metrics."""
+async def list_all_experiments(
+    search: str = "", status: str | None = None, dataset: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=200), offset: int = Query(default=0, ge=0),
+    paginated: bool = False,
+):
+    """Keep the legacy array response; optional pagination includes a total."""
     try:
-        experiments = await asyncio.to_thread(list_experiments, _results_root())
-        return experiments
+        root = _results_root()
+        await _sync_catalog(root)
+        page = await asyncio.to_thread(get_catalog().query, root, search=search, status=status,
+                                       dataset=dataset, limit=limit, offset=offset)
+        return page if paginated else page["items"]
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        print(f"[Catalog] Query failed: {e}", flush=True)
+        raise HTTPException(503, "读取实验数据库失败，请稍后重试或查看后端日志。") from e
 
 
 @app.get("/api/experiments/{exp_name}")
 async def get_experiment_details(exp_name: str):
     """Return detailed metrics and file list for a specific experiment."""
     try:
-        detail = await asyncio.to_thread(get_experiment_detail, _experiment_directory(exp_name))
+        directory = _experiment_directory(exp_name)
+        await _sync_catalog(directory.parent)
+        detail = await asyncio.to_thread(get_catalog().detail, directory.parent, exp_name)
         if detail is None:
             raise HTTPException(404, "实验不存在或未找到运行记录。")
         return detail
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        print(f"[Catalog] Detail query failed: {e}", flush=True)
+        raise HTTPException(503, "读取实验详情失败，请稍后重试或查看后端日志。") from e
 
 @app.get("/api/experiments/{exp_name}/csv/latest")
 async def get_latest_csv_row(exp_name: str):
@@ -685,13 +744,9 @@ async def _report_slot(directory: Path, *, sources=()):
 
 @app.delete("/api/experiments/{exp_name}")
 async def delete_experiment(exp_name: str, run_id: str | None = None):
-    """Delete only an explicitly selected, inactive experiment directory."""
+    """Explicitly delete a stored run, with or without its remaining attachments."""
     directory = _experiment_directory(exp_name)
     async with execution_lock:
-        if not directory.is_dir():
-            raise HTTPException(404, "实验不存在，请刷新列表后重试。")
-        if run_id is not None and read_run_metadata(directory).get("run_id") != run_id:
-            raise HTTPException(409, "实验运行标识已变化，请刷新列表后重新确认删除。")
         owned = runner._experiment_dir
         if runner.is_busy() and owned is not None and owned.resolve() == directory.resolve():
             raise HTTPException(409, "该实验仍在运行或清理中，请等待结束后再删除。")
@@ -703,7 +758,24 @@ async def delete_experiment(exp_name: str, run_id: str | None = None):
         async with _report_slot(directory):
             # Keep both start/report reservations until removal really finishes,
             # including when the requesting browser disconnects.
-            job = asyncio.create_task(asyncio.to_thread(shutil.rmtree, directory))
+            catalog = get_catalog()
+            await asyncio.to_thread(catalog.initialize)
+            stored = await asyncio.to_thread(catalog.detail, directory.parent, exp_name)
+            if not directory.is_dir() and stored is None:
+                raise HTTPException(404, "实验不存在，请刷新列表后重试。")
+            # A lost run.json must not prevent deleting a retained database
+            # record. A different on-disk UUID, however, must still block it.
+            metadata = read_run_metadata(directory) if directory.is_dir() else {}
+            current_id = metadata.get("run_id") or (stored or {}).get("run_id")
+            if run_id is not None and current_id != run_id:
+                raise HTTPException(409, "实验运行标识已变化，请刷新列表后重新确认删除。")
+
+            def remove():
+                if directory.is_dir():
+                    shutil.rmtree(directory)
+                catalog.mark_removed(directory.parent, exp_name)
+
+            job = asyncio.create_task(asyncio.to_thread(remove))
             try:
                 await asyncio.shield(job)
             except asyncio.CancelledError:

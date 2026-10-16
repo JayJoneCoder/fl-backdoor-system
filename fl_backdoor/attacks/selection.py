@@ -61,7 +61,8 @@ def select_malicious_clients(
     """Select malicious client ids.
 
     Supported modes:
-    - random: deterministic per (seed, round)
+    - random: deterministic per (seed, round); re-randomized every round
+    - random_once: deterministic per seed; drawn once at round 0 and kept fixed
     - fixed: use user-specified client ids
     """
     mode = str(malicious_mode).lower().strip()
@@ -70,17 +71,20 @@ def select_malicious_clients(
         fixed_clients = normalize_fixed_malicious_clients(fixed_malicious_clients)
         return {cid for cid in fixed_clients if 0 <= cid < int(num_clients)}
 
-    if mode != "random":
-        raise ValueError("malicious_mode must be 'random' or 'fixed'.")
+    if mode == "random_once":
+        server_round = 0
 
-    return set(
-        _select_malicious_clients_cached(
-            int(num_clients),
-            float(malicious_ratio),
-            int(seed),
-            int(server_round),
+    if mode in {"random", "random_once"}:
+        return set(
+            _select_malicious_clients_cached(
+                int(num_clients),
+                float(malicious_ratio),
+                int(seed),
+                int(server_round),
+            )
         )
-    )
+
+    raise ValueError("malicious_mode must be 'random', 'random_once' or 'fixed'.")
 
 
 def is_malicious_client(

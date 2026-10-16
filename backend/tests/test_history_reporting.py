@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from backend import main, results_scanner as scanner
 from backend.batch_manager import BatchTask
+from backend.catalog import Catalog
 from backend.experiment_runner import ExperimentRunner
 from fl_backdoor.utils.run_artifacts import reserve_experiment, write_run_metadata
 
@@ -26,6 +27,9 @@ class TemporaryHistory:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        replacement = patch.object(main, "get_catalog", return_value=Catalog(self.root / "catalog.sqlite3"))
+        replacement.start()
+        self.addCleanup(replacement.stop)
 
     def experiment(self, name="one", content="round,accuracy,asr,loss\n1,0.9,0.1,0.2\n", status="finished"):
         directory, metadata = reserve_experiment(self.root, name)

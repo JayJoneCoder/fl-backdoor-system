@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from backend import config_manager as cm, experiment_runner as er, main
 from backend.batch_manager import BatchManager
+from backend.catalog import Catalog
 from backend.results_scanner import get_summary_detail, list_experiments
 from fl_backdoor.utils.run_artifacts import read_run_metadata, reserve_experiment
 
@@ -35,6 +36,9 @@ class TemporaryResultFiles:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
+        replacement = patch.object(main, "get_catalog", return_value=Catalog(self.root / "catalog.sqlite3"))
+        replacement.start()
+        self.addCleanup(replacement.stop)
         self.results = self.root / "results"
         self.results.mkdir()
         self.config = self.root / "pyproject.toml"

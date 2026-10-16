@@ -35,6 +35,10 @@ datasets/
 # ========================
 results/
 config_backups/
+platform_state/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 pyproject.toml.bak
 *.csv
 *.png
