@@ -34,6 +34,7 @@ import {
   getSummaryDetail,
 } from '../api/client';
 import { getBackendUrl } from '../api/endpoints';
+import { getUserErrorMessage } from '../api/checkedFetch';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 
 interface ExperimentItem {
@@ -67,7 +68,7 @@ const SummaryPage: React.FC = () => {
       setExperiments(expRes.data);
       setSummaries(sumRes.data);
     } catch (error) {
-      message.error('加载数据失败');
+      message.error(getUserErrorMessage(error, '加载数据失败，请稍后重试。'));
     } finally {
       setLoading(false);
     }
@@ -94,7 +95,7 @@ const SummaryPage: React.FC = () => {
       setSummaryName('');
       loadData();
     } catch (error) {
-      message.error('创建总结失败');
+      message.error(getUserErrorMessage(error, '创建总结失败，请查看后端日志。'));
     } finally {
       setSubmitting(false);
     }
@@ -110,7 +111,7 @@ const SummaryPage: React.FC = () => {
         setDetailData(res.data);
       }
     } catch (error) {
-      message.error('图表生成失败');
+      message.error(getUserErrorMessage(error, '图表生成失败，请查看后端日志。'));
     } finally {
       setPlotGenerating(null);
     }
@@ -139,7 +140,7 @@ const SummaryPage: React.FC = () => {
       window.URL.revokeObjectURL(url);
       message.success('开始下载压缩包');
     } catch (error) {
-      message.error('下载失败');
+      message.error(getUserErrorMessage(error, '下载失败，请稍后重试。'));
     }
   };
 
@@ -160,12 +161,12 @@ const SummaryPage: React.FC = () => {
               message.success('图表生成成功，开始下载');
               await handleDownloadZip(summary.name);
             } catch (err) {
-              message.error('图表生成失败');
+              message.error(getUserErrorMessage(err, '图表生成失败，请查看后端日志。'));
             }
           },
         });
       } else {
-        message.error('下载失败');
+        message.error(getUserErrorMessage(error, '下载失败，请稍后重试。'));
       }
     }
   };
@@ -177,7 +178,7 @@ const SummaryPage: React.FC = () => {
       const res = await getSummaryDetail(summaryName);
       setDetailData(res.data);
     } catch (error) {
-      message.error('加载详情失败');
+      message.error(getUserErrorMessage(error, '加载详情失败，请稍后重试。'));
       setDetailModalVisible(false);
     } finally {
       setDetailLoading(false);

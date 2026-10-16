@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import os
 import tempfile
 import threading
 import time
@@ -173,7 +174,10 @@ class RunnerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cm.BACKUP_PATH.exists())
 
     async def test_new_runtime_is_private_and_has_explicit_non_global_connection(self):
-        await self.start(FakeOwner())
+        owner = FakeOwner()
+        owner.spawn = Mock(wraps=owner.spawn)
+        with patch.dict(os.environ, {"PYTHONPATH": str(self.root / "inherited-modules")}):
+            await self.start(owner)
         home = self.runner._temp_home
         doc = tomli.loads((home / "flower" / "config.toml").read_text())
         conn = doc["superlink"]["project-runtime"]
@@ -181,6 +185,14 @@ class RunnerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(conn["insecure"])
         self.assertTrue((home / "app" / "fl_backdoor" / "task.py").exists())
         self.assertFalse((home / "app" / "fl_backdoor" / "tests").exists())
+        env = owner.spawn.call_args.kwargs["env"]
+        self.assertEqual(owner.spawn.call_args.kwargs["cwd"], str(home / "app"))
+        self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[0], str(home / "app"))
+        self.assertIn(str(self.root / "inherited-modules"), env["PYTHONPATH"].split(os.pathsep))
+        self.assertEqual(env["PYTHONHASHSEED"], "42")
+        self.assertEqual(env["FL_BACKDOOR_RUNTIME_APP"], str(home / "app"))
+        self.assertEqual(env["RAY_RUNTIME_ENV_HOOK"], "fl_backdoor.utils.ray_runtime.runtime_env_hook")
+        self.assertEqual(env["FL_BACKDOOR_DATA_DIR"], str(er.PROJECT_ROOT / "data"))
         await self.runner.stop()
         self.assertFalse(home.exists())
 
@@ -235,6 +247,7 @@ class BatchLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.directory.name)
         self.manager = BatchManager(self.root / "batches")
         self.runner = Mock()
+        self.runner.run_id = "test-run-id"
         self.runner._on_log_line = None
         self.runner.start = AsyncMock()
         self.runner.wait = AsyncMock(return_value={"status": "finished", "exit_code": 0})

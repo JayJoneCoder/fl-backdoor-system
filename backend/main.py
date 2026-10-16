@@ -9,11 +9,13 @@ from datetime import datetime
 import os
 import sys
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 import zipfile
 import io
 import re
 import pandas as pd
+import tomli
 
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +37,8 @@ from backend.results_scanner import (
     get_summary_detail,
 )
 from backend.batch_manager import batch_manager, BatchTask
+from fl_backdoor.utils.paths import child_path, direct_files, experiment_path, summary_path, summary_root
+from fl_backdoor.utils.run_artifacts import read_run_metadata
 
 # ------------------------------
 # FastAPI app setup
@@ -85,13 +89,70 @@ async def log_all_requests(request: Request, call_next):
 # Static files for results
 RESULTS_DIR = PROJECT_ROOT / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
-app.mount("/results", StaticFiles(directory=str(RESULTS_DIR)), name="results")
+
+
+def _results_root() -> Path:
+    return config_manager.get_results_dir(default=RESULTS_DIR)
+
+
+class ConfiguredResults:
+    """Resolve the same configured root as training, without restarting the API."""
+
+    async def __call__(self, scope, receive, send):
+        root = _results_root()
+        if not root.is_dir():
+            await JSONResponse(status_code=404, content={"detail": "结果目录尚不存在。"})(scope, receive, send)
+            return
+        await StaticFiles(directory=str(root))(scope, receive, send)
+
+
+app.mount("/results", ConfiguredResults(), name="results")
 
 # ------------------------------
 # Global experiment runner instance
 # ------------------------------
 runner = ExperimentRunner()
 execution_lock = asyncio.Lock()
+
+
+def _experiment_directory(name: str) -> Path:
+    try:
+        # History and its assets always belong to the currently selected root.
+        return experiment_path(_results_root(), name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _monitor_directory(name: str, run_id: str | None) -> Path:
+    if run_id and runner.run_id == run_id and runner.exp_name == name and runner._experiment_dir is not None:
+        directory = experiment_path(runner._experiment_dir.parent, name)
+    else:
+        directory = _experiment_directory(name)
+    if run_id and read_run_metadata(directory).get("run_id") != run_id:
+        raise ValueError("实验运行标识与结果目录不一致，请刷新后重新连接。")
+    return directory
+
+
+def _runner_owns_directory(directory: Path) -> bool:
+    if runner.exp_name != directory.name:
+        return False
+    owned = runner._experiment_dir
+    if owned is None or owned.resolve() != directory.resolve():
+        return False
+    if runner.run_id:
+        return read_run_metadata(directory).get("run_id") == runner.run_id
+    return True
+
+
+def _summary_directory(name: str) -> Path:
+    try:
+        return summary_path(_results_root(), name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _download_header(filename: str) -> dict[str, str]:
+    return {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}"}
 
 
 # ------------------------------
@@ -101,14 +162,22 @@ execution_lock = asyncio.Lock()
 async def websocket_logs(websocket: WebSocket, exp_name: str):
     await websocket.accept()
 
-    exp_dir = RESULTS_DIR / exp_name
-    if not (exp_dir / "run.log").exists():
+    try:
+        run_id = getattr(websocket, "query_params", {}).get("run_id")
+        exp_dir = _monitor_directory(exp_name, run_id)
+        log_path = child_path(exp_dir, "run.log")
+        child_path(exp_dir, f"{exp_name}.csv")
+        child_path(exp_dir, "config_snapshot.toml")
+    except (ValueError, OSError, HTTPException):
+        await websocket.close(code=1008, reason="实验名称、路径或运行标识无效")
+        return
+    if not log_path.exists():
         await websocket.send_text("[System] Waiting for log file...")
 
     # One log source per connection. Never replace the runner's batch callback.
     send_lock = asyncio.Lock()
     tasks = [
-        asyncio.create_task(_stream_log_file(websocket, exp_dir / "run.log", send_lock)),
+        asyncio.create_task(_stream_log_file(websocket, log_path, send_lock)),
         asyncio.create_task(_watch_csv_files(websocket, exp_dir, send_lock)),
         asyncio.create_task(_stream_experiment_status(websocket, exp_dir, send_lock)),
         asyncio.create_task(_wait_for_disconnect(websocket)),
@@ -180,7 +249,7 @@ async def _stream_log_file(
     reader = LogFileReader(log_path)
     lock = send_lock or asyncio.Lock()
     while True:
-        generation, _ = runner.get_log_context(log_path.parent.name)
+        generation, _ = runner.get_log_context(log_path.parent.name, log_path.parent)
         lines = await asyncio.to_thread(reader.read_lines, generation)
         for line in lines:
             async with lock:
@@ -196,7 +265,7 @@ async def _watch_csv_files(
     reader = MetricFileReader(main_csv)
     lock = send_lock or asyncio.Lock()
     while True:
-        generation, started_at_ns = runner.get_log_context(exp_dir.name)
+        generation, started_at_ns = runner.get_log_context(exp_dir.name, exp_dir)
         rows = await asyncio.to_thread(reader.read_rows, generation, started_at_ns)
         for row in rows:
             async with lock:
@@ -210,13 +279,20 @@ async def _stream_experiment_status(
     previous = None
     while True:
         status = await runner.get_status()
-        if status.get("exp_name") != exp_dir.name:
+        if not _runner_owns_directory(exp_dir):
             status = {"status": "idle", "exp_name": exp_dir.name}
+            try:
+                metadata = await asyncio.to_thread(read_run_metadata, exp_dir)
+                status.update({key: metadata[key] for key in ("status", "run_id", "flower_run_id", "exit_code", "error") if key in metadata})
+            except (ValueError, OSError, KeyError):
+                pass
         if not status.get("total_rounds"):
-            status["total_rounds"] = await asyncio.to_thread(
-                read_total_rounds, exp_dir / "config_snapshot.toml"
-            )
-        status["log_generation"] = runner.get_log_context(exp_dir.name)[0]
+            try:
+                snapshot = child_path(exp_dir, "config_snapshot.toml")
+                status["total_rounds"] = await asyncio.to_thread(read_total_rounds, snapshot)
+            except ValueError:
+                status["total_rounds"] = None
+        status["log_generation"] = runner.get_log_context(exp_dir.name, exp_dir)[0]
         if status != previous:
             async with send_lock:
                 await websocket.send_json({"type": "status", "data": status})
@@ -291,9 +367,11 @@ async def start_experiment(request: dict[str, Any]):
             if batch_manager.get_active_task():
                 raise HTTPException(409, "A batch task is running or stopping")
             await runner.start(exp_name, config_overrides, backup_config=True)
-        return {"status": "started", "name": exp_name}
+        return {"status": "started", "name": exp_name, "run_id": runner.run_id}
     except HTTPException:
         raise
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
     except RuntimeError as e:
         raise HTTPException(409, str(e))
     except (ValueError, TypeError) as e:
@@ -329,7 +407,7 @@ async def get_experiment_status():
 async def list_all_experiments():
     """Return list of all experiments with summary metrics."""
     try:
-        experiments = list_experiments(RESULTS_DIR)
+        experiments = list_experiments(_results_root())
         return experiments
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -339,18 +417,23 @@ async def list_all_experiments():
 async def get_experiment_details(exp_name: str):
     """Return detailed metrics and file list for a specific experiment."""
     try:
-        detail = get_experiment_detail(RESULTS_DIR / exp_name)
+        detail = get_experiment_detail(_experiment_directory(exp_name))
         if detail is None:
             raise HTTPException(404, "Experiment not found or no valid data")
         return detail
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
 @app.get("/api/experiments/{exp_name}/csv/latest")
 async def get_latest_csv_row(exp_name: str):
     """返回主日志 CSV 的最新一行（用于前端图表实时更新）"""
-    exp_dir = RESULTS_DIR / exp_name
-    csv_path = exp_dir / f"{exp_name}.csv"
+    exp_dir = _experiment_directory(exp_name)
+    try:
+        csv_path = child_path(exp_dir, f"{exp_name}.csv")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     
     if not csv_path.exists():
         raise HTTPException(404, "CSV file not found yet")
@@ -391,17 +474,26 @@ async def run_batch_experiments(request: dict[str, Any]):
             if batch_manager.get_active_task():
                 raise HTTPException(409, "A batch task is already running or stopping")
             baseline = config_manager.TOML_PATH.read_bytes()
+            names = set()
             for idx, exp in enumerate(experiments):
                 if not isinstance(exp, dict) or not isinstance(exp.get("name"), str) or not exp["name"].strip():
                     raise ValueError(f"Experiment {idx + 1}: name is required")
                 config = {k: v for k, v in exp.items() if k != "name"}
                 config["run-name"] = exp["name"]
-                config_manager.build_run_config(baseline, config)
+                content = config_manager.build_run_config(baseline, config)
+                section = tomli.loads(content.decode("utf-8"))["tool"]["flwr"]["app"]["config"]
+                directory = experiment_path(config_manager.get_results_dir(section, default=RESULTS_DIR), exp["name"])
+                key = exp["name"].casefold()
+                if key in names or directory.exists():
+                    raise FileExistsError(f'Experiment "{exp["name"]}" already exists or is repeated in this batch. Choose a new name.')
+                names.add(key)
             task = batch_manager.create_task(experiments, baseline)
             task.job = asyncio.create_task(_run_batch_sequence(task))
         return {"status": "batch_started", "batch_id": task.batch_id, "total": len(experiments)}
     except HTTPException:
         raise
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
     except (ValueError, TypeError) as e:
         raise HTTPException(400, str(e))
     except Exception as e:
@@ -443,8 +535,10 @@ async def _run_batch_sequence(task: BatchTask) -> None:
                         item["status"] = "cancelled"
                         break
                     await runner.start(exp_name, config, backup_config=False, base_config=task.base_config)
+                    item["run_id"] = runner.run_id
                 result = await runner.wait()
-                item.update(exit_code=result.get("exit_code"), error=result.get("error"))
+                item.update(exit_code=result.get("exit_code"), error=result.get("error"),
+                            flower_run_id=result.get("flower_run_id"))
                 item["status"] = "completed" if result["status"] == "finished" else (
                     "cancelled" if result["status"] == "cancelled" else "failed")
                 if item["status"] == "cancelled":
@@ -529,8 +623,8 @@ async def cancel_batch_task(batch_id: str):
 
 @app.get("/api/batch/status")
 async def get_batch_status():
-    """Get current batch task status."""
-    task = batch_manager.get_active_task() or batch_manager.get_latest_task()
+    """Get only an active batch; historical records remain queryable by ID."""
+    task = batch_manager.get_active_task()
     if task is None:
         return {"status": "idle"}
     return task.to_dict()
@@ -547,7 +641,7 @@ async def get_batch_task_status(batch_id: str):
 @app.post("/api/experiments/{exp_name}/plot")
 async def generate_plots_for_experiment(exp_name: str):
     """为指定实验运行 plot.py 生成图表"""
-    exp_dir = RESULTS_DIR / exp_name
+    exp_dir = _experiment_directory(exp_name)
     if not exp_dir.exists():
         raise HTTPException(404, "Experiment not found")
     
@@ -571,7 +665,7 @@ async def generate_summary_report():
     script_path = PROJECT_ROOT / "scripts" / "summarize_results.py"
     try:
         result = subprocess.run(
-            [sys.executable, str(script_path)],
+            [sys.executable, str(script_path), "--results-dir", str(_results_root())],
             capture_output=True,
             text=True,
             cwd=str(PROJECT_ROOT),
@@ -579,7 +673,7 @@ async def generate_summary_report():
         if result.returncode != 0:
             raise HTTPException(500, f"Summary generation failed: {result.stderr}")
         # 读取生成的 summary.csv 行数
-        summary_csv = RESULTS_DIR / "summary.csv"
+        summary_csv = _results_root() / "summary.csv"
         count = 0
         if summary_csv.exists():
             import pandas as pd
@@ -596,9 +690,17 @@ async def create_summary(request: dict[str, Any]):
     if not experiments:
         raise HTTPException(400, "No experiments selected")
     output_name = request.get("output_name")
+    if not isinstance(experiments, list):
+        raise HTTPException(400, "Experiments must be a list of names")
+    for name in experiments:
+        if not _experiment_directory(name).is_dir():
+            raise HTTPException(404, f"Experiment {name} not found")
+    if output_name is not None:
+        if _summary_directory(output_name).exists():
+            raise HTTPException(409, "Summary already exists; choose a new name")
     
     script_path = PROJECT_ROOT / "scripts" / "summarize_results.py"
-    cmd = [sys.executable, str(script_path), "--experiments"]
+    cmd = [sys.executable, str(script_path), "--results-dir", str(_results_root()), "--experiments"]
     for exp in experiments:
         cmd.append(exp)
     if output_name:
@@ -622,14 +724,24 @@ async def create_summary(request: dict[str, Any]):
 @app.get("/api/summaries")
 async def list_summaries():
     """List all summary directories under results/summaries."""
-    summaries_dir = RESULTS_DIR / "summaries"
+    try:
+        summaries_dir = summary_root(_results_root())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     if not summaries_dir.exists():
         return []
     summaries = []
     for d in summaries_dir.iterdir():
+        try:
+            d = summary_path(_results_root(), d.name)
+        except ValueError:
+            continue
         if d.is_dir():
             # 读取 summary.csv 获取基本信息
-            csv_path = d / "summary.csv"
+            try:
+                csv_path = child_path(d, "summary.csv")
+            except ValueError:
+                continue
             if csv_path.exists():
                 df = pd.read_csv(csv_path)
                 summaries.append({
@@ -644,7 +756,7 @@ async def list_summaries():
 @app.post("/api/summaries/{summary_name}/plot")
 async def generate_summary_plots(summary_name: str):
     """为指定总结目录运行 plot.py 生成多实验对比图"""
-    summary_dir = RESULTS_DIR / "summaries" / summary_name
+    summary_dir = _summary_directory(summary_name)
     if not summary_dir.exists():
         raise HTTPException(404, "Summary not found")
     
@@ -665,20 +777,20 @@ async def generate_summary_plots(summary_name: str):
 @app.get("/api/summaries/{summary_name}/images")
 async def list_summary_images(summary_name: str):
     """列出总结目录下的所有 PNG 图片"""
-    summary_dir = RESULTS_DIR / "summaries" / summary_name
+    summary_dir = _summary_directory(summary_name)
     if not summary_dir.exists():
         raise HTTPException(404, "Summary not found")
-    images = [f.name for f in summary_dir.glob("*.png")]
+    images = [f.name for f in direct_files(summary_dir, "*.png")]
     return {"images": images}
 
 @app.get("/api/summaries/{summary_name}/download")
 async def download_summary_images(summary_name: str):
     """将总结目录下的所有图片打包为 ZIP 下载"""
-    summary_dir = RESULTS_DIR / "summaries" / summary_name
+    summary_dir = _summary_directory(summary_name)
     if not summary_dir.exists():
         raise HTTPException(404, "Summary not found")
 
-    png_files = list(summary_dir.glob("*.png"))
+    png_files = direct_files(summary_dir, "*.png")
     if not png_files:
         raise HTTPException(404, "No images found in this summary")
 
@@ -691,17 +803,17 @@ async def download_summary_images(summary_name: str):
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={summary_name}_images.zip"}
+        headers=_download_header(f"{summary_name}_images.zip")
     )
 
 @app.get("/api/experiments/{exp_name}/images/download")
 async def download_experiment_images(exp_name: str):
     """下载实验目录下所有 PNG 图片的 ZIP 压缩包"""
-    exp_dir = RESULTS_DIR / exp_name
+    exp_dir = _experiment_directory(exp_name)
     if not exp_dir.exists():
         raise HTTPException(404, "Experiment not found")
 
-    png_files = list(exp_dir.glob("*.png"))
+    png_files = direct_files(exp_dir, "*.png")
     if not png_files:
         raise HTTPException(404, "No images found in this experiment")
 
@@ -714,17 +826,17 @@ async def download_experiment_images(exp_name: str):
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={exp_name}_images.zip"}
+        headers=_download_header(f"{exp_name}_images.zip")
     )
 
 @app.get("/api/experiments/{exp_name}/all/download")
 async def download_experiment_all_files(exp_name: str):
     """下载实验目录下所有文件（不含子目录）的 ZIP 压缩包"""
-    exp_dir = RESULTS_DIR / exp_name
+    exp_dir = _experiment_directory(exp_name)
     if not exp_dir.exists():
         raise HTTPException(404, "Experiment not found")
 
-    all_files = [f for f in exp_dir.iterdir() if f.is_file()]
+    all_files = direct_files(exp_dir)
     if not all_files:
         raise HTTPException(404, "No files found in this experiment")
 
@@ -737,13 +849,13 @@ async def download_experiment_all_files(exp_name: str):
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={exp_name}_all_files.zip"}
+        headers=_download_header(f"{exp_name}_all_files.zip")
     )
 
 @app.get("/api/summaries/{summary_name}")
 async def get_summary_detail_endpoint(summary_name: str):
     """获取单个总结的详细数据"""
-    summary_dir = RESULTS_DIR / "summaries" / summary_name
+    summary_dir = _summary_directory(summary_name)
     if not summary_dir.exists():
         raise HTTPException(404, "Summary not found")
     detail = get_summary_detail(summary_dir)

@@ -4,6 +4,7 @@ import { PlayCircleOutlined, StopOutlined, SyncOutlined } from '@ant-design/icon
 import * as echarts from 'echarts';
 import { startExperiment, stopExperiment, getExperimentStatus, getConfig } from '../../api/client';
 import { getWebSocketUrl } from '../../api/endpoints';
+import { getUserErrorMessage } from '../../api/checkedFetch';
 import LogViewer from '../../components/LogViewer';
 import { useBufferedLogs } from '../../hooks/useBufferedLogs';
 import { getProgressPercent, isExperimentBusy, mergeMetricPoint, normalizeExperimentStatus, parseMetricPoint, parseTotalRounds } from '../../utils/experimentStream';
@@ -22,6 +23,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
   const { logs, queueLog, flushLogs, resetLogs } = useBufferedLogs();
   const wsRef = useRef<WebSocket | null>(null);
   const connectedNameRef = useRef<string | null>(null);
+  const connectedRunIdRef = useRef<string | null>(null);
   const startPendingRef = useRef(false);
 
   const [currentRound, setCurrentRound] = useState<number | null>(null);
@@ -123,7 +125,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
   }, [renderCharts]);
 
   // ---------- WebSocket 连接 ----------
-  const connectWS = useCallback((name: string) => {
+  const connectWS = useCallback((name: string, runId?: string | null) => {
     if (wsRef.current) wsRef.current.close();
 
     // Each connection replays the complete run. Start a fresh display to avoid
@@ -133,9 +135,11 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
     setCurrentRound(null);
     setTotalRound(null);
 
-    const socket = new WebSocket(getWebSocketUrl(`/ws/logs/${encodeURIComponent(name)}`));
+    const query = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
+    const socket = new WebSocket(getWebSocketUrl(`/ws/logs/${encodeURIComponent(name)}${query}`));
     wsRef.current = socket;
     connectedNameRef.current = name;
+    connectedRunIdRef.current = runId ?? null;
 
     socket.onmessage = (event) => {
       if (wsRef.current !== socket) return;
@@ -194,23 +198,17 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
     try {
       const config = await getConfig();
       const total = parseTotalRounds(config.data['num-server-rounds']);
-      wsRef.current?.close();
-      wsRef.current = null;
-      resetLogs();
-      setCurrentRound(0);
-      setTotalRound(total);
-      resetCharts();
-
       const name = expName.trim();
-      // Connect after the old log has been truncated. History replay fills the gap.
-      await startExperiment(name);
+      // Start first: a name conflict must not erase the previous display.
+      const started = await startExperiment(name);
+      setError(null);
       setStatus('running');
-      connectWS(name);
+      connectWS(name, started.data.run_id);
       setCurrentRound(0);
       setTotalRound(total);
       message.success(`实验 "${name}" 已启动`);
-    } catch {
-      message.error('启动失败');
+    } catch (e: unknown) {
+      message.error('启动失败：' + getUserErrorMessage(e));
     } finally {
       startPendingRef.current = false;
       setLoading(false);
@@ -226,7 +224,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       setStatus(nextStatus);
       if (!isExperimentBusy(nextStatus)) message.success('实验已停止并完成清理');
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '停止失败');
+      message.error('停止失败：' + getUserErrorMessage(e));
       // The server may still be cleaning. Polling, not a failed request, releases
       // the controls; never advertise idle while owned processes remain.
     } finally {
@@ -249,8 +247,9 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
         setError(res.data.error ?? null);
         if (nextStatus !== 'idle' && res.data.exp_name) {
           setExpName(res.data.exp_name);
-          if (!wsRef.current || connectedNameRef.current !== res.data.exp_name) {
-            connectWS(res.data.exp_name);
+          if (!wsRef.current || connectedNameRef.current !== res.data.exp_name
+              || connectedRunIdRef.current !== (res.data.run_id ?? null)) {
+            connectWS(res.data.exp_name, res.data.run_id);
           }
         }
         const total = parseTotalRounds(res.data.total_rounds);
@@ -269,6 +268,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       wsRef.current?.close();
       wsRef.current = null;
       connectedNameRef.current = null;
+      connectedRunIdRef.current = null;
     };
   }, [connectWS]);
 
@@ -299,7 +299,7 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
         </Space>
 
         {status === 'running' && <Alert message="实验运行中" type="info" showIcon />}
-        {error && <Alert message={error} type="error" showIcon />}
+        {error && <Alert message={getUserErrorMessage(error)} type="error" showIcon />}
 
         {progress !== null && (
           <div style={{ marginBottom: 10 }}>

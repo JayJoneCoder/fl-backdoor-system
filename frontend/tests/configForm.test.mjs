@@ -137,12 +137,12 @@ test('保存失败的启动检查返回取消，不会误报成功', async () =>
   for (const button of ['onOk', 'onCancel']) {
     const h = await harness();
     h.edit({ 'batch-size': -1 });
-    h.failSave({ response: { data: { detail: 'batch-size must be positive' } } });
+    h.failSave({ response: { data: { detail: 'batch-size: must be a positive integer.' } } });
     const outcome = h.gate();
     await h.dialogs.at(-1)[button]();
     assert.equal((await outcome).action, 'cancel');
     assert.equal(h.successes.length, 0);
-    assert.ok(h.errors.some(text => text.includes('batch-size must be positive')));
+    assert.ok(h.errors.some(text => /批次大小.*必须为正整数/.test(text)));
     assert.equal(h.calls.filter(call => call.type === 'save').length, 1);
   }
 });
@@ -178,7 +178,8 @@ test('普通表单保存失败不产生成功提示，保留未保存状态', as
   h.failSave(new Error('invalid settings'));
   await h.submit();
   assert.equal(h.successes.length, 0);
-  assert.ok(h.errors.some(text => text.includes('invalid settings')));
+  assert.ok(h.errors.some(text => text.includes('配置操作失败')));
+  assert.ok(h.errors.every(text => !text.includes('invalid settings')));
   const outcome = h.gate();
   await h.dialogs.at(-1).onCancel();
   assert.equal((await outcome).action, 'cancel');
@@ -197,7 +198,7 @@ test('高级保存的 400 响应不关闭编辑器、不显示成功', async () 
   await h.settle();
   assert.equal(h.advancedOpen(), true);
   assert.equal(h.successes.length, 0);
-  assert.ok(h.errors.some(text => text.includes('Invalid TOML')));
+  assert.ok(h.errors.some(text => text.includes('TOML 配置格式不正确')));
   const post = h.calls.filter(call => call.type === 'fetch' && call.method === 'POST');
   assert.equal(post.length, 1);
   assert.equal(post[0].url, '/api/config/raw');
@@ -249,7 +250,8 @@ test('删除失败会显示后端错误，不显示删除成功', async () => {
   h.deleteBackup('saved.toml');
   await h.dialogs.at(-1).onOk();
   assert.equal(h.successes.length, 0);
-  assert.ok(h.errors.some(text => text.includes('cannot delete')));
+  assert.ok(h.errors.some(text => text.includes('后端处理失败（HTTP 500）')));
+  assert.ok(h.errors.every(text => !text.includes('cannot delete')));
 });
 
 test('草稿备份失败不会显示创建成功', async () => {

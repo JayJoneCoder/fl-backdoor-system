@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import csv
 import json
-import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
+from .paths import child_path
 
 
 class CSVLogger:
@@ -22,22 +23,23 @@ class CSVLogger:
         
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"experiment_{timestamp}.csv"
+            filename = f"experiment_{timestamp}_{uuid.uuid4().hex[:8]}.csv"
 
-        self.filepath = self.save_dir / filename
-        self.metrics_filepath = self.save_dir / f"{self.filepath.stem}_metrics.csv"
-        self.client_metrics_filepath = self.save_dir / f"{self.filepath.stem}_clients.csv"
-
-
-        with self.filepath.open(mode="w", newline="", encoding="utf-8") as f:
+        self.filepath = child_path(self.save_dir, filename)
+        self.metrics_filepath = child_path(self.save_dir, f"{self.filepath.stem}_metrics.csv")
+        self.client_metrics_filepath = child_path(self.save_dir, f"{self.filepath.stem}_clients.csv")
+        paths = (self.filepath, self.metrics_filepath, self.client_metrics_filepath)
+        if any(path.exists() for path in paths):
+            raise FileExistsError("Experiment CSV files already exist; refusing to overwrite results.")
+        with self.filepath.open(mode="x", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["round", "accuracy", "asr", "loss"])
 
-        with self.metrics_filepath.open(mode="w", newline="", encoding="utf-8") as f:
+        with self.metrics_filepath.open(mode="x", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["round", "component", "key", "value"])
 
-        with self.client_metrics_filepath.open(mode="w", newline="", encoding="utf-8") as f:
+        with self.client_metrics_filepath.open(mode="x", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["round", "client_id", "is_malicious", "suspicious", "kept", "score", "norm", "norm_z", "cosine"])
 

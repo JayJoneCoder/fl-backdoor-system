@@ -166,9 +166,8 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
       setOriginalConfig(newConfig);               
       form.setFieldsValue(newConfig);
       setDirtyFields(new Set());                  
-    } catch (error: any) {
-      const detail = error?.response?.data?.detail || error?.message || '未知错误';
-      message.error(`加载配置失败：${detail}`);
+    } catch (error: unknown) {
+      message.error(`加载配置失败：${getConfigErrorMessage(error)}`);
     }
   };
 

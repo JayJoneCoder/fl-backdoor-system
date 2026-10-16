@@ -13,6 +13,7 @@ from typing import Any
 
 import tomli
 import tomli_w
+from fl_backdoor.utils.paths import child_path, validate_name
 from backend.config_validation import (
     OPTIONAL_FIELDS, normalize_values, parse_integer, validate_constraints,
 )
@@ -105,7 +106,7 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
         "type": "integer",
         "default": 10,
         "group": "federated",
-        "description": "联邦学习客户端总数",
+        "description": "实际仿真客户端总数：同步传给 Flower num-supernodes，每轮训练使用全部客户端",
     },
     "num-server-rounds": {
         "type": "integer",
@@ -146,8 +147,8 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "dataset": {
         "type": "string",
         "default": "mnist",
-        "options": ["cifar10", "mnist", "cifar100"],
-        "option_labels": {"cifar10": "CIFAR-10", "mnist": "MNIST", "cifar100": "CIFAR-100"},
+        "options": ["cifar10", "mnist"],
+        "option_labels": {"cifar10": "CIFAR-10", "mnist": "MNIST"},
         "group": "federated",
         "description": "数据集选择",
     },
@@ -447,14 +448,14 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
         "default": None,
         "depends_on": {"defense": ["trimmed_mean"]},
         "group": "defense",
-        "description": "修剪比例 (0~0.5)，去掉最大/最小各 trim_ratio * n 个客户端（与 trim_k 互斥，优先使用 trim_k）",
+        "description": "比例范围 [0,0.5)，每个坐标的两端各修剪 floor(比例×实际参与数) 个值；须将修剪数量留空才生效",
     },
     "defense-trim-k": {
         "type": "integer",
         "default": 2,
         "depends_on": {"defense": ["trimmed_mean"]},
         "group": "defense",
-        "description": "修剪数量（绝对值），去掉最大/最小各 trim_k 个客户端（优先于 trim_ratio）",
+        "description": "每个坐标的两端各修剪此数量的值；优先于比例，填 0 表示不修剪，留空则按比例计算",
     },
     "defense-num-malicious": {
         "type": "integer",
@@ -476,7 +477,7 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
         "type": "string",
         "default": "results",
         "group": "management",
-        "description": "结果保存目录（自动创建）",
+        "description": "结果保存根目录（自动创建）；相对路径相对于项目根目录，历史记录、文件下载与报告使用同一目录，旧结果不会自动搬移",
     },
     "run-name": {
         "type": "string",
@@ -555,6 +556,7 @@ def validate_document(content: str) -> dict[str, Any]:
         raise ValueError("Configuration must include project and tool.flwr.app config/components tables.") from exc
     normalized = normalize_values(section, CONFIG_SCHEMA, strict=True)
     validate_constraints(normalized, CONFIG_SCHEMA)
+    get_results_dir(normalized)
     return data
 
 
@@ -589,6 +591,9 @@ def get_config() -> dict[str, Any]:
             value = ",".join(str(v) for v in value)
         result[key] = value
 
+    if "defense-trim-k" not in config_section and config_section.get("defense-trim-ratio") is not None:
+        result["defense-trim-k"] = None
+
     # 遍历 toml 中的所有键，把不在 schema 中的自定义字段也加入
     for key, value in config_section.items():
         if key in result:
@@ -602,6 +607,14 @@ def get_config() -> dict[str, Any]:
         result[key] = value
 
     return result
+
+
+def get_results_dir(section: dict[str, Any] | None = None, *, default: Path | None = None) -> Path:
+    """Resolve all API/training/report paths relative to the config's project."""
+    if section is None:
+        section = _get_config_section(_read_toml())
+    from fl_backdoor.utils.paths import resolve_results_root
+    return resolve_results_root(section.get("results-dir", str(default) if default is not None else "results"), TOML_PATH.parent)
 
 
 def get_ui_config() -> dict[str, Any]:
@@ -685,7 +698,7 @@ def _prepare_storage_updates(updates: dict[str, Any], current: dict[str, Any] | 
 
 def backup_config() -> None:
     with _CONFIG_LOCK:
-        _atomic_write(BACKUP_PATH, TOML_PATH.read_bytes())
+        _atomic_write(_legacy_backup_path(), TOML_PATH.read_bytes())
 
 
 def _backup_before_save(name: str | None) -> None:
@@ -697,9 +710,10 @@ def _backup_before_save(name: str | None) -> None:
 
 def restore_config() -> None:
     with _CONFIG_LOCK:
-        if BACKUP_PATH.exists():
-            replace_config(BACKUP_PATH.read_text(encoding="utf-8"))
-            BACKUP_PATH.unlink()
+        path = _legacy_backup_path()
+        if path.exists():
+            replace_config(path.read_text(encoding="utf-8"))
+            path.unlink()
 
 
 def get_config_schema() -> dict[str, Any]:
@@ -730,13 +744,33 @@ def parse_batch_experiments(json_content: bytes) -> list[dict[str, Any]]:
 # 匹配所有 .toml 文件，但排除主配置文件和 .bak 文件
 BACKUP_PATTERN = re.compile(r"^(.+)\.toml$")
 
+
+def _backup_directory() -> Path:
+    return child_path(PROJECT_ROOT, "config_backups")
+
+
+def _legacy_backup_path() -> Path:
+    path = child_path(TOML_PATH.parent, BACKUP_PATH.name, label="Automatic backup")
+    if path != BACKUP_PATH.resolve() or path == TOML_PATH.resolve():
+        raise ValueError("Invalid automatic backup path.")
+    return path
+
 def list_backups() -> list[dict[str, Any]]:
     """列出所有备份文件及其元信息"""
     backups = []
-    for p in PROJECT_ROOT.glob("*.toml"):
+    seen = set()
+    candidates = list(_backup_directory().glob("*.toml")) + list(PROJECT_ROOT.glob("*.toml"))
+    for p in candidates:
         # 排除主配置文件和旧式备份
-        if p.name == "pyproject.toml" or p.name == "pyproject.toml.bak":
+        if p.name.casefold() in seen:
             continue
+        try:
+            checked = _backup_path(p.name)
+            validate_document(checked.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        p = checked
+        seen.add(p.name.casefold())
         
         match = BACKUP_PATTERN.match(p.name)
         if not match:
@@ -771,18 +805,24 @@ def list_backups() -> list[dict[str, Any]]:
     backups.sort(key=lambda x: x["timestamp"], reverse=True)
     return backups
 
-def _backup_path(filename: str, *, allow_legacy: bool = False) -> Path:
-    if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename:
-        raise ValueError("Backup filename must not contain a directory path.")
+def _backup_path(filename: str, *, allow_legacy: bool = False, for_write: bool = False) -> Path:
+    validate_name(filename, label="Backup filename")
     if filename.casefold() == TOML_PATH.name.casefold() or ":" in filename:
         raise ValueError("The active project configuration cannot be used as a backup.")
     if not BACKUP_PATTERN.fullmatch(filename) and not (allow_legacy and filename == "pyproject.toml.bak"):
         raise ValueError("Backup filename must end in .toml.")
-    path = PROJECT_ROOT / filename
+    if allow_legacy and filename == "pyproject.toml.bak":
+        return _legacy_backup_path()
+    path = child_path(_backup_directory(), filename, label="Backup filename")
+    # Old root-level backups remain accessible without moving or deleting them.
+    if not for_write and not path.exists():
+        path = child_path(PROJECT_ROOT, filename, label="Backup filename")
+        if path.is_file():
+            # Compatibility is for actual old experiment configurations, not
+            # arbitrary root-level TOML files the caller would like to delete.
+            validate_document(path.read_text(encoding="utf-8"))
     if path.resolve() == TOML_PATH.resolve():
         raise ValueError("The active project configuration cannot be used as a backup.")
-    if path.resolve().parent != PROJECT_ROOT.resolve():
-        raise ValueError("Backup must be inside the project directory.")
     return path
 
 
@@ -826,7 +866,8 @@ def _generate_backup_filename(custom_name: str | None = None, auto_suffix: str |
     if custom_name is not None and not isinstance(custom_name, str):
         raise ValueError("Backup name must be text.")
     if custom_name:
-        safe_name = re.sub(r"[^\w\-_\.]", "_", custom_name)
+        validate_name(custom_name, label="Backup name")
+        safe_name = custom_name
         # 确保扩展名为 .toml
         if not safe_name.lower().endswith('.toml'):
             safe_name += '.toml'
@@ -842,6 +883,7 @@ def _generate_backup_filename(custom_name: str | None = None, auto_suffix: str |
         base, ext = os.path.splitext(filename)
         filename = f"{base}_{auto_suffix}{ext}"
 
+    _backup_path(filename, for_write=True)
     return filename
 
 
@@ -853,8 +895,9 @@ def _resolve_backup_path(filename: str, on_conflict: str = 'ask') -> Path | None
     """
     if on_conflict not in {"ask", "auto", "overwrite"}:
         raise ValueError("on_conflict must be ask, auto or overwrite.")
-    path = PROJECT_ROOT / filename
-    if not path.exists():
+    path = _backup_path(filename, for_write=True)
+    legacy = child_path(PROJECT_ROOT, filename, label="Backup filename")
+    if not path.exists() and not legacy.exists():
         return path
 
     if on_conflict == 'overwrite':
@@ -864,8 +907,9 @@ def _resolve_backup_path(filename: str, on_conflict: str = 'ask') -> Path | None
         counter = 1
         while True:
             new_filename = f"{base}({counter}){ext}"
-            new_path = PROJECT_ROOT / new_filename
-            if not new_path.exists():
+            new_path = _backup_path(new_filename, for_write=True)
+            old_path = child_path(PROJECT_ROOT, new_filename, label="Backup filename")
+            if not new_path.exists() and not old_path.exists():
                 return new_path
             counter += 1
     else:  # 'ask'
@@ -879,10 +923,10 @@ def create_backup(custom_name: str | None = None, on_conflict: str = 'ask') -> P
     """
     filename = _generate_backup_filename(custom_name)
     with _CONFIG_LOCK:
-        _backup_path(filename)
         path = _resolve_backup_path(filename, on_conflict)
         if path is None:
             return None
+        path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, TOML_PATH.read_bytes())
         return path
 
@@ -895,9 +939,9 @@ def create_backup_from_content(content: str, custom_name: str | None = None, on_
     validate_document(content)
     filename = _generate_backup_filename(custom_name)
     with _CONFIG_LOCK:
-        _backup_path(filename)
         path = _resolve_backup_path(filename, on_conflict)
         if path is None:
             return None
+        path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, content.lstrip("\ufeff").replace("\r\n", "\n").encode("utf-8"))
         return path

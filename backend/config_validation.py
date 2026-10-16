@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-OPTIONAL_FIELDS = {"dba-sub-pattern-size", "fcba-sub-block-size", "defense-trim-ratio", "frequency-window-size"}
+OPTIONAL_FIELDS = {"dba-sub-pattern-size", "fcba-sub-block-size", "defense-trim-ratio", "defense-trim-k", "frequency-window-size"}
 POSITIVE_INTEGERS = {
     "num-clients", "num-server-rounds", "local-epochs", "batch-size", "trigger-size",
     "frequency-window-size", "wanet-grid-size", "dba-num-sub-patterns", "dba-sub-pattern-size",
@@ -96,7 +96,10 @@ def normalize_values(values: Mapping[str, Any], schema: Mapping[str, dict], *, s
                 value = ",".join(str(item) for item in value)
             elif not isinstance(value, str):
                 raise ValueError(f"{key}: expected text.")
-            value = value.strip()
+            # Paths must be validated exactly as stored, including raw TOML.
+            # Stripping only for validation lets the saved value fail at runtime.
+            if key != "results-dir":
+                value = value.strip()
 
         options = field.get("options")
         legacy_options = {
@@ -127,6 +130,9 @@ def normalize_values(values: Mapping[str, Any], schema: Mapping[str, dict], *, s
             raise ValueError(f"{key}: must be in [0, 100].")
         if key in {"detection-cosine-floor", "detection-min-silhouette"} and not -1 <= value <= 1:
             raise ValueError(f"{key}: must be in [-1, 1].")
+        if key == "run-name":
+            from fl_backdoor.utils.paths import validate_name
+            validate_name(value, label="Experiment name", reserved={"summaries", "batches", "config_backups"})
         if key in {"run-name", "results-dir"} and not value:
             raise ValueError(f"{key}: cannot be empty.")
         result[key] = value
@@ -140,7 +146,7 @@ def validate_constraints(section: Mapping[str, Any], schema: Mapping[str, dict])
 
     # Missing values must have runtime defaults, not UI display defaults.
     cfg = ExperimentConfig.from_run_config(dict(section))
-    num_clients = section.get("num-clients", schema["num-clients"]["default"])
+    num_clients = cfg.num_clients
     meta = get_dataset(cfg.dataset).meta  # Metadata only: never load/download data.
     if cfg.target_label >= meta.num_classes:
         raise ValueError(f"target-label: must be below {meta.num_classes} for {meta.name}.")
@@ -179,8 +185,10 @@ def validate_constraints(section: Mapping[str, Any], schema: Mapping[str, dict])
         capacity = (cfg.trigger_size // size) ** 2
         if (split == "grid" and capacity != count) or (cfg.attack == "fcba" and capacity < count):
             raise ValueError("Sub-pattern count and size do not match trigger-size.")
-    if cfg.defense == "trimmed_mean" and 2 * cfg.defense_trim_k >= num_clients:
-        raise ValueError("defense-trim-k: requires 2 * trim_k < num-clients.")
+    if cfg.defense == "trimmed_mean":
+        trim_k = cfg.defense_trim_k if cfg.defense_trim_k is not None else math.floor(cfg.defense_trim_ratio * num_clients)
+        if 2 * trim_k >= num_clients:
+            raise ValueError("defense-trim-k: requires 2 * trim_k < num-clients.")
     if cfg.defense == "krum":
         n, f, k = num_clients, cfg.defense_num_malicious, cfg.defense_krum_k
         if n <= 2 * f + 2 or not 1 <= k <= n - f - 2:

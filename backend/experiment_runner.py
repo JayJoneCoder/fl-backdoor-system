@@ -17,6 +17,7 @@ import tomli_w
 
 from backend import config_manager
 from backend.owned_processes import OwnedProcessTree
+from fl_backdoor.utils.run_artifacts import reserve_experiment, write_run_metadata
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
@@ -43,8 +44,12 @@ class ExperimentRunner:
         self._run_error: Optional[str] = None
         self._terminal_status = "failed"
         self.run_id: Optional[str] = None
+        self.flower_run_id: Optional[str] = None
+        self._run_metadata: Optional[dict] = None
+        self._experiment_dir: Optional[Path] = None
         self._log_generation = 0
         self._log_runs: dict[str, tuple[int, int]] = {}
+        self._log_directories: dict[str, Path] = {}
         self.total_rounds: Optional[int] = None
 
     def is_running(self) -> bool:
@@ -56,7 +61,11 @@ class ExperimentRunner:
     def set_log_callback(self, callback: Optional[Callable[[str], Awaitable[None]]]) -> None:
         self._on_log_line = callback
 
-    def get_log_context(self, exp_name: str) -> tuple[int, int]:
+    def get_log_context(self, exp_name: str, directory: Path | None = None) -> tuple[int, int]:
+        if directory is not None:
+            owned = self._log_directories.get(exp_name, self._experiment_dir)
+            if owned is not None and owned.resolve() != directory.resolve():
+                return (0, 0)
         return self._log_runs.get(exp_name, (0, 0))
 
     async def start(
@@ -71,6 +80,11 @@ class ExperimentRunner:
             baseline = base_config if base_config is not None else config_manager.TOML_PATH.read_bytes()
             # No status/file/backup mutation until input validation succeeds.
             content = config_manager.build_run_config(baseline, overrides)
+            section = tomli.loads(content.decode("utf-8"))["tool"]["flwr"]["app"]["config"]
+            results_root = config_manager.get_results_dir(section, default=RESULTS_DIR)
+            # Reserve atomically BEFORE touching config/backup/logs. Even empty
+            # or legacy directories belong to the user and are never reused.
+            exp_dir, metadata = reserve_experiment(results_root, exp_name)
             self._status = "starting"
             self.exp_name = exp_name
             self._cancel_requested = False
@@ -81,7 +95,10 @@ class ExperimentRunner:
             self._applied_config = None
             self._owned = None
             self.process = None
-            self.run_id = None
+            self.run_id = metadata["run_id"]
+            self.flower_run_id = None
+            self._run_metadata = metadata
+            self._experiment_dir = exp_dir
             self._monitor_task = None
             self._stdout_task = None
             try:
@@ -93,15 +110,21 @@ class ExperimentRunner:
                         config_manager.update_config(overrides, backup_current=backup_config)
                         self._applied_config = config_manager.TOML_PATH.read_bytes()
                         content = self._applied_config
-                section = tomli.loads(content.decode("utf-8"))["tool"]["flwr"]["app"]["config"]
+                document = tomli.loads(content.decode("utf-8"))
+                section = document["tool"]["flwr"]["app"]["config"]
+                # Use the same absolute artifact root in the isolated Flower app
+                # as in the API; its working directory must not redirect output.
+                section["results-dir"] = str(results_root)
+                content = tomli_w.dumps(document).encode("utf-8")
                 self.total_rounds = int(section.get("num-server-rounds", config_manager.CONFIG_SCHEMA["num-server-rounds"]["default"]))
-                exp_dir = RESULTS_DIR / exp_name
-                exp_dir.mkdir(parents=True, exist_ok=True)
                 self.log_file = exp_dir / "run.log"
                 self._log_generation += 1
                 self._log_runs[exp_name] = (self._log_generation, time.time_ns())
-                self.log_file.write_text("", encoding="utf-8")
-                (exp_dir / "config_snapshot.toml").write_bytes(content)
+                self._log_directories[exp_name] = exp_dir
+                with self.log_file.open("x", encoding="utf-8"):
+                    pass
+                with (exp_dir / "config_snapshot.toml").open("xb") as snapshot:
+                    snapshot.write(content)
                 self._temp_home = Path(tempfile.mkdtemp(prefix="fl-experiment-"))
                 preparing = asyncio.create_task(asyncio.to_thread(self._prepare_runtime, content))
                 try:
@@ -115,17 +138,27 @@ class ExperimentRunner:
                 env = os.environ.copy()
                 env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1",
                            FLWR_TELEMETRY_ENABLED="0", HF_DATASETS_OFFLINE="1",
-                           FLWR_HOME=str(self._temp_home / "flower"), RAY_ADDRESS="local")
+                           FLWR_HOME=str(self._temp_home / "flower"), RAY_ADDRESS="local",
+                           FL_BACKDOOR_RUN_ID=self.run_id,
+                           FL_BACKDOOR_DATA_DIR=str(PROJECT_ROOT / "data"))
+                # Ray deserializes ClientApp handlers by module name in fresh
+                # processes. Prefer this run's snapshot over an editable install
+                # pointing at the live workspace (including its RNG/data code).
+                env["PYTHONPATH"] = str(app_dir) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+                from fl_backdoor.utils.ray_runtime import configure_worker_environment
+                configure_worker_environment(env, app_dir)
+                env["PYTHONHASHSEED"] = str(int(section.get("seed", 42)) % (2**32))
                 # Flower's own executors still use console entry points.
                 env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
                 self.process = self._owned.spawn(
                     PROJECT_ROOT / "backend" / "experiment_worker.py",
                     ["--project", str(app_dir), "--address", address],
-                    cwd=str(PROJECT_ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    cwd=str(app_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", bufsize=1, env=env,
                 )
                 self._stdout_task = asyncio.create_task(self._read_stdout())
                 self._status = "running"
+                self._save_metadata()
                 self._monitor_task = asyncio.create_task(self._monitor())
             except BaseException as exc:
                 self._error = f"Experiment startup failed: {exc}"
@@ -167,7 +200,7 @@ class ExperimentRunner:
                 if "Successfully started run" in line:
                     match = re.search(r"run (\d+)", line)
                     if match:
-                        self.run_id = match.group(1)
+                        self.flower_run_id = match.group(1)
                 if self._on_log_line:
                     try:
                         await self._on_log_line(clean_line)
@@ -209,9 +242,20 @@ class ExperimentRunner:
                 self._temp_home = None
             self._status = self._terminal_status
             self._error = self._run_error
+            self._save_metadata()
         except Exception as exc:
             self._status = "cleanup_failed"
             self._error = f"Cleanup failed: {exc}"
+            try:
+                self._save_metadata()
+            except Exception:
+                pass  # Keep the original cleanup error; retry remains available.
+
+    def _save_metadata(self) -> None:
+        if self._run_metadata is not None and self._experiment_dir is not None:
+            self._run_metadata.update(status=self._status, exit_code=self._exit_code,
+                                      error=self._error, flower_run_id=self.flower_run_id)
+            write_run_metadata(self._experiment_dir, self._run_metadata)
 
     async def wait(self) -> dict:
         if self._monitor_task:
@@ -235,7 +279,8 @@ class ExperimentRunner:
             code = self.process.poll()
             status = "running" if code is None else ("finished" if code == 0 else "failed")
         return {"status": status, "exp_name": self.exp_name, "total_rounds": self.total_rounds,
-                "exit_code": self._exit_code, "error": self._error, "run_id": self.run_id}
+                "exit_code": self._exit_code, "error": self._error, "run_id": self.run_id,
+                "flower_run_id": self.flower_run_id}
 
     def get_log_tail(self, lines: int = 50) -> list[str]:
         if not self.log_file or not self.log_file.exists():

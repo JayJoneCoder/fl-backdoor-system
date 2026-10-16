@@ -1,11 +1,14 @@
 """MNIST dataset using torchvision (fully offline-safe, no HF cache issues)."""
 
+import os
+
 import torch
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 from .base import BaseDataset
 from .config import DatasetMeta
+from .partition import partition_loaders
 
 
 class MNISTDataset(BaseDataset):
@@ -31,10 +34,10 @@ class MNISTDataset(BaseDataset):
             "label": label,
         }
 
-    def load_partition(self, partition_id: int, num_partitions: int, batch_size: int):
+    def load_partition(self, partition_id: int, num_partitions: int, batch_size: int, *, seed=42, shuffle_seed=None, download=True):
         # 下载/加载 MNIST 训练集
         full_train = datasets.MNIST(
-            root="./data", train=True, download=True, transform=None
+            root=os.environ.get("FL_BACKDOOR_DATA_DIR", "./data"), train=True, download=download, transform=None
         )
 
         # 包装以应用 transforms
@@ -52,36 +55,12 @@ class MNISTDataset(BaseDataset):
 
         wrapped = WrappedDataset(full_train, self._apply_transforms)
 
-        # 手动按 IID 划分给每个客户端
-        total = len(wrapped)
-        indices = list(range(total))
-        torch.manual_seed(42)
-        indices = torch.randperm(total).tolist()
+        return partition_loaders(wrapped, partition_id, num_partitions, batch_size,
+                                 seed=seed, shuffle_seed=shuffle_seed)
 
-        # 每个客户端应得样本数
-        per_client = total // num_partitions
-        start = partition_id * per_client
-        end = start + per_client if partition_id < num_partitions - 1 else total
-        client_indices = indices[start:end]
-
-        client_subset = Subset(wrapped, client_indices)
-
-        # 划分本地训练/验证集 (80/20)
-        n_local = len(client_subset)
-        n_val = int(0.2 * n_local)
-        n_train = n_local - n_val
-        train_subset, val_subset = random_split(
-            client_subset, [n_train, n_val],
-            generator=torch.Generator().manual_seed(42)
-        )
-
-        trainloader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-        testloader = DataLoader(val_subset, batch_size=batch_size)
-        return trainloader, testloader
-
-    def load_centralized_test(self, batch_size: int = 128):
+    def load_centralized_test(self, batch_size: int = 128, *, download=True):
         full_test = datasets.MNIST(
-            root="./data", train=False, download=True, transform=None
+            root=os.environ.get("FL_BACKDOOR_DATA_DIR", "./data"), train=False, download=download, transform=None
         )
 
         class WrappedDataset(torch.utils.data.Dataset):

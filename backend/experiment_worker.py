@@ -3,6 +3,13 @@
 import sys
 
 
+def simulation_overrides(config: dict) -> str:
+    clients = config["tool"]["flwr"]["app"]["config"].get("num-clients", 10)
+    if isinstance(clients, bool) or not isinstance(clients, int) or clients < 1:
+        raise ValueError("实际客户端数必须是正整数。")
+    return f"num-supernodes={clients}"
+
+
 def verified_exit_code(cli_exit: int, runs) -> int:
     """A log-stream exit of zero is not proof that training completed."""
     if cli_exit:
@@ -44,7 +51,7 @@ def main() -> int:
             sys.executable, "-u", "-c", boot, "--insecure", "--simulation",
             "--isolation", "subprocess", "--control-api-address", args.address,
             "--serverappio-api-address", "127.0.0.1:0",
-        ], stdout=logs, stderr=subprocess.STDOUT, env=os.environ.copy())
+        ], stdout=logs, stderr=subprocess.STDOUT, env=os.environ.copy(), cwd=args.project)
         print(f"[Runner] Starting isolated SuperLink on {args.address}...", flush=True)
         with grpc.insecure_channel(args.address) as channel:
             stub = ControlStub(channel)
@@ -63,9 +70,10 @@ def main() -> int:
                     time.sleep(0.1)
             cli = next(entry for entry in distribution("flwr").entry_points if entry.name == "flwr").load()
             config = tomli.loads((Path(args.project) / "pyproject.toml").read_text(encoding="utf-8"))
-            clients = config["tool"]["flwr"]["app"]["config"].get("num-clients", 10)
+            overrides = simulation_overrides(config)
+            print(f"[Config] Flower 仿真配置：{overrides}", flush=True)
             sys.argv = ["flwr", "run", args.project, "project-runtime", "--stream",
-                        "--federation-config", f"num-supernodes={clients}"]
+                        "--federation-config", overrides]
             cli_exit = 0
             try:
                 cli()
