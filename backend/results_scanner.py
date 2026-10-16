@@ -1,316 +1,241 @@
-"""
-Results scanner for reading experiment outputs.
-Reuses logic from scripts/summarize_results.py but returns JSON-friendly dicts.
-"""
+"""Read result artifacts independently so one damaged file cannot hide a run."""
 
+import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-import math
+import tomli
 
 from fl_backdoor.utils.metrics import auc as _auc, roc_curve as _roc_curve
 from fl_backdoor.utils.paths import child_path, direct_files, experiment_path
 from fl_backdoor.utils.run_artifacts import read_run_metadata
 
-# ----------------------------------------------------------------------
-# CSV readers; ROC/AUC is shared with the command-line reports and plots.
-# ----------------------------------------------------------------------
-def compute_auc_from_clients_csv(exp_dir: Path) -> Optional[float]:
-    clients_csv = None
-    for f in direct_files(exp_dir, "*_clients.csv"):
-        clients_csv = f
-        break
-    if clients_csv is None:
+CURVE_COLUMNS = ("round", "accuracy", "asr", "loss")
+READ_ERRORS = (OSError, ValueError, UnicodeError, pd.errors.ParserError)
+
+
+def _number(value):
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError, OverflowError):
         return None
-    df = pd.read_csv(clients_csv)
-    if "score" not in df.columns or "is_malicious" not in df.columns:
+
+
+def _read_csv(path: Path, warnings: list[str]) -> Optional[pd.DataFrame]:
+    try:
+        return pd.read_csv(path)
+    except READ_ERRORS:
+        warnings.append(f"{path.name} 无法读取或格式损坏，已跳过该文件。")
         return None
-    df_valid = df[df["is_malicious"].isin([0, 1])].copy()
-    df_valid["score"] = pd.to_numeric(df_valid["score"], errors="coerce")
-    df_valid = df_valid[np.isfinite(df_valid["score"])]
-    if df_valid.empty:
-        return None
-    y_true = df_valid["is_malicious"].astype(int).values
-    y_score = df_valid["score"].values
-    fpr, tpr, _ = _roc_curve(y_true, y_score)
-    value = _auc(fpr, tpr)
-    return float(value) if np.isfinite(value) else None
 
 
 def find_main_csv(exp_dir: Path) -> Optional[Path]:
-    for f in direct_files(exp_dir, "*.csv"):
-        if "_metrics" not in f.name and "_clients" not in f.name:
-            return f
+    files = direct_files(exp_dir, "*.csv")
+    expected = exp_dir / f"{exp_dir.name}.csv"
+    if expected in files:
+        return expected
+    return next((f for f in sorted(files) if not f.stem.endswith(("_metrics", "_clients"))), None)
+
+
+def _curves(frame: pd.DataFrame, warnings: list[str]) -> dict:
+    missing = [key for key in CURVE_COLUMNS if key not in frame.columns]
+    if missing:
+        warnings.append(f"主指标 CSV 缺少列：{', '.join(missing)}；缺失指标显示为未记录。")
+    numeric = frame.reindex(columns=CURVE_COLUMNS).apply(pd.to_numeric, errors="coerce")
+    numeric = numeric.replace([np.inf, -np.inf], np.nan)
+    rounds = numeric["round"]
+    numeric = numeric[rounds.notna() & (rounds >= 0) & (rounds % 1 == 0)]
+    if len(numeric) != len(frame):
+        warnings.append("主指标 CSV 中轮次无效的记录已跳过。")
+    if any(frame[key].notna().sum() > pd.to_numeric(frame[key], errors="coerce").replace(
+        [np.inf, -np.inf], np.nan).notna().sum() for key in CURVE_COLUMNS if key in frame):
+        warnings.append("主指标 CSV 含无效数值，已显示为未记录。")
+    numeric = numeric.drop_duplicates("round", keep="last").sort_values("round")
+    return {key: [int(value) if key == "round" else _number(value) for value in numeric[key]]
+            for key in CURVE_COLUMNS}
+
+
+def can_plot_experiment(detail: dict) -> bool:
+    """The plot script requires at least one complete main-metric row."""
+    curves = detail.get("metrics", {}).get("curve_data", {})
+    return any(all(value is not None for value in row)
+               for row in zip(*(curves.get(key, []) for key in CURVE_COLUMNS)))
+
+
+def compute_auc_from_clients_csv(exp_dir: Path) -> Optional[float]:
+    for path in direct_files(exp_dir, "*_clients.csv"):
+        frame = _read_csv(path, [])
+        if frame is None or not {"score", "is_malicious"}.issubset(frame.columns):
+            continue
+        labels = pd.to_numeric(frame["is_malicious"], errors="coerce")
+        scores = pd.to_numeric(frame["score"], errors="coerce")
+        valid = labels.isin([0, 1]) & np.isfinite(scores)
+        fpr, tpr, _ = _roc_curve(labels[valid].to_numpy(), scores[valid].to_numpy())
+        return _number(_auc(fpr, tpr))
     return None
 
 
 def extract_experiment_metrics(exp_dir: Path) -> Optional[dict[str, Any]]:
-    """Extract all relevant metrics from an experiment directory."""
+    """Keep valid main metrics even when optional client/detection files are broken."""
     main_csv = find_main_csv(exp_dir)
     if main_csv is None:
         return None
-
-    df_main = pd.read_csv(main_csv)
-    if df_main.empty:
-        return None
-    last_row = df_main.iloc[-1]
-    acc = last_row.get("accuracy", None)
-    asr = last_row.get("asr", None)
-    loss = last_row.get("loss", None)
-    last_round = int(last_row.get("round", -1))
-
-    metrics_csv = child_path(exp_dir, f"{main_csv.stem}_metrics.csv")
-    metrics = {}
+    warnings: list[str] = []
+    frame = _read_csv(main_csv, warnings)
+    if frame is not None and frame.empty:
+        warnings.append("主指标 CSV 尚无数据，可查看运行状态和日志。")
+    curves = {key: [] for key in CURVE_COLUMNS} if frame is None else _curves(frame, warnings)
+    metrics = {key: values[-1] if values else None for key, values in curves.items() if key != "round"}
+    last_round = curves["round"][-1] if curves["round"] else None
+    metrics.update(last_round=last_round, curve_data=curves, warnings=warnings)
     has_aggregation = False
+    path = child_path(exp_dir, f"{main_csv.stem}_metrics.csv")
+    if path.is_file():
+        extra = _read_csv(path, warnings)
+        required = {"round", "component", "key", "value"}
+        if extra is not None and not required.issubset(extra.columns):
+            warnings.append(f"{path.name} 缺少必要列，检测与聚合统计未读取。")
+        elif extra is not None:
+            detection = extra[(pd.to_numeric(extra["round"], errors="coerce") == last_round)
+                              & (extra["component"] == "detection")]
+            for _, row in detection.iterrows():
+                if row["key"] in {"detect_precision", "detect_recall", "detect_fpr", "detect_tp", "detect_fp", "detect_fn", "detect_tn"}:
+                    metrics[row["key"].removeprefix("detect_")] = _number(row["value"])
+            aggregation = extra[extra["component"] == "aggregation"]
+            has_aggregation = not aggregation.empty
+            for key in ("malicious_removal_rate", "benign_removal_rate", "kept_malicious", "removed_malicious",
+                        "removed_benign", "kept_benign", "total_malicious", "total_benign", "selected_clients"):
+                if has_aggregation:
+                    values = pd.to_numeric(aggregation.loc[aggregation["key"] == f"agg_{key}", "value"], errors="coerce")
+                    metrics[f"avg_{key}"] = _number(values.replace([np.inf, -np.inf], np.nan).mean())
 
-    if metrics_csv.exists():
-        df_metrics = pd.read_csv(metrics_csv)
+    for path in direct_files(exp_dir, "*_clients.csv"):
+        clients = _read_csv(path, warnings)
+        if clients is None:
+            continue
+        if not {"round", "is_malicious"}.issubset(clients.columns):
+            warnings.append(f"{path.name} 缺少必要列，客户端统计未读取。")
+            continue
+        labels = pd.to_numeric(clients["is_malicious"], errors="coerce")
+        rounds = pd.to_numeric(clients["round"], errors="coerce")
+        valid = labels.isin([0, 1]) & np.isfinite(rounds)
+        counts = pd.DataFrame({"round": rounds[valid], "is_malicious": labels[valid]})
+        if not has_aggregation and not counts.empty:
+            malicious = counts.groupby("round")["is_malicious"].sum().mean()
+            benign = counts.groupby("round").size().mean() - malicious
+            metrics.update(avg_total_malicious=float(malicious), avg_total_benign=float(benign),
+                           avg_kept_malicious=float(malicious), avg_kept_benign=float(benign),
+                           avg_malicious_removal_rate=0.0, avg_benign_removal_rate=0.0,
+                           avg_removed_malicious=0.0, avg_removed_benign=0.0, avg_selected_clients=0.0)
+        if "score" in clients:
+            scores = pd.to_numeric(clients["score"], errors="coerce")
+            valid = labels.isin([0, 1]) & np.isfinite(scores)
+            fpr, tpr, _ = _roc_curve(labels[valid].to_numpy(), scores[valid].to_numpy())
+            metrics["auc"] = _number(_auc(fpr, tpr))
+        break
+    return _clean_for_json(metrics)
 
-        # Detection metrics (last round)
-        detection_rows = df_metrics[
-            (df_metrics["round"] == last_round) & (df_metrics["component"] == "detection")
-        ]
-        for _, row in detection_rows.iterrows():
-            key = row["key"]
-            val = row["value"]
-            if key in ["detect_precision", "detect_recall", "detect_fpr"]:
-                metrics[key.replace("detect_", "")] = float(val) if pd.notna(val) else None
-            elif key in ["detect_tp", "detect_fp", "detect_fn", "detect_tn"]:
-                metrics[key.replace("detect_", "")] = float(val) if pd.notna(val) else None
 
-        # Aggregation averages
-        agg_rows = df_metrics[df_metrics["component"] == "aggregation"]
-        if not agg_rows.empty:
-            has_aggregation = True
-            key_mapping = {
-                "agg_malicious_removal_rate": "avg_malicious_removal_rate",
-                "agg_benign_removal_rate": "avg_benign_removal_rate",
-                "agg_kept_malicious": "avg_kept_malicious",
-                "agg_removed_malicious": "avg_removed_malicious",
-                "agg_removed_benign": "avg_removed_benign",
-                "agg_kept_benign": "avg_kept_benign",
-                "agg_total_malicious": "avg_total_malicious",
-                "agg_total_benign": "avg_total_benign",
-                "agg_selected_clients": "avg_selected_clients",
-            }
-            for key, new_key in key_mapping.items():
-                values = agg_rows[agg_rows["key"] == key]["value"]
-                if not values.empty:
-                    numeric = pd.to_numeric(values, errors="coerce").dropna()
-                    metrics[new_key] = numeric.mean() if not numeric.empty else 0.0
-                else:
-                    metrics[new_key] = 0.0
-
-    # If no aggregation metrics, compute from clients CSV
-    if not has_aggregation:
-        clients_csv = None
-        for f in exp_dir.glob("*_clients.csv"):
-            clients_csv = f
-            break
-        if clients_csv is not None:
-            df_clients = pd.read_csv(clients_csv)
-            if "is_malicious" in df_clients.columns and "round" in df_clients.columns:
-                df_valid = df_clients[df_clients["is_malicious"] >= 0].copy()
-                if not df_valid.empty:
-                    avg_malicious = df_valid.groupby("round")["is_malicious"].sum().mean()
-                    avg_total = df_valid.groupby("round").size().mean()
-                    avg_benign = avg_total - avg_malicious
-                    metrics["avg_total_malicious"] = avg_malicious
-                    metrics["avg_total_benign"] = avg_benign
-                    metrics["avg_kept_malicious"] = avg_malicious
-                    metrics["avg_kept_benign"] = avg_benign
-                    metrics["avg_malicious_removal_rate"] = 0.0
-                    metrics["avg_benign_removal_rate"] = 0.0
-                    metrics["avg_removed_malicious"] = 0.0
-                    metrics["avg_removed_benign"] = 0.0
-                    metrics["avg_selected_clients"] = 0.0
-
-    auc = compute_auc_from_clients_csv(exp_dir)
-    if auc is not None:
-        metrics["auc"] = auc
-
-    # Main curve data (for frontend plotting)
-    curve_data = df_main[["round", "accuracy", "asr", "loss"]].to_dict(orient="list")
-
-    # 提取数据集名称
-    dataset = None
+def _dataset(exp_dir: Path) -> str:
     try:
-        snapshot_path = child_path(exp_dir, "config_snapshot.toml")
-        if snapshot_path.exists():
-            import tomli
-            with open(snapshot_path, "rb") as f:
-                config = tomli.load(f)
-            tool_config = config.get("tool", {}).get("flwr", {}).get("app", {}).get("config", {})
-            dataset = tool_config.get("dataset")
-    except (ValueError, OSError):
+        snapshot = child_path(exp_dir, "config_snapshot.toml")
+        if snapshot.is_file():
+            config = tomli.loads(snapshot.read_text(encoding="utf-8"))
+            value = config.get("tool", {}).get("flwr", {}).get("app", {}).get("config", {}).get("dataset")
+            if isinstance(value, str):
+                return value
+    except (OSError, ValueError, UnicodeError, AttributeError):
         pass
-
-    return {
-        "accuracy": acc,
-        "asr": asr,
-        "loss": loss,
-        "last_round": last_round,
-        "curve_data": curve_data,
-        "dataset": dataset or "",
-        **metrics,
-    }
-
-
-def list_experiments(results_dir: Path) -> list[dict[str, Any]]:
-    """Return summary list of all experiments."""
-    import os
-    from datetime import datetime
-
-    experiments = []
-    if not results_dir.exists():
-        return experiments
-    for exp_dir in results_dir.iterdir():
-        if not exp_dir.is_dir():
-            continue
-        try:
-            exp_dir = experiment_path(results_dir, exp_dir.name)
-        except ValueError:
-            continue
-        metrics = extract_experiment_metrics(exp_dir)
-        if metrics is None:
-            continue
-
-        # 获取目录创建时间
-        created_timestamp = os.path.getctime(exp_dir)
-        created = datetime.fromtimestamp(created_timestamp).isoformat()
-
-        # 尝试获取数据集名称
-        dataset = None
-        try:
-            snapshot_path = child_path(exp_dir, "config_snapshot.toml")
-            if snapshot_path.exists():
-                import tomli
-                with open(snapshot_path, "rb") as f:
-                    config = tomli.load(f)
-                tool_config = config.get("tool", {}).get("flwr", {}).get("app", {}).get("config", {})
-                dataset = tool_config.get("dataset")
-        except (ValueError, OSError):
-            pass
-
-        # 如果快照没有，尝试从主 CSV 文件名或实验名推测
-        if dataset is None:
-            main_csv = find_main_csv(exp_dir)
-            if main_csv:
-                name_lower = main_csv.stem.lower()
-                if "mnist" in name_lower:
-                    dataset = "mnist"
-                elif "cifar10" in name_lower or "cifar" in name_lower:
-                    dataset = "cifar10"
-                elif "cifar100" in name_lower:
-                    dataset = "cifar100"
-        if dataset is None:
-            exp_name_lower = exp_dir.name.lower()
-            if "mnist" in exp_name_lower:
-                dataset = "mnist"
-            elif "cifar10" in exp_name_lower or "cifar" in exp_name_lower:
-                dataset = "cifar10"
-            elif "cifar100" in exp_name_lower:
-                dataset = "cifar100"
-
-        try:
-            metadata = read_run_metadata(exp_dir)
-        except (ValueError, OSError):
-            metadata = {}  # A broken manifest must not hide other experiments.
-        experiments.append({
-            "name": exp_dir.name,
-            "run_id": metadata.get("run_id"),
-            "accuracy": metrics.get("accuracy"),
-            "asr": metrics.get("asr"),
-            "loss": metrics.get("loss"),
-            "last_round": metrics.get("last_round"),
-            "precision": metrics.get("precision"),
-            "recall": metrics.get("recall"),
-            "fpr": metrics.get("fpr"),
-            "auc": metrics.get("auc"),
-            "created": created,
-            "dataset": dataset or "",
-        })
-    # 按创建时间倒序排列（最新的在前）
-    experiments.sort(key=lambda x: x["created"] or "", reverse=True)
-    return experiments
+    name = exp_dir.name.lower()
+    return next((dataset for dataset in ("cifar100", "cifar10", "mnist") if dataset in name), "")
 
 
 def get_experiment_detail(exp_dir: Path) -> Optional[dict[str, Any]]:
-    """Return detailed metrics plus file list for a specific experiment."""
-    metrics = extract_experiment_metrics(exp_dir)
-    if metrics is None:
+    if not exp_dir.is_dir():
         return None
-
-    # Gather available image files
-    images = [f.name for f in direct_files(exp_dir, "*.png")]
-    csv_files = [f.name for f in direct_files(exp_dir, "*.csv")]
-
-    return {
-        "name": exp_dir.name,
-        "run_id": read_run_metadata(exp_dir).get("run_id"),
+    warnings: list[str] = []
+    try:
+        metadata = read_run_metadata(exp_dir)
+    except (OSError, ValueError, UnicodeError):
+        metadata = {}
+        warnings.append("运行记录无法读取，部分状态信息未记录。")
+    try:
+        metrics = extract_experiment_metrics(exp_dir)
+    except (*READ_ERRORS, KeyError, TypeError, AttributeError):
+        metrics = None
+        warnings.append("指标文件无法完整解析，运行记录与其他文件仍可查看。")
+    if metrics is None and not metadata and not child_path(exp_dir, "run.log").is_file():
+        return None
+    if metrics is None:
+        metrics = {"accuracy": None, "asr": None, "loss": None, "last_round": None,
+                   "curve_data": {key: [] for key in CURVE_COLUMNS}}
+        warnings.append("尚无指标 CSV，可查看运行状态和日志。")
+    warnings.extend(metrics.pop("warnings", []))
+    metrics["dataset"] = _dataset(exp_dir)
+    has_metrics = any(metrics.get(key) is not None for key in ("accuracy", "asr", "loss"))
+    detail = {
+        "name": exp_dir.name, "run_id": metadata.get("run_id"),
+        "status": metadata.get("status", "unknown"), "error": metadata.get("error"),
+        "exit_code": metadata.get("exit_code"),
+        "created": metadata.get("created_at") or datetime.fromtimestamp(exp_dir.stat().st_ctime).isoformat(),
+        "has_metrics": has_metrics, "warnings": warnings,
         "model_file": "final_model.pt" if child_path(exp_dir, "final_model.pt").is_file() else None,
-        "metrics": metrics,
-        "images": images,
-        "csv_files": csv_files,
+        "metrics": metrics, "images": [f.name for f in direct_files(exp_dir, "*.png")],
+        "csv_files": [f.name for f in direct_files(exp_dir, "*.csv")],
     }
+    detail["can_plot"] = can_plot_experiment(detail)
+    return detail
+
+
+def list_experiments(results_dir: Path) -> list[dict[str, Any]]:
+    experiments = []
+    if not results_dir.exists():
+        return experiments
+    for directory in results_dir.iterdir():
+        try:
+            detail = get_experiment_detail(experiment_path(results_dir, directory.name))
+            if detail is None:
+                continue
+            experiments.append({**{key: detail[key] for key in (
+                "name", "run_id", "status", "error", "exit_code", "created", "has_metrics", "can_plot", "warnings")},
+                **{key: detail["metrics"].get(key) for key in (
+                    "accuracy", "asr", "loss", "last_round", "precision", "recall", "fpr", "auc", "dataset")}})
+        except (*READ_ERRORS, KeyError, TypeError, AttributeError):
+            # A disappearing/unreadable directory must not hide other runs.
+            continue
+    experiments.sort(key=lambda item: str(item["created"] or ""), reverse=True)
+    return experiments
+
 
 def _clean_for_json(obj):
-    """递归地将对象中的 NaN、Infinity 转换为 None，确保 JSON 兼容。"""
     if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return None
-        return obj
-    elif isinstance(obj, dict):
-        return {k: _clean_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [_clean_for_json(item) for item in obj]
-    else:
-        return obj
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {key: _clean_for_json(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_for_json(value) for value in obj]
+    return obj
+
 
 def get_summary_detail(summary_dir: Path) -> Optional[dict[str, Any]]:
-    """Return detailed data for a summary: summary table, and curve data for all experiments."""
     summary_csv = child_path(summary_dir, "summary.csv")
-    if not summary_csv.exists():
+    if not summary_csv.is_file():
         return None
-
-    df_summary = pd.read_csv(summary_csv)
-    if df_summary.empty:
+    frame = _read_csv(summary_csv, [])
+    if frame is None or frame.empty or "experiment" not in frame:
         return None
-
-    # 将 DataFrame 中的 NaN 替换为 None，以便 JSON 序列化
-    df_summary = df_summary.replace({np.nan: None})
-
-    # 收集每个实验的曲线数据
-    experiments_curve_data = {}
-    for exp_name in df_summary["experiment"]:
-        # Summary lives at results/summaries/name, not results/name.
+    curves = {}
+    for name in frame["experiment"]:
         try:
-            exp_dir = experiment_path(summary_dir.parent.parent, exp_name)
-        except ValueError:
+            metrics = extract_experiment_metrics(experiment_path(summary_dir.parent.parent, name))
+            if metrics and metrics["curve_data"]["round"]:
+                curves[name] = metrics["curve_data"]
+        except (*READ_ERRORS, TypeError):
             continue
-        if exp_dir.exists():
-            main_csv = find_main_csv(exp_dir)
-            if main_csv:
-                df_main = pd.read_csv(main_csv)
-                if not df_main.empty and "round" in df_main.columns:
-                    # 提取曲线数据，并替换 NaN
-                    curve_data = df_main[["round", "accuracy", "asr", "loss"]].replace({np.nan: None}).to_dict(orient="list")
-                    experiments_curve_data[exp_name] = curve_data
-
-    # 汇总表格数据
-    summary_rows = df_summary.to_dict(orient="records")
-
-    # 图片列表
-    images = [f.name for f in direct_files(summary_dir, "*.png")]
-
-    result = {
-        "name": summary_dir.name,
-        "summary_table": summary_rows,
-        "experiments_curve_data": experiments_curve_data,
-        "images": images,
-    }
-
-    # 最终再清理一次，确保万无一失
-    return _clean_for_json(result)
+    return _clean_for_json({"name": summary_dir.name, "summary_table": frame.to_dict(orient="records"),
+                            "experiments_curve_data": curves,
+                            "images": [f.name for f in direct_files(summary_dir, "*.png")]})

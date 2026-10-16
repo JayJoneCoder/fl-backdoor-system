@@ -35,6 +35,14 @@ export const listExperiments = () => apiClient.get('/api/experiments');
 export const getExperimentDetail = (name: string) =>
   apiClient.get(`/api/experiments/${name}`);
 
+export const deleteExperiment = (name: string, runId?: string | null) =>
+  apiClient.delete(`/api/experiments/${encodeURIComponent(name)}`, {
+    params: runId ? { run_id: runId } : undefined,
+  });
+
+export const downloadExperimentFile = (name: string, filename: string) =>
+  apiClient.get(`/results/${encodeURIComponent(name)}/${encodeURIComponent(filename)}`, { responseType: 'blob' });
+
 // 解析批量实验 JSON
 export const parseBatchConfig = (file: File) => {
   const formData = new FormData();

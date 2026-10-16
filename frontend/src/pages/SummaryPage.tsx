@@ -39,6 +39,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsToolti
 
 interface ExperimentItem {
   name: string;
+  has_metrics?: boolean;
 }
 
 interface SummaryItem {
@@ -65,7 +66,7 @@ const SummaryPage: React.FC = () => {
     setLoading(true);
     try {
       const [expRes, sumRes] = await Promise.all([listExperiments(), listSummaries()]);
-      setExperiments(expRes.data);
+      setExperiments(expRes.data.filter((item: ExperimentItem) => item.has_metrics !== false));
       setSummaries(sumRes.data);
     } catch (error) {
       message.error(getUserErrorMessage(error, '加载数据失败，请稍后重试。'));
@@ -89,7 +90,7 @@ const SummaryPage: React.FC = () => {
         experiments: selectedExps,
         output_name: summaryName || undefined,
       });
-      message.success('总结任务已提交');
+      message.success('总结生成成功');
       setModalVisible(false);
       setSelectedExps([]);
       setSummaryName('');
@@ -126,9 +127,9 @@ const SummaryPage: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  const handleDownloadZip = async (summaryName: string) => {
+  const handleDownloadZip = async (summaryName: string, response?: { data: Blob }) => {
     try {
-      const res = await downloadSummaryZip(summaryName);
+      const res = response ?? await downloadSummaryZip(summaryName);
       const blob = new Blob([res.data], { type: 'application/zip' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -146,8 +147,8 @@ const SummaryPage: React.FC = () => {
 
   const handleDownloadImages = async (summary: SummaryItem) => {
     try {
-      await downloadSummaryZip(summary.name);
-      await handleDownloadZip(summary.name);
+      const res = await downloadSummaryZip(summary.name);
+      await handleDownloadZip(summary.name, res);
     } catch (error: any) {
       if (error.response?.status === 404) {
         Modal.confirm({

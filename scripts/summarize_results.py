@@ -9,192 +9,24 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
-import numpy as np
 
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from fl_backdoor.utils.metrics import auc as _auc, roc_curve as _roc_curve
 from fl_backdoor.utils.paths import experiment_path, summary_path
+from backend.results_scanner import extract_experiment_metrics as read_result_metrics
 RESULTS_DIR = PROJECT_ROOT / "results"
 SUMMARIES_DIR = RESULTS_DIR / "summaries"
 
 
-# ---------- CSV readers ----------
-def compute_auc_from_clients_csv(exp_dir: Path):
-    clients_csv = None
-    for f in exp_dir.glob("*_clients.csv"):
-        clients_csv = f
-        break
-    if clients_csv is None:
-        return None
-    df = pd.read_csv(clients_csv)
-    if "score" not in df.columns or "is_malicious" not in df.columns:
-        return None
-    df_valid = df[df["is_malicious"].isin([0, 1])].copy()
-    df_valid["score"] = pd.to_numeric(df_valid["score"], errors="coerce")
-    df_valid = df_valid[np.isfinite(df_valid["score"])]
-    if df_valid.empty:
-        return None
-    y_true = df_valid["is_malicious"].astype(int).values
-    y_score = df_valid["score"].values
-    fpr, tpr, _ = _roc_curve(y_true, y_score)
-    value = _auc(fpr, tpr)
-    return float(value) if np.isfinite(value) else None
-
-
-def find_main_csv(exp_dir: Path):
-    for f in exp_dir.glob("*.csv"):
-        if "_metrics" not in f.name and "_clients" not in f.name:
-            return f
-    return None
-
-
-def get_average_client_counts(exp_dir: Path) -> dict:
-    clients_csv = None
-    for f in exp_dir.glob("*_clients.csv"):
-        clients_csv = f
-        break
-    if clients_csv is None:
-        return {"avg_total_malicious": 0.0, "avg_total_benign": 0.0,
-                "avg_kept_malicious": 0.0, "avg_kept_benign": 0.0}
-    df = pd.read_csv(clients_csv)
-    if "is_malicious" not in df.columns or "round" not in df.columns:
-        return {"avg_total_malicious": 0.0, "avg_total_benign": 0.0,
-                "avg_kept_malicious": 0.0, "avg_kept_benign": 0.0}
-    df_valid = df[df["is_malicious"] >= 0].copy()
-    if df_valid.empty:
-        return {"avg_total_malicious": 0.0, "avg_total_benign": 0.0,
-                "avg_kept_malicious": 0.0, "avg_kept_benign": 0.0}
-    grouped = df_valid.groupby("round")
-    avg_malicious = grouped["is_malicious"].sum().mean()
-    avg_total = grouped.size().mean()
-    avg_benign = avg_total - avg_malicious
-    return {
-        "avg_total_malicious": avg_malicious,
-        "avg_total_benign": avg_benign,
-        "avg_kept_malicious": avg_malicious,
-        "avg_kept_benign": avg_benign,
-    }
-
-
-def extract_aggregation_averages(metrics_csv: Path) -> dict:
-    key_mapping = {
-        "defense-agg-malicious-removal-rate": "avg_malicious_removal_rate",
-        "defense-agg-benign-removal-rate": "avg_benign_removal_rate",
-        "defense-agg-kept-malicious": "avg_kept_malicious",
-        "defense-agg-removed-malicious": "avg_removed_malicious",
-        "defense-agg-removed-benign": "avg_removed_benign",
-        "defense-agg-kept-benign": "avg_kept_benign",
-        "defense-agg-total-malicious": "avg_total_malicious",
-        "defense-agg-total-benign": "avg_total_benign",
-        "defense-agg-selected-clients": "avg_selected_clients",
-    }
-    if not metrics_csv.exists():
-        return {}
-    df = pd.read_csv(metrics_csv)
-    agg_rows = df[df["component"] == "aggregation"]
-    if agg_rows.empty:
-        return {}
-    averages = {}
-    for key, new_key in key_mapping.items():
-        values = agg_rows[agg_rows["key"] == key]["value"]
-        if not values.empty:
-            numeric = pd.to_numeric(values, errors='coerce').dropna()
-            averages[new_key] = numeric.mean() if not numeric.empty else 0.0
-        else:
-            averages[new_key] = 0.0
-    return averages
-
-
+# ---------- Shared tolerant CSV reader ----------
 def extract_experiment_metrics(exp_dir: Path):
-    """Extract all relevant metrics from an experiment directory."""
-    main_csv = find_main_csv(exp_dir)
-    if main_csv is None:
+    """Compatibility wrapper using the same tolerant reader as the web history."""
+    result = read_result_metrics(exp_dir)
+    if result is None:
         return None
-
-    df_main = pd.read_csv(main_csv)
-    if df_main.empty:
-        return None
-    last_row = df_main.iloc[-1]
-    acc = last_row.get("accuracy", None)
-    asr = last_row.get("asr", None)
-    loss = last_row.get("loss", None)
-
-    metrics_csv = exp_dir / f"{main_csv.stem}_metrics.csv"
-    metrics = {}
-    has_aggregation = False
-
-    if metrics_csv.exists():
-        df_metrics = pd.read_csv(metrics_csv)
-        last_round = int(last_row.get("round", -1))
-
-        # Detection metrics (last round)
-        detection_rows = df_metrics[
-            (df_metrics["round"] == last_round) & (df_metrics["component"] == "detection")
-        ]
-        for _, row in detection_rows.iterrows():
-            key = row["key"]
-            val = row["value"]
-            if key in ["detect_precision", "detect_recall", "detect_fpr"]:
-                metrics[key.replace("detect_", "")] = float(val) if pd.notna(val) else None
-            elif key in ["detect_tp", "detect_fp", "detect_fn", "detect_tn"]:
-                metrics[key.replace("detect_", "")] = float(val) if pd.notna(val) else None
-
-        # Check if there are any aggregation records
-        agg_rows = df_metrics[df_metrics["component"] == "aggregation"]
-        if not agg_rows.empty:
-            has_aggregation = True
-            key_mapping = {
-                "agg_malicious_removal_rate": "avg_malicious_removal_rate",
-                "agg_benign_removal_rate": "avg_benign_removal_rate",
-                "agg_kept_malicious": "avg_kept_malicious",
-                "agg_removed_malicious": "avg_removed_malicious",
-                "agg_removed_benign": "avg_removed_benign",
-                "agg_kept_benign": "avg_kept_benign",
-                "agg_total_malicious": "avg_total_malicious",
-                "agg_total_benign": "avg_total_benign",
-                "agg_selected_clients": "avg_selected_clients",
-            }
-            for key, new_key in key_mapping.items():
-                values = agg_rows[agg_rows["key"] == key]["value"]
-                if not values.empty:
-                    numeric = pd.to_numeric(values, errors='coerce').dropna()
-                    metrics[new_key] = numeric.mean() if not numeric.empty else 0.0
-                else:
-                    metrics[new_key] = 0.0
-
-    # If no aggregation metrics found (baseline), compute from clients CSV
-    if not has_aggregation:
-        clients_csv = None
-        for f in exp_dir.glob("*_clients.csv"):
-            clients_csv = f
-            break
-        if clients_csv is not None:
-            df_clients = pd.read_csv(clients_csv)
-            if "is_malicious" in df_clients.columns and "round" in df_clients.columns:
-                df_valid = df_clients[df_clients["is_malicious"] >= 0].copy()
-                if not df_valid.empty:
-                    avg_malicious = df_valid.groupby("round")["is_malicious"].sum().mean()
-                    avg_total = df_valid.groupby("round").size().mean()
-                    avg_benign = avg_total - avg_malicious
-                    metrics["avg_total_malicious"] = avg_malicious
-                    metrics["avg_total_benign"] = avg_benign
-                    metrics["avg_kept_malicious"] = avg_malicious
-                    metrics["avg_kept_benign"] = avg_benign
-                    metrics["avg_malicious_removal_rate"] = 0.0
-                    metrics["avg_benign_removal_rate"] = 0.0
-                    metrics["avg_removed_malicious"] = 0.0
-                    metrics["avg_removed_benign"] = 0.0
-                    metrics["avg_selected_clients"] = 0.0
-
-    # Compute AUC from clients CSV
-    auc = compute_auc_from_clients_csv(exp_dir)
-    if auc is not None:
-        metrics["auc"] = auc
-
-    result = {"accuracy": acc, "asr": asr, "loss": loss, **metrics}
-    return result
+    return {key: value for key, value in result.items()
+            if key not in {"curve_data", "warnings", "last_round", "dataset"}}
 
 
 # ---------- Main ----------
@@ -217,7 +49,7 @@ def main():
     else:
         # Default: all experiment subdirectories directly under results/
         exp_dirs = []
-        for directory in RESULTS_DIR.iterdir():
+        for directory in RESULTS_DIR.iterdir() if RESULTS_DIR.is_dir() else []:
             try:
                 path = experiment_path(RESULTS_DIR, directory.name)
                 if path.is_dir():
@@ -229,7 +61,21 @@ def main():
         print("No valid experiment directories found.")
         return
 
-    # Create output directory
+    rows = []
+    for exp_dir in exp_dirs:
+        metrics = read_result_metrics(exp_dir)
+        if metrics is None or not any(metrics.get(key) is not None for key in ("accuracy", "asr", "loss")):
+            print(f"Warning: {exp_dir.name} 没有可用指标，已跳过。")
+            continue
+        for warning in metrics.pop("warnings", []):
+            print(f"Warning: {exp_dir.name}: {warning}")
+        for key in ("curve_data", "dataset", "last_round"):
+            metrics.pop(key, None)
+        rows.append({"experiment": exp_dir.name, **metrics})
+    if not rows:
+        parser.error("没有可用于总结的实验指标。")
+
+    # Reserve output only after finding usable data; never leave an empty report.
     if args.output_name:
         output_name = args.output_name
     else:
@@ -238,20 +84,6 @@ def main():
     output_dir = summary_path(RESULTS_DIR, output_name)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(exist_ok=False)  # Never overwrite a previous report.
-
-    rows = []
-    for exp_dir in exp_dirs:
-        exp_name = exp_dir.name
-        metrics = extract_experiment_metrics(exp_dir)
-        if metrics is None:
-            print(f"Warning: Could not extract metrics from {exp_name}")
-            continue
-        row = {"experiment": exp_name, **metrics}
-        rows.append(row)
-
-    if not rows:
-        print("No valid experiments.")
-        return
 
     df_summary = pd.DataFrame(rows)
 
@@ -267,7 +99,7 @@ def main():
     print(f"Summary CSV saved to {csv_path}")
 
     latex_path = output_dir / "summary_table.tex"
-    with open(latex_path, "w") as f:
+    with open(latex_path, "w", encoding="utf-8") as f:
         f.write(df_summary.to_latex(index=False, float_format="%.4f"))
     print(f"LaTeX table saved to {latex_path}")
 
@@ -276,7 +108,7 @@ def main():
         plot_script = PROJECT_ROOT / "scripts" / "plot.py"
         import subprocess
         cmd = [sys.executable, str(plot_script), str(output_dir)]
-        subprocess.run(cmd, cwd=str(PROJECT_ROOT))
+        subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True)
         print(f"Plots generated in {output_dir}")
 
     print(f"\nSummary completed. Output directory: {output_dir}")

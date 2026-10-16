@@ -5,6 +5,7 @@ FastAPI backend for FL backdoor experiment platform.
 import asyncio
 from contextlib import asynccontextmanager
 import subprocess
+import shutil
 from datetime import datetime
 import os
 import sys
@@ -14,6 +15,7 @@ from typing import Any
 import zipfile
 import io
 import re
+import uuid
 import pandas as pd
 import tomli
 
@@ -422,8 +424,10 @@ async def get_experiment_status():
 async def list_all_experiments():
     """Return list of all experiments with summary metrics."""
     try:
-        experiments = list_experiments(_results_root())
+        experiments = await asyncio.to_thread(list_experiments, _results_root())
         return experiments
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -432,9 +436,9 @@ async def list_all_experiments():
 async def get_experiment_details(exp_name: str):
     """Return detailed metrics and file list for a specific experiment."""
     try:
-        detail = get_experiment_detail(_experiment_directory(exp_name))
+        detail = await asyncio.to_thread(get_experiment_detail, _experiment_directory(exp_name))
         if detail is None:
-            raise HTTPException(404, "Experiment not found or no valid data")
+            raise HTTPException(404, "实验不存在或未找到运行记录。")
         return detail
     except HTTPException:
         raise
@@ -653,50 +657,117 @@ async def get_batch_task_status(batch_id: str):
         raise HTTPException(404, "Batch task not found")
     return task.to_dict()
 
+REPORT_TIMEOUT = 300
+_report_directories: set[Path] = set()
+_report_inputs: dict[Path, int] = {}
+
+
+@asynccontextmanager
+async def _report_slot(directory: Path, *, sources=()):
+    key = directory.resolve()
+    inputs = {source.resolve() for source in sources}
+    if key in _report_directories or any(source in _report_directories for source in inputs):
+        raise HTTPException(409, "该目录的图表或总结正在生成，请等待完成后再试。")
+    _report_directories.add(key)
+    for source in inputs:
+        _report_inputs[source] = _report_inputs.get(source, 0) + 1
+    try:
+        yield
+    finally:
+        _report_directories.discard(key)
+        for source in inputs:
+            count = _report_inputs[source] - 1
+            if count:
+                _report_inputs[source] = count
+            else:
+                del _report_inputs[source]
+
+
+@app.delete("/api/experiments/{exp_name}")
+async def delete_experiment(exp_name: str, run_id: str | None = None):
+    """Delete only an explicitly selected, inactive experiment directory."""
+    directory = _experiment_directory(exp_name)
+    async with execution_lock:
+        if not directory.is_dir():
+            raise HTTPException(404, "实验不存在，请刷新列表后重试。")
+        if run_id is not None and read_run_metadata(directory).get("run_id") != run_id:
+            raise HTTPException(409, "实验运行标识已变化，请刷新列表后重新确认删除。")
+        owned = runner._experiment_dir
+        if runner.is_busy() and owned is not None and owned.resolve() == directory.resolve():
+            raise HTTPException(409, "该实验仍在运行或清理中，请等待结束后再删除。")
+        batch = batch_manager.get_active_task()
+        if batch and any(item.get("name") == exp_name for item in batch.experiments):
+            raise HTTPException(409, "活动批量任务仍引用该实验，请等待批次结束后再删除。")
+        if directory.resolve() in _report_inputs:
+            raise HTTPException(409, "该实验正在用于生成总结，请等待完成后再删除。")
+        async with _report_slot(directory):
+            # Keep both start/report reservations until removal really finishes,
+            # including when the requesting browser disconnects.
+            job = asyncio.create_task(asyncio.to_thread(shutil.rmtree, directory))
+            try:
+                await asyncio.shield(job)
+            except asyncio.CancelledError:
+                try:
+                    await job
+                except OSError as exc:
+                    print(f"[History] Cancelled deletion failed: {exc}")
+                raise
+            except OSError as exc:
+                raise HTTPException(500, "删除实验失败，文件可能正在被占用，请刷新列表后重试。") from exc
+    return {"status": "success", "name": exp_name}
+
+
+async def _run_report(cmd: list[str], label: str) -> subprocess.CompletedProcess:
+    """Wait outside the event loop; subprocess.run also reaps timed-out children."""
+    env = os.environ.copy()
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", MPLBACKEND="Agg")
+    try:
+        job = asyncio.create_task(asyncio.to_thread(
+            subprocess.run, cmd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", cwd=str(PROJECT_ROOT), env=env, timeout=REPORT_TIMEOUT,
+        ))
+        try:
+            result = await asyncio.shield(job)
+        except asyncio.CancelledError:
+            # Keep the directory reserved until the worker exits or times out.
+            # Cancelling to_thread alone does not stop its subprocess.
+            try:
+                await job
+            except Exception as exc:
+                print(f"[Report] Cancelled request worker ended: {exc}")
+            raise
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(504, f"{label}超时，请缩小数据范围后重试。") from exc
+    except OSError as exc:
+        raise HTTPException(500, f"无法启动{label}程序，请检查后端运行环境。") from exc
+    if result.returncode != 0:
+        print(f"[Report] {label} failed ({result.returncode}): {result.stderr}")
+        raise HTTPException(500, f"{label}失败，请检查实验数据或查看后端日志。")
+    return result
+
+
 @app.post("/api/experiments/{exp_name}/plot")
 async def generate_plots_for_experiment(exp_name: str):
     """为指定实验运行 plot.py 生成图表"""
     exp_dir = _experiment_directory(exp_name)
-    if not exp_dir.exists():
-        raise HTTPException(404, "Experiment not found")
-    
-    script_path = PROJECT_ROOT / "scripts" / "plot.py"
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script_path), str(exp_dir)],
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode != 0:
-            raise HTTPException(500, f"Plot generation failed: {result.stderr}")
-        return {"status": "success", "output": result.stdout}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    async with _report_slot(exp_dir):
+        if not exp_dir.is_dir():
+            raise HTTPException(404, "实验不存在，请刷新列表后重试。")
+        detail = await asyncio.to_thread(get_experiment_detail, exp_dir)
+        if detail is None or not detail["can_plot"]:
+            raise HTTPException(422, "该实验缺少完整有效的轮次、ACC、ASR 或 Loss 指标，不能生成图表；仍可查看和下载运行日志。")
+        result = await _run_report([sys.executable, str(PROJECT_ROOT / "scripts" / "plot.py"), str(exp_dir)], "图表生成")
+    return {"status": "success", "output": result.stdout}
 
 @app.post("/api/experiments/summarize")
 async def generate_summary_report():
     """运行 summarize_results.py 生成总结报告"""
-    script_path = PROJECT_ROOT / "scripts" / "summarize_results.py"
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script_path), "--results-dir", str(_results_root())],
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode != 0:
-            raise HTTPException(500, f"Summary generation failed: {result.stderr}")
-        # 读取生成的 summary.csv 行数
-        summary_csv = _results_root() / "summary.csv"
-        count = 0
-        if summary_csv.exists():
-            import pandas as pd
-            df = pd.read_csv(summary_csv)
-            count = len(df)
-        return {"status": "success", "output": result.stdout, "count": count}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    experiments = await asyncio.to_thread(list_experiments, _results_root())
+    names = [item["name"] for item in experiments if item["has_metrics"]]
+    if not names:
+        raise HTTPException(422, "没有可用于总结的实验指标。")
+    result = await create_summary({"experiments": names})
+    return {**result, "count": len(names)}
     
 @app.post("/api/summarize")
 async def create_summary(request: dict[str, Any]):
@@ -707,34 +778,35 @@ async def create_summary(request: dict[str, Any]):
     output_name = request.get("output_name")
     if not isinstance(experiments, list):
         raise HTTPException(400, "Experiments must be a list of names")
-    for name in experiments:
-        if not _experiment_directory(name).is_dir():
-            raise HTTPException(404, f"Experiment {name} not found")
-    if output_name is not None:
-        if _summary_directory(output_name).exists():
-            raise HTTPException(409, "Summary already exists; choose a new name")
+    root = _results_root()
+    sources = [_experiment_directory(name) for name in experiments]
+    if output_name is None:
+        output_name = datetime.now().strftime("summary_%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
+    output_dir = _summary_directory(output_name)
+    if output_dir.exists():
+        raise HTTPException(409, "总结名称已存在，请换一个名称。")
     
     script_path = PROJECT_ROOT / "scripts" / "summarize_results.py"
-    cmd = [sys.executable, str(script_path), "--results-dir", str(_results_root()), "--experiments"]
+    cmd = [sys.executable, str(script_path), "--results-dir", str(root), "--experiments"]
     for exp in experiments:
         cmd.append(exp)
     if output_name:
         cmd += ["--output-name", output_name]
-    
-    print(f"[DEBUG] Summarize command: {cmd}")  # 便于调试
-    
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode != 0:
-            raise HTTPException(500, f"Summary failed: {result.stderr}")
-        return {"status": "success", "output": result.stdout}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    cmd.append("--no-plots")
+    # Run plots as a separately tracked child, not an orphanable grandchild of
+    # summarize_results.py when the outer subprocess hits its timeout.
+    async with _report_slot(output_dir, sources=sources):
+        if output_dir.exists():
+            raise HTTPException(409, "总结名称已存在，请换一个名称。")
+        for directory in sources:
+            if not directory.is_dir():
+                raise HTTPException(404, f"实验 {directory.name} 不存在。")
+            detail = await asyncio.to_thread(get_experiment_detail, directory)
+            if detail is None or not detail["has_metrics"]:
+                raise HTTPException(422, f"实验 {directory.name} 尚无可用指标，不能加入总结。")
+        result = await _run_report(cmd, "总结生成")
+        await _run_report([sys.executable, str(PROJECT_ROOT / "scripts" / "plot.py"), str(output_dir)], "总结图表生成")
+    return {"status": "success", "output": result.stdout, "name": output_name}
 
 @app.get("/api/summaries")
 async def list_summaries():
@@ -758,7 +830,12 @@ async def list_summaries():
             except ValueError:
                 continue
             if csv_path.exists():
-                df = pd.read_csv(csv_path)
+                try:
+                    df = await asyncio.to_thread(pd.read_csv, csv_path)
+                except (OSError, ValueError, pd.errors.ParserError):
+                    summaries.append({"name": d.name, "experiments": [], "created": None,
+                                      "warnings": ["总结 CSV 无法读取，请检查文件。"]})
+                    continue
                 summaries.append({
                     "name": d.name,
                     "experiments": df["experiment"].tolist() if "experiment" in df.columns else [],
@@ -775,19 +852,12 @@ async def generate_summary_plots(summary_name: str):
     if not summary_dir.exists():
         raise HTTPException(404, "Summary not found")
     
-    script_path = PROJECT_ROOT / "scripts" / "plot.py"
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script_path), str(summary_dir)],
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode != 0:
-            raise HTTPException(500, f"Plot generation failed: {result.stderr}")
-        return {"status": "success", "output": result.stdout}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    detail = await asyncio.to_thread(get_summary_detail, summary_dir)
+    if detail is None:
+        raise HTTPException(422, "总结数据无效，无法生成图表。")
+    async with _report_slot(summary_dir):
+        result = await _run_report([sys.executable, str(PROJECT_ROOT / "scripts" / "plot.py"), str(summary_dir)], "总结图表生成")
+    return {"status": "success", "output": result.stdout}
 
 @app.get("/api/summaries/{summary_name}/images")
 async def list_summary_images(summary_name: str):
@@ -873,7 +943,7 @@ async def get_summary_detail_endpoint(summary_name: str):
     summary_dir = _summary_directory(summary_name)
     if not summary_dir.exists():
         raise HTTPException(404, "Summary not found")
-    detail = get_summary_detail(summary_dir)
+    detail = await asyncio.to_thread(get_summary_detail, summary_dir)
     if detail is None:
         raise HTTPException(404, "Invalid summary data")
     return detail
