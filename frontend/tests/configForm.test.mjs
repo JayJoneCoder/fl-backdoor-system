@@ -91,6 +91,7 @@ const harness = async () => {
       if (name === '../../api/client') return api;
       if (name === '../../api/endpoints') return { getBackendUrl: path => path };
       if (name === '../../api/checkedFetch') return requestExports;
+      if (name === '../AttackPreview') return { default: 'AttackPreview' };
       throw new Error(`Unexpected import ${name}`);
     },
     document: { getElementById: () => ({ value: 'before-change' }) },
@@ -129,6 +130,14 @@ const harness = async () => {
     },
     setRaw: text => { find(node => node.type === 'TextArea' && node.props.placeholder === '加载中...').props.onChange({ target: { value: text } }); render(); },
     defenseKey: () => find(node => node.type === 'Card' && node.key === 'defense')?.key,
+    section: group => find(node => node.type === 'Card' && node.key === group),
+    toggleSection: group => {
+      let toggle;
+      walk(find(node => node.type === 'Card' && node.key === group)?.props.extra, node => {
+        if (node.type === 'Button') toggle = node;
+      });
+      toggle.props.onClick(); render();
+    },
     advancedOpen: () => find(node => node.type === antd.Modal && node.props.title === '高级配置模式（直接编辑 pyproject.toml）')?.props.open,
   };
 };
@@ -224,6 +233,24 @@ test('高级保存备份旧配置与应用新配置只用一个请求', async ()
 test('防御配置组有稳定 key', async () => {
   const h = await harness();
   assert.equal(h.defenseKey(), 'defense');
+});
+
+test('配置区域收起与展开保留表单内容和未保存值，不发送保存请求', async () => {
+  const h = await harness();
+  h.edit({ 'batch-size': 71 });
+  for (const group of ['federated', 'defense']) {
+    assert.notEqual(h.section(group).props.styles.body.display, 'none');
+    const fields = h.section(group).props.children;
+    h.toggleSection(group);
+    assert.equal(h.section(group).props.styles.body.display, 'none');
+    assert.ok(h.section(group).props.children);
+    assert.deepEqual(h.section(group).props.children, fields);
+    h.toggleSection(group);
+    assert.notEqual(h.section(group).props.styles.body.display, 'none');
+  }
+  assert.equal(h.calls.filter(call => call.type === 'save').length, 0);
+  await h.submit();
+  assert.equal(h.calls.find(call => call.type === 'save').update['batch-size'], 71);
 });
 
 test('备份重名必须等待用户选择，重试失败不继续导入或误报成功', async () => {

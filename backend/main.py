@@ -347,6 +347,21 @@ async def upload_config_file(file: UploadFile):
         raise HTTPException(500, str(e))
 
 
+@app.post("/api/attack/preview")
+async def get_attack_preview(request: dict[str, Any]):
+    """Preview an unsaved attack draft without running or modifying an experiment."""
+    from backend.attack_preview import preview_attack
+    try:
+        return await asyncio.to_thread(preview_attack, request)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        print(f"[Preview] Failed to render sample: {exc}", file=sys.stderr)
+        raise HTTPException(500, "生成预览失败，请查看后端日志后重试。")
+
+
 @app.post("/api/experiment/start")
 async def start_experiment(request: dict[str, Any]):
     """Start a new experiment."""

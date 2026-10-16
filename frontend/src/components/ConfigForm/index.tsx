@@ -30,7 +30,10 @@ import {
   DeleteOutlined,
   EyeOutlined,
   ReloadOutlined,
+  DownOutlined,
+  UpOutlined,
 } from '@ant-design/icons';
+import AttackPreview from '../AttackPreview';
 import { getConfigSchema, getConfig, updateConfig } from '../../api/client';
 import { getBackendUrl } from '../../api/endpoints';
 import { checkedFetch, getConfigErrorMessage } from '../../api/checkedFetch';
@@ -137,6 +140,19 @@ const ConfigForm = forwardRef<ConfigFormHandle>((_props, ref) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [, forceUpdate] = useState({});
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  const sectionActions = (group: string, help: string) => (
+    <Space>
+      <Tooltip title={help}><QuestionCircleOutlined /></Tooltip>
+      <Button type="text" size="small" htmlType="button" aria-expanded={!collapsedGroups[group]}
+        aria-label={`${collapsedGroups[group] ? '展开' : '收起'}${GROUP_LABELS[group] || group}`}
+        icon={collapsedGroups[group] ? <DownOutlined /> : <UpOutlined />}
+        onClick={() => setCollapsedGroups(previous => ({ ...previous, [group]: !previous[group] }))}>
+        {collapsedGroups[group] ? '展开' : '收起'}
+      </Button>
+    </Space>
+  );
 
   // 高级模式相关
   const [advancedModalVisible, setAdvancedModalVisible] = useState(false);
@@ -524,11 +540,8 @@ const renderDefenseGroup = (defenseFields: string[]) => {
         </Space>
       }
       style={{ marginBottom: 16 }}
-      extra={
-        <Tooltip title="配置组: defense">
-          <QuestionCircleOutlined />
-        </Tooltip>
-      }
+      styles={{ body: collapsedGroups.defense ? { display: 'none' } : {} }}
+      extra={sectionActions('defense', '配置组: defense')}
     >
       <Row gutter={16}>
         {mainFieldItems.map(key => {
@@ -1007,11 +1020,8 @@ const renderDefenseGroup = (defenseFields: string[]) => {
                   </Space>
                 }
                 style={{ marginBottom: 16 }}
-                extra={
-                  <Tooltip title="无法被标准表单解析的字段，可直接编辑">
-                    <QuestionCircleOutlined />
-                  </Tooltip>
-                }
+                styles={{ body: collapsedGroups.other ? { display: 'none' } : {} }}
+                extra={sectionActions('other', '无法被标准表单解析的字段，可直接编辑')}
               >
                 <Row gutter={16}>
                   {unknownFields.map((key) => (
@@ -1037,6 +1047,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
           }
           const isDirty = getGroupDirtyStatus(groupFields);
           return (
+            <div key={group}>
             <Card
               key={group}
               title={
@@ -1048,11 +1059,8 @@ const renderDefenseGroup = (defenseFields: string[]) => {
                 </Space>
               }
               style={{ marginBottom: 16 }}
-              extra={
-                <Tooltip title={`配置组: ${group}`}>
-                  <QuestionCircleOutlined />
-                </Tooltip>
-              }
+              styles={{ body: collapsedGroups[group] ? { display: 'none' } : {} }}
+              extra={sectionActions(group, `配置组: ${group}`)}
             >
               <Row gutter={16}>
                 {groupFields.map((key) => {
@@ -1072,6 +1080,8 @@ const renderDefenseGroup = (defenseFields: string[]) => {
                 })}
               </Row>
             </Card>
+            {group === 'attack' && <AttackPreview config={form.getFieldsValue(true)} ready={Object.keys(schema).length > 0} />}
+            </div>
           );
         })}
         <Form.Item>
