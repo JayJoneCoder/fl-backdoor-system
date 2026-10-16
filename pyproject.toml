@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "fl-backdoor-system"
 version = "1.0.0"
 description = "面向联邦学习的后门攻击与防御实验平台"
-license = {text = "GPL-3.0-or-later"}
+license = {text = "AGPL-3.0-or-later"}
 authors = [
     {name = "JayJoneCoder"}
 ]
@@ -15,7 +15,7 @@ requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

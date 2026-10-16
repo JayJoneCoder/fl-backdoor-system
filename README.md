@@ -5,7 +5,7 @@ framework: [pytorch, flwr]
 ---
 
 # 面向联邦学习的后门攻击与防御系统
-[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg?logo=gnu)](LICENSE)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg?logo=gnu)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg?logo=python)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.8.0-red.svg?logo=pytorch)](https://pytorch.org/)
 [![Flower](https://img.shields.io/badge/Flower-1.26+-green.svg?logo=flower)](https://flower.ai/)
@@ -293,4 +293,4 @@ fl-backdoor-system/
 ```
 
 ## 许可证
-本项目采用 GPL-3.0-or-later 许可证，详见 [LICENSE](./LICENSE) 文件。
+本项目采用 AGPL-3.0-or-later 许可证，详见 [LICENSE](./LICENSE) 文件。
