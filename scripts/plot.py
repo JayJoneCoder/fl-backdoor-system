@@ -119,10 +119,14 @@ def plot_main_log(csv_path: Path, df: pd.DataFrame) -> None:
         print(f"[SKIP] {csv_path}: missing main-log columns {sorted(required - set(df.columns))}")
         return
 
-    df = df.sort_values("round")
     df = _to_numeric(df, ["round", "accuracy", "asr", "loss"]).dropna(
         subset=["round", "accuracy", "asr", "loss"]
     )
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["round", "accuracy", "asr", "loss"]
+    )
+    df = df[(df["round"] >= 0) & (df["round"] % 1 == 0)]
+    df = df.drop_duplicates("round", keep="last").sort_values("round")
     if df.empty:
         print(f"[SKIP] {csv_path}: no valid rows after cleaning")
         return
@@ -787,15 +791,15 @@ def plot_multi_experiment_aggregation_metric(results_dir: Path, metric_key: str,
             break
         if metrics_csv is None:
             continue
-        df = pd.read_csv(metrics_csv)
-        if df.empty:
+        df = _safe_read_csv(metrics_csv)
+        if df is None or df.empty or not {"round", "component", "key", "value"}.issubset(df.columns):
             continue
         rows = df[(df["component"] == "aggregation") & (df["key"] == metric_key)]
         if rows.empty:
             continue
         df_metric = rows[["round", "value"]].copy()
-        df_metric["value"] = pd.to_numeric(df_metric["value"], errors="coerce")
-        df_metric = df_metric.dropna()
+        df_metric = _to_numeric(df_metric, ["round", "value"])
+        df_metric = df_metric.replace([np.inf, -np.inf], np.nan).dropna()
         if df_metric.empty:
             continue
         exp_data.append((exp_dir.name, df_metric))

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Card,
   Row,
@@ -16,6 +16,8 @@ import {
   Tooltip,
   Dropdown,
   Typography,
+  Tag,
+  Alert,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -26,6 +28,7 @@ import {
   AimOutlined,
   FileImageOutlined,
   FileZipOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import {
   listExperiments,
@@ -33,6 +36,8 @@ import {
   generatePlots,
   downloadExperimentImages,
   downloadExperimentAllFiles,
+  deleteExperiment,
+  downloadExperimentFile,
 } from '../../api/client';
 import { getBackendUrl } from '../../api/endpoints';
 import { getUserErrorMessage } from '../../api/checkedFetch';
@@ -65,14 +70,27 @@ interface ExperimentSummary {
   accuracy: number | null;
   asr: number | null;
   loss: number | null;
-  last_round: number;
+  last_round: number | null;
+  status?: string;
+  error?: string | null;
+  has_metrics?: boolean;
+  can_plot?: boolean;
+  warnings?: string[];
   precision?: number;
   recall?: number;
   fpr?: number;
   auc?: number;
   dataset?: string;
   created?: string;
+  csv_files?: string[];
 }
+
+const RUN_STATUS: Record<string, string> = {
+  starting: '启动中', running: '运行中', stopping: '停止中', cleaning: '清理中',
+  cleanup_failed: '清理失败', finished: '已完成', failed: '失败', cancelled: '已取消', unknown: '未记录',
+};
+
+const ACTIVE_STATUSES = new Set(['starting', 'running', 'stopping', 'cleaning', 'cleanup_failed']);
 
 const ExperimentHistory: React.FC = () => {
   const [experiments, setExperiments] = useState<ExperimentSummary[]>([]);
@@ -81,7 +99,11 @@ const ExperimentHistory: React.FC = () => {
   const [selectedExp, setSelectedExp] = useState<string | null>(null);
   const [detailData, setDetailData] = useState<any>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [plotGenerating, setPlotGenerating] = useState<string | null>(null);
+  const [plotGenerating, setPlotGenerating] = useState<string[]>([]);
+  const generating = useRef(new Set<string>());
+  const [deleting, setDeleting] = useState<string[]>([]);
+  const removing = useRef(new Set<string>());
+  const selected = useRef<string | null>(null);
 
   const loadExperiments = async () => {
     setLoading(true);
@@ -100,33 +122,93 @@ const ExperimentHistory: React.FC = () => {
   }, []);
 
   const handleViewDetail = async (name: string) => {
+    selected.current = name;
     setSelectedExp(name);
     setDetailData(null);
     setDetailModalVisible(true);
     setDetailLoading(true);
     try {
       const res = await getExperimentDetail(name);
-      setDetailData(res.data);
+      if (selected.current === name) setDetailData(res.data);
     } catch (error) {
       message.error(getUserErrorMessage(error, '加载实验详情失败，请稍后重试。'));
     } finally {
-      setDetailLoading(false);
+      if (selected.current === name) setDetailLoading(false);
     }
   };
 
   const handleGeneratePlots = async (expName: string) => {
-    setPlotGenerating(expName);
+    if (generating.current.has(expName) || removing.current.has(expName)) return false;
+    generating.current.add(expName);
+    setPlotGenerating([...generating.current]);
+    const key = `history-plot-${expName}`;
+    message.loading({ key, content: '正在生成图表，请稍候…', duration: 0 });
     try {
       await generatePlots(expName);
-      message.success('图表生成成功');
-      if (selectedExp === expName) {
+      message.success({ key, content: '图表生成成功', duration: 3 });
+      if (selected.current === expName) {
         const res = await getExperimentDetail(expName);
-        setDetailData(res.data);
+        if (selected.current === expName) setDetailData(res.data);
       }
+      return true;
     } catch (error) {
-      message.error(getUserErrorMessage(error, '图表生成失败，请查看后端日志。'));
+      message.error({ key, content: getUserErrorMessage(error, '图表生成失败，请查看后端日志。'), duration: 5 });
+      return false;
     } finally {
-      setPlotGenerating(null);
+      generating.current.delete(expName);
+      setPlotGenerating([...generating.current]);
+    }
+  };
+
+  const handleDelete = (exp: ExperimentSummary) => {
+    Modal.confirm({
+      title: `删除实验“${exp.name}”？`,
+      content: '将永久删除该实验的指标、日志、图表、配置快照和模型，无法撤销。已有总结不会一并删除，请先下载需要保留的文件。',
+      okText: '确认删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        if (removing.current.has(exp.name) || generating.current.has(exp.name)) return;
+        removing.current.add(exp.name);
+        setDeleting([...removing.current]);
+        try {
+          await deleteExperiment(exp.name, exp.run_id);
+          setExperiments(current => current.filter(item => item.name !== exp.name));
+          if (selected.current === exp.name) {
+            selected.current = null;
+            setSelectedExp(null);
+            setDetailModalVisible(false);
+            setDetailData(null);
+          }
+          message.success('实验已删除');
+        } catch (error) {
+          message.error(getUserErrorMessage(error, '删除实验失败，请稍后重试。'));
+          throw error;
+        } finally {
+          removing.current.delete(exp.name);
+          setDeleting([...removing.current]);
+        }
+      },
+    });
+  };
+
+  const saveBlob = (data: BlobPart, filename: string, type?: string) => {
+    const url = window.URL.createObjectURL(new Blob([data], { type }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadFile = async (name: string, filename: string) => {
+    try {
+      const res = await downloadExperimentFile(name, filename);
+      saveBlob(res.data, filename);
+    } catch (error) {
+      message.error(getUserErrorMessage(error, '下载文件失败，请稍后重试。'));
     }
   };
 
@@ -137,15 +219,7 @@ const ExperimentHistory: React.FC = () => {
   ) => {
     try {
       const res = await fetchFn();
-      const blob = new Blob([res.data], { type: 'application/zip' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = defaultFilename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
+      saveBlob(res.data, defaultFilename, 'application/zip');
       onSuccess?.();
     } catch (error: any) {
       if (error.response?.status === 404) {
@@ -158,14 +232,14 @@ const ExperimentHistory: React.FC = () => {
 
   const handleDownloadImages = async (exp: ExperimentSummary) => {
     try {
-      await downloadExperimentImages(exp.name);
-      // 如果成功，直接下载
-      await handleDownloadZip(
-        () => downloadExperimentImages(exp.name),
-        `${exp.name}_images.zip`
-      );
+      const res = await downloadExperimentImages(exp.name);
+      await handleDownloadZip(() => Promise.resolve(res), `${exp.name}_images.zip`);
     } catch (error: any) {
       if (error.response?.status === 404) {
+        if (exp.can_plot === false) {
+          message.error('该实验暂无图表且指标不完整，无法生成；仍可下载全部文件或查看日志。');
+          return;
+        }
         Modal.confirm({
           title: '该实验暂无图表',
           content: '是否先生成图表？',
@@ -173,8 +247,7 @@ const ExperimentHistory: React.FC = () => {
           cancelText: '取消',
           onOk: async () => {
             try {
-              await generatePlots(exp.name);
-              message.success('图表生成成功，开始下载');
+              if (!await handleGeneratePlots(exp.name)) return;
               await handleDownloadZip(
                 () => downloadExperimentImages(exp.name),
                 `${exp.name}_images.zip`
@@ -190,68 +263,55 @@ const ExperimentHistory: React.FC = () => {
     }
   };
 
-  const getDownloadMenuItems = (exp: ExperimentSummary): MenuProps['items'] => [
+  const getDownloadActions = (exp: ExperimentSummary) => [
     {
       key: 'main-csv',
       label: '主日志 CSV',
       icon: <FileTextOutlined />,
-      onClick: (e) => {
-        e.domEvent.stopPropagation();
-        window.open(getBackendUrl(`/results/${encodeURIComponent(exp.name)}/${encodeURIComponent(exp.name)}.csv`));
-      },
+      disabled: exp.csv_files ? !exp.csv_files.includes(`${exp.name}.csv`) : false,
+      onClick: () => handleDownloadFile(exp.name, `${exp.name}.csv`),
     },
     {
       key: 'clients-csv',
       label: '客户端日志 CSV',
       icon: <FileTextOutlined />,
-      onClick: (e) => {
-        e.domEvent.stopPropagation();
-        window.open(getBackendUrl(`/results/${encodeURIComponent(exp.name)}/${encodeURIComponent(exp.name)}_clients.csv`));
-      },
+      disabled: exp.csv_files ? !exp.csv_files.includes(`${exp.name}_clients.csv`) : false,
+      onClick: () => handleDownloadFile(exp.name, `${exp.name}_clients.csv`),
     },
     {
       key: 'metrics-csv',
-      label: 'Metrics 日志 CSV',
+      label: '检测指标 CSV',
       icon: <FileTextOutlined />,
-      onClick: (e) => {
-        e.domEvent.stopPropagation();
-        window.open(getBackendUrl(`/results/${encodeURIComponent(exp.name)}/${encodeURIComponent(exp.name)}_metrics.csv`));
-      },
+      disabled: exp.csv_files ? !exp.csv_files.includes(`${exp.name}_metrics.csv`) : false,
+      onClick: () => handleDownloadFile(exp.name, `${exp.name}_metrics.csv`),
     },
     {
       key: 'run-log',
-      label: '运行日志',
+      label: '下载运行日志',
       icon: <FileTextOutlined />,
-      onClick: (e) => {
-        e.domEvent.stopPropagation();
-        window.open(getBackendUrl(`/results/${encodeURIComponent(exp.name)}/run.log`));
-      },
-    },
-    {
-      type: 'divider',
+      onClick: () => handleDownloadFile(exp.name, 'run.log'),
     },
     {
       key: 'images-zip',
       label: '下载图表 (ZIP)',
       icon: <FileImageOutlined />,
-      onClick: (e) => {
-        e.domEvent.stopPropagation();
-        handleDownloadImages(exp);
-      },
+      onClick: () => handleDownloadImages(exp),
     },
     {
       key: 'all-files-zip',
       label: '下载全部文件 (ZIP)',
       icon: <FileZipOutlined />,
-      onClick: (e) => {
-        e.domEvent.stopPropagation();
-        handleDownloadZip(
+      onClick: () => handleDownloadZip(
           () => downloadExperimentAllFiles(exp.name),
           `${exp.name}_all_files.zip`
-        );
-      },
+        ),
     },
   ];
+  const getDownloadMenuItems = (exp: ExperimentSummary): MenuProps['items'] =>
+    getDownloadActions(exp).map(action => ({
+      ...action,
+      onClick: event => { event.domEvent.stopPropagation(); return action.onClick(); },
+    }));
   const columns = [
     { title: '指标', dataIndex: 'metric', key: 'metric' },
     {
@@ -266,7 +326,7 @@ const ExperimentHistory: React.FC = () => {
   const metricTableData = detailData?.metrics
     ? Object.entries(detailData.metrics)
         .filter(([key]) => !key.startsWith('curve_data'))
-        .map(([key, value]) => ({ metric: key, value: String(value) }))
+        .map(([key, value]) => ({ metric: key, value: value == null ? '未记录' : String(value) }))
     : [];
 
   const downloadFile = (url: string, filename: string) => {
@@ -290,21 +350,31 @@ const ExperimentHistory: React.FC = () => {
                   style={{ cursor: 'pointer' }}
                   onClick={() => handleViewDetail(exp.name)}
                   actions={[
-                    <Tooltip title="生成图表" key="plot">
-                      <BarChartOutlined
+                    <Tooltip title={exp.can_plot === false ? '指标不完整，仍可查看详情和下载日志' : '生成图表'} key="plot">
+                      <Button type="text" size="small" icon={<BarChartOutlined />}
+                        loading={plotGenerating.includes(exp.name)}
+                        disabled={exp.can_plot === false || deleting.includes(exp.name)}
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleGeneratePlots(exp.name);
+                          if (exp.can_plot !== false) return handleGeneratePlots(exp.name);
                         }}
-                      />
+                      >{plotGenerating.includes(exp.name) ? '生成中…' : '生成图表'}</Button>
                     </Tooltip>,
                     <Tooltip title="下载文件" key="download">
                       <Dropdown
                         menu={{ items: getDownloadMenuItems(exp) }}
                         trigger={['click']}
                       >
-                        <DownloadOutlined onClick={(e) => e.stopPropagation()} />
+                        <Button type="text" size="small" icon={<DownloadOutlined />}
+                          disabled={deleting.includes(exp.name)}
+                          onClick={(e) => e.stopPropagation()}>下载文件</Button>
                       </Dropdown>
+                    </Tooltip>,
+                    <Tooltip title={ACTIVE_STATUSES.has(exp.status || '') ? '实验运行或清理结束后才可删除' : '永久删除该实验的全部文件'} key="delete">
+                      <Button type="text" size="small" danger icon={<DeleteOutlined />}
+                        loading={deleting.includes(exp.name)}
+                        disabled={ACTIVE_STATUSES.has(exp.status || '') || plotGenerating.includes(exp.name)}
+                        onClick={event => { event.stopPropagation(); handleDelete(exp); }}>删除</Button>
                     </Tooltip>,
                   ]}
                 >
@@ -327,14 +397,18 @@ const ExperimentHistory: React.FC = () => {
                       UUID：{exp.run_id || '未记录'}
                     </Typography.Text>
                   </Tooltip>
+                  {exp.status && <Tag color={exp.status === 'failed' || exp.status === 'cleanup_failed' ? 'error' : 'default'}>
+                    {RUN_STATUS[exp.status] || '未记录'}
+                  </Tag>}
+                  {!!exp.warnings?.length && <Tooltip title={exp.warnings.join(' ')}><Tag color="warning">指标不完整</Tag></Tooltip>}
                   <Row gutter={8}>
                     <Col span={12}>
                       <Statistic
                         title="ACC"
                         value={
-                          exp.accuracy !== null
+                          exp.accuracy != null
                             ? `${(exp.accuracy * 100).toFixed(2)}%`
-                            : 'N/A'
+                            : '未记录'
                         }
                         prefix={<ExperimentOutlined />}
                         valueStyle={{ fontSize: 20 }}
@@ -344,9 +418,9 @@ const ExperimentHistory: React.FC = () => {
                       <Statistic
                         title="ASR"
                         value={
-                          exp.asr !== null
+                          exp.asr != null
                             ? `${(exp.asr * 100).toFixed(2)}%`
-                            : 'N/A'
+                            : '未记录'
                         }
                         prefix={<AimOutlined />}
                         valueStyle={{ fontSize: 20 }}
@@ -354,10 +428,10 @@ const ExperimentHistory: React.FC = () => {
                     </Col>
                   </Row>
                   <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
-                    <div>Loss: {exp.loss?.toFixed(4) || 'N/A'}</div>
+                    <div>Loss: {exp.loss?.toFixed(4) ?? '未记录'}</div>
                     <div>数据集: {exp.dataset || 'N/A'}</div>
                     <div>
-                      AUC: {exp.auc?.toFixed(3) || 'N/A'} | 轮次: {exp.last_round}
+                      AUC: {exp.auc?.toFixed(3) ?? '未记录'} | 轮次: {exp.last_round ?? '未记录'}
                     </div>
                     {exp.created && <div>创建: {exp.created.replace('T', ' ').substring(0, 22)}</div>}
                   </div>
@@ -371,7 +445,7 @@ const ExperimentHistory: React.FC = () => {
       <Modal
         title={`实验详情: ${selectedExp}`}
         open={detailModalVisible}
-        onCancel={() => setDetailModalVisible(false)}
+        onCancel={() => { selected.current = null; setDetailModalVisible(false); }}
         footer={null}
         width={1100}
       >
@@ -391,6 +465,12 @@ const ExperimentHistory: React.FC = () => {
                   ) : '未记录 UUID（旧实验）'}
                 </Typography.Text>
               </div>
+              {detailData.status && <Tag>{RUN_STATUS[detailData.status] || '未记录'}</Tag>}
+              {detailData.error && <Alert type="error" showIcon
+                title={getUserErrorMessage(detailData.error, '实验未正常完成，请查看运行日志。')}
+                style={{ marginBottom: 12 }} />}
+              {detailData.warnings?.map((warning: string) => <Alert key={warning} type="warning" showIcon
+                title={warning} style={{ marginBottom: 8 }} />)}
               <Row gutter={16} style={{ marginBottom: 24 }}>
                 <Col span={12}>
                   <Statistic
@@ -398,7 +478,7 @@ const ExperimentHistory: React.FC = () => {
                     value={
                       detailData.metrics.accuracy != null
                         ? `${(detailData.metrics.accuracy * 100).toFixed(2)}%`
-                        : 'N/A'
+                        : '未记录'
                     }
                     prefix={<ExperimentOutlined />}
                     valueStyle={{ fontSize: 32 }}
@@ -410,7 +490,7 @@ const ExperimentHistory: React.FC = () => {
                     value={
                       detailData.metrics.asr != null
                         ? `${(detailData.metrics.asr * 100).toFixed(2)}%`
-                        : 'N/A'
+                        : '未记录'
                     }
                     prefix={<AimOutlined />}
                     valueStyle={{ fontSize: 32 }}
@@ -419,20 +499,20 @@ const ExperimentHistory: React.FC = () => {
               </Row>
               <Descriptions size="small" column={4} style={{ marginBottom: 16 }}>
                 <Descriptions.Item label="Loss">
-                  {detailData.metrics.loss?.toFixed(4) || 'N/A'}
+                  {detailData.metrics.loss?.toFixed(4) ?? '未记录'}
                 </Descriptions.Item>
                 <Descriptions.Item label="数据集">
                   {detailData.metrics.dataset || 'N/A'}
                 </Descriptions.Item>
                 <Descriptions.Item label="最终轮次">
-                  {detailData.metrics.last_round}
+                  {detailData.metrics.last_round ?? '未记录'}
                 </Descriptions.Item>
                 <Descriptions.Item label="AUC">
-                  {detailData.metrics.auc?.toFixed(3) || 'N/A'}
+                  {detailData.metrics.auc?.toFixed(3) ?? '未记录'}
                 </Descriptions.Item>
               </Descriptions>
 
-              {detailData.metrics?.curve_data && (
+              {!!detailData.metrics?.curve_data?.round?.length && (
                 <div style={{ marginBottom: 24 }}>
                   <h4>ACC / ASR 曲线</h4>
                   <ResponsiveContainer width="100%" height={300}>
@@ -476,23 +556,23 @@ const ExperimentHistory: React.FC = () => {
                 style={{ marginBottom: 16 }}
               />
 
-              <Space style={{ marginBottom: 16 }}>
+              <Space wrap style={{ marginBottom: 16 }}>
                 <Button
                   icon={<BarChartOutlined />}
                   onClick={() => handleGeneratePlots(selectedExp!)}
-                  loading={plotGenerating === selectedExp}
+                  loading={selectedExp != null && plotGenerating.includes(selectedExp)}
+                  disabled={detailData.can_plot === false}
                 >
-                  生成图表
+                  {selectedExp && plotGenerating.includes(selectedExp) ? '正在生成，请稍候…' : '生成图表'}
                 </Button>
-                <Button
-                  icon={<FileTextOutlined />}
-                  onClick={() =>
-                    window.open(
-                      getBackendUrl(`/results/${encodeURIComponent(selectedExp!)}/${encodeURIComponent(selectedExp!)}.csv`)
-                    )
-                  }
-                >
-                  下载 CSV
+                {getDownloadActions({ ...detailData.metrics, ...detailData }).map(action => (
+                  <Button key={action.key} icon={action.icon} disabled={action.disabled}
+                    onClick={action.onClick}>{action.label}</Button>
+                ))}
+                <Button onClick={() => window.open(
+                  getBackendUrl(`/results/${encodeURIComponent(selectedExp!)}/run.log`)
+                )}>
+                  查看运行日志
                 </Button>
               </Space>
 
