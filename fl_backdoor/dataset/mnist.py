@@ -34,7 +34,9 @@ class MNISTDataset(BaseDataset):
             "label": label,
         }
 
-    def load_partition(self, partition_id: int, num_partitions: int, batch_size: int, *, seed=42, shuffle_seed=None, download=True):
+    def load_partition(self, partition_id: int, num_partitions: int, batch_size: int, *, seed=42,
+                       shuffle_seed=None, partition_mode="iid", partition_alpha=0.5,
+                       partition_seed=None, download=True):
         # 下载/加载 MNIST 训练集
         full_train = datasets.MNIST(
             root=os.environ.get("FL_BACKDOOR_DATA_DIR", "./data"), train=True, download=download, transform=None
@@ -56,7 +58,9 @@ class MNISTDataset(BaseDataset):
         wrapped = WrappedDataset(full_train, self._apply_transforms)
 
         return partition_loaders(wrapped, partition_id, num_partitions, batch_size,
-                                 seed=seed, shuffle_seed=shuffle_seed)
+                                 seed=seed, shuffle_seed=shuffle_seed,
+                                 partition_mode=partition_mode, partition_alpha=partition_alpha,
+                                 partition_seed=partition_seed)
 
     def load_centralized_test(self, batch_size: int = 128, *, download=True):
         full_test = datasets.MNIST(

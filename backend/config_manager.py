@@ -152,6 +152,28 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
         "group": "federated",
         "description": "数据集选择",
     },
+    "partition-mode": {
+        "type": "string",
+        "default": "iid",
+        "options": ["iid", "dirichlet"],
+        "option_labels": {"iid": "IID（均匀独立同分布）", "dirichlet": "Dirichlet Non-IID（标签偏斜）"},
+        "group": "federated",
+        "description": "客户端数据划分方式；Dirichlet 模式按标签比例生成 Non-IID 数据",
+    },
+    "partition-alpha": {
+        "type": "float",
+        "default": 0.5,
+        "depends_on": {"partition-mode": ["dirichlet"]},
+        "group": "federated",
+        "description": "Dirichlet 浓度参数，必须大于 0；值越小表示客户端标签分布越不均衡",
+    },
+    "partition-seed": {
+        "type": "integer",
+        "default": None,
+        "depends_on": {"partition-mode": ["dirichlet"]},
+        "group": "federated",
+        "description": "数据划分专用随机种子；留空时使用全局 seed",
+    },
 
     # ---------- 攻击通用参数 ----------
     "poison-rate": {

@@ -13,11 +13,13 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import torch
+import tomli
 
 from fl_backdoor.utils import CSVLogger
 from fl_backdoor.utils.paths import child_path, direct_files, experiment_path, summary_path, validate_name
 from fl_backdoor.utils.run_artifacts import (
-    ensure_experiment, read_run_metadata, reserve_experiment, save_final_model, write_run_metadata,
+    build_config_snapshot, ensure_experiment, read_run_metadata, reserve_experiment, save_final_model,
+    write_run_metadata,
 )
 
 
@@ -166,6 +168,30 @@ class RunArtifactTests(unittest.TestCase):
             save_final_model({"weight": torch.zeros(2)}, directory)
         self.assertEqual(path.read_bytes(), before)
 
+    def test_config_snapshot_records_requested_and_effective_partition_settings(self):
+        document = {"tool": {"flwr": {"app": {"config": {
+            "partition-mode": "dirichlet", "partition-alpha": 0.2,
+            "partition-seed": 99, "seed": 42, "num-clients": 7,
+        }}}}}
+        partition = tomli.loads(build_config_snapshot(document).decode("utf-8"))["tool"]["flwr"]["app"]["partition"]
+        self.assertEqual(partition["requested-mode"], "dirichlet")
+        self.assertEqual(partition["requested-alpha"], 0.2)
+        self.assertEqual(partition["requested-seed"], 99)
+        self.assertEqual(partition["requested-seed-source"], "partition-seed")
+        self.assertEqual(partition["effective-mode"], "dirichlet")
+        self.assertEqual(partition["effective-seed"], 99)
+        self.assertEqual(partition["effective-num-clients"], 7)
+
+    def test_config_snapshot_records_global_seed_fallback(self):
+        document = {"tool": {"flwr": {"app": {"config": {
+            "partition-mode": "dirichlet", "partition-alpha": 0.3,
+            "seed": 17, "num-clients": 4,
+        }}}}}
+        partition = tomli.loads(build_config_snapshot(document).decode("utf-8"))["tool"]["flwr"]["app"]["partition"]
+        self.assertNotIn("requested-seed", partition)
+        self.assertEqual(partition["requested-seed-source"], "global-seed")
+        self.assertEqual(partition["effective-seed"], 17)
+
     def test_failed_model_save_removes_partial_file(self):
         directory, _ = reserve_experiment(self.root, "one")
         with patch.object(torch, "save", side_effect=OSError("disk full")):
@@ -185,7 +211,9 @@ class ServerModelArchiveTests(unittest.TestCase):
                 name = "managed" if managed else "standalone"
                 metadata = reserve_experiment(root, name)[1] if managed else None
                 run_config = {"run-name": name, "results-dir": str(root), "dataset": "mnist",
-                              "attack": "none", "defense": "none", "detection": "none"}
+                              "attack": "none", "defense": "none", "detection": "none",
+                              "partition-mode": "dirichlet", "partition-alpha": 0.2,
+                              "partition-seed": 88, "seed": 42, "num-clients": 4}
                 strategy = Mock()
                 strategy.start.return_value.arrays.to_torch_state_dict.return_value = state
                 pipeline = Mock()
@@ -199,6 +227,9 @@ class ServerModelArchiveTests(unittest.TestCase):
                 output = torch.load(root / name / "final_model.pt", weights_only=True)
                 torch.testing.assert_close(output["weight"], state["weight"])
                 self.assertTrue((root / name / f"{name}.csv").exists())
+                partition = tomli.loads((root / name / "config_snapshot.toml").read_text())["tool"]["flwr"]["app"]["partition"]
+                self.assertEqual(partition["effective-seed"], 88)
+                self.assertEqual(partition["effective-num-clients"], 4)
                 self.assertEqual(read_run_metadata(root / name)["status"], "starting" if managed else "finished")
             self.assertFalse((root / "final_model.pt").exists())
 

@@ -112,6 +112,7 @@ class ConfigurationSafetyTests(TemporaryConfiguration):
             {"detection-enable-filter": 0}, {"poison-rate": 1.1}, {"seed": -1},
             {"detection-percentile": 101}, {"detection-cosine-floor": -2},
             {"defense-trim-ratio": 0.5}, {"defense": "not_a_defense"}, {"run-name": ""},
+            {"partition-mode": "shards"}, {"partition-alpha": 0}, {"partition-seed": -1},
         ):
             with self.subTest(updates=updates), self.assertRaises(ValueError):
                 cm.update_config(updates, backup_current=True)

@@ -4,10 +4,46 @@ import json
 import os
 import tempfile
 import uuid
+from copy import deepcopy
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .paths import child_path, experiment_path
+
+
+def build_config_snapshot(document: Mapping) -> bytes:
+    """Serialize a run document with the requested and effective partition settings."""
+    import tomli_w
+
+    snapshot = deepcopy(dict(document))
+    app = snapshot.setdefault("tool", {}).setdefault("flwr", {}).setdefault("app", {})
+    config = app.setdefault("config", {})
+    if not isinstance(config, dict):
+        raise ValueError("Run configuration must be a TOML table.")
+
+    requested_seed = config.get("partition-seed")
+    effective_seed = requested_seed if requested_seed is not None else config.get("seed", 42)
+    app["partition"] = {
+        "requested-mode": config.get("partition-mode", "iid"),
+        "requested-alpha": float(config.get("partition-alpha", 0.5)),
+        "requested-seed-source": "partition-seed" if requested_seed is not None else "global-seed",
+        "effective-mode": config.get("partition-mode", "iid"),
+        "effective-alpha": float(config.get("partition-alpha", 0.5)),
+        "effective-seed": int(effective_seed),
+        "effective-num-clients": int(config.get("num-clients", 10)),
+    }
+    if requested_seed is not None:
+        app["partition"]["requested-seed"] = int(requested_seed)
+    return tomli_w.dumps(snapshot).encode("utf-8")
+
+
+def write_config_snapshot(directory: Path, document: Mapping) -> Path:
+    """Create an exclusive immutable configuration snapshot in an experiment directory."""
+    path = child_path(directory, "config_snapshot.toml")
+    with path.open("xb") as stream:
+        stream.write(build_config_snapshot(document))
+    return path
 
 
 def write_run_metadata(directory: Path, data: dict) -> None:

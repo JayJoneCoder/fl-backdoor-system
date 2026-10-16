@@ -17,7 +17,7 @@ import tomli_w
 
 from backend import config_manager
 from backend.owned_processes import OwnedProcessTree
-from fl_backdoor.utils.run_artifacts import reserve_experiment, write_run_metadata
+from fl_backdoor.utils.run_artifacts import build_config_snapshot, reserve_experiment, write_run_metadata
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
@@ -116,6 +116,7 @@ class ExperimentRunner:
                 # as in the API; its working directory must not redirect output.
                 section["results-dir"] = str(results_root)
                 content = tomli_w.dumps(document).encode("utf-8")
+                snapshot_content = build_config_snapshot(document)
                 self.total_rounds = int(section.get("num-server-rounds", config_manager.CONFIG_SCHEMA["num-server-rounds"]["default"]))
                 self.log_file = exp_dir / "run.log"
                 self._log_generation += 1
@@ -124,7 +125,7 @@ class ExperimentRunner:
                 with self.log_file.open("x", encoding="utf-8"):
                     pass
                 with (exp_dir / "config_snapshot.toml").open("xb") as snapshot:
-                    snapshot.write(content)
+                    snapshot.write(snapshot_content)
                 self._temp_home = Path(tempfile.mkdtemp(prefix="fl-experiment-"))
                 preparing = asyncio.create_task(asyncio.to_thread(self._prepare_runtime, content))
                 try:

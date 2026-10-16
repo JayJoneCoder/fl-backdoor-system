@@ -26,6 +26,7 @@ framework: [pytorch, flwr]
 - **Ground Truth 追踪**：支持 random / random_once / fixed 恶意客户端选择，实现检测性能的精确评估
 - **Web 可视化平台**：基于 FastAPI + React + Ant Design，支持在线配置实验、实时日志监控、历史结果浏览
 - **实验数据库（目录索引）**：用本地 SQLite 保存实验元数据、配置快照、运行状态、逐轮指标和文件索引，支持搜索/筛选/分页、附件缺失提示、配置快照查看和数据库备份恢复；详细说明见 [docs/experiment-catalog.md](docs/experiment-catalog.md)
+- **可复现的数据划分**：默认保持 IID 随机划分，也支持 `partition-mode = "dirichlet"` 的标签偏斜 Non-IID 划分；可用 `partition-alpha` 控制偏斜程度、`partition-seed` 独立控制划分随机性。
 
 > 适用于联邦学习安全研究、后门攻击防御对比实验、鲁棒聚合算法验证。
 
@@ -155,6 +156,23 @@ python scripts/plot.py results/
 ### 实验数据库（目录索引）
 
 后端把已生成的实验结果同步到本地 SQLite 数据库（`platform_state/catalog.sqlite3`），数据库只存实验元数据、配置快照、指标和文件索引，日志/图片/模型/原始 CSV 仍保留在 `results/` 下。前端历史页的搜索、筛选、分页、配置快照和附件缺失提示都走这个数据库。
+
+### IID / Non-IID 数据划分
+
+在 `pyproject.toml` 或前端配置中设置：
+
+```toml
+# 默认：保持原有 IID 行为
+partition-mode = "iid"
+
+# 标签偏斜 Non-IID：alpha 越小，客户端标签分布通常越集中
+partition-mode = "dirichlet"
+partition-alpha = 0.2
+# 可选；省略时使用全局 seed
+partition-seed = 123
+```
+
+划分使用确定性随机数生成器，不修改进程全局 RNG。每次实验目录的 `config_snapshot.toml` 会保存 `[tool.flwr.app.partition]`，其中包含请求的模式/alpha/seed 来源，以及实际生效的 seed 和客户端数量，便于复现实验。
 
 命令行可单独导入、查询、备份与恢复（不启动训练）：
 

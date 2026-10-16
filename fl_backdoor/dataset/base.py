@@ -13,7 +13,9 @@ class BaseDataset(ABC):
     @abstractmethod
     def load_partition(
         self, partition_id: int, num_partitions: int, batch_size: int, *, seed: int = 42,
-        shuffle_seed: int | None = None, download: bool = True,
+        shuffle_seed: int | None = None, partition_mode: str = "iid",
+        partition_alpha: float = 0.5, partition_seed: int | None = None,
+        download: bool = True,
     ) -> tuple[DataLoader, DataLoader]:
         """
         Load a partition of the dataset for a specific client.

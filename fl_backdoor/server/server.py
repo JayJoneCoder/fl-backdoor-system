@@ -17,7 +17,7 @@ from fl_backdoor.utils.randomness import seed_everything
 
 from pathlib import Path
 import os
-from fl_backdoor.utils.run_artifacts import ensure_experiment, save_final_model, write_run_metadata
+from fl_backdoor.utils.run_artifacts import ensure_experiment, save_final_model, write_config_snapshot, write_run_metadata
 
 # Create ServerApp
 app = ServerApp()
@@ -180,6 +180,11 @@ def main(grid: Grid, context: Context) -> None:
         if not managed_run_id:
             metadata.update(status="running")
             write_run_metadata(experiment_dir, metadata)
+        if not (experiment_dir / "config_snapshot.toml").exists():
+            write_config_snapshot(
+                experiment_dir,
+                {"tool": {"flwr": {"app": {"config": dict(context.run_config)}}}},
+            )
         experiment_logger = CSVLogger(
             save_dir=str(experiment_dir),
             filename=f"{cfg.run_name}.csv"

@@ -130,6 +130,13 @@ seed = 42
 # 数据集
 dataset = "mnist"   # 先用 cifar10 测试；后面可改成 cifar100
 
+# 客户端数据划分
+# - iid: 随机均匀划分（默认，保持历史行为）
+# - dirichlet: 按标签比例生成 Non-IID 划分
+partition-mode = "iid"
+# partition-alpha = 0.5
+# partition-seed = 42
+
 
 # =========================================================
 # 攻击参数（Attack）

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-OPTIONAL_FIELDS = {"dba-sub-pattern-size", "fcba-sub-block-size", "defense-trim-ratio", "defense-trim-k", "frequency-window-size"}
+OPTIONAL_FIELDS = {"dba-sub-pattern-size", "fcba-sub-block-size", "defense-trim-ratio", "defense-trim-k", "frequency-window-size", "partition-seed"}
 POSITIVE_INTEGERS = {
     "num-clients", "num-server-rounds", "local-epochs", "batch-size", "trigger-size",
     "frequency-window-size", "wanet-grid-size", "dba-num-sub-patterns", "dba-sub-pattern-size",
@@ -15,7 +15,7 @@ POSITIVE_INTEGERS = {
     "client-defense-scoring-batch-size", "client-defense-min-class-samples",
     "detection-min-clients", "detection-min-kept-clients", "defense-krum-k",
 }
-NONNEGATIVE_INTEGERS = {"seed", "target-label", "detection-top-k", "defense-trim-k", "defense-num-malicious"}
+NONNEGATIVE_INTEGERS = {"seed", "target-label", "partition-seed", "detection-top-k", "defense-trim-k", "defense-num-malicious"}
 UNIT_INTERVAL = {
     "malicious-ratio", "poison-rate", "fraction-evaluate", "frequency-mix-alpha",
     "dba-global-trigger-value", "fcba-global-trigger-value", "client-defense-label-blend-alpha",
@@ -130,6 +130,8 @@ def normalize_values(values: Mapping[str, Any], schema: Mapping[str, dict], *, s
             raise ValueError(f"{key}: must be in [0, 100].")
         if key in {"detection-cosine-floor", "detection-min-silhouette"} and not -1 <= value <= 1:
             raise ValueError(f"{key}: must be in [-1, 1].")
+        if key == "partition-alpha" and value <= 0:
+            raise ValueError(f"{key}: must be positive.")
         if key == "run-name":
             from fl_backdoor.utils.paths import validate_name
             validate_name(value, label="Experiment name", reserved={"summaries", "batches", "config_backups"})

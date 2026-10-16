@@ -174,6 +174,21 @@ class RunnerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config.read_bytes(), self.original)
         self.assertFalse(cm.BACKUP_PATH.exists())
 
+    async def test_snapshot_records_requested_and_effective_partition_settings(self):
+        baseline = configuration(**{
+            "partition-mode": "dirichlet", "partition-alpha": 0.15,
+            "partition-seed": 123, "seed": 42, "num-clients": 6,
+        })
+        await self.start(FakeOwner(0), base_config=baseline, backup_config=False)
+        snapshot = tomli.loads((self.runner.log_file.parent / "config_snapshot.toml").read_text())
+        partition = snapshot["tool"]["flwr"]["app"]["partition"]
+        self.assertEqual(partition["requested-mode"], "dirichlet")
+        self.assertEqual(partition["requested-alpha"], 0.15)
+        self.assertEqual(partition["requested-seed"], 123)
+        self.assertEqual(partition["effective-seed"], 123)
+        self.assertEqual(partition["effective-num-clients"], 6)
+        await self.runner.wait()
+
     async def test_new_runtime_is_private_and_has_explicit_non_global_connection(self):
         owner = FakeOwner()
         owner.spawn = Mock(wraps=owner.spawn)

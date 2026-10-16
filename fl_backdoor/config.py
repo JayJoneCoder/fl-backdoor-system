@@ -19,6 +19,9 @@ class ExperimentConfig:
     batch_size: int = 32
     seed: int = 42
     dataset: str = "cifar10"
+    partition_mode: str = "iid"
+    partition_alpha: float = 0.5
+    partition_seed: Optional[int] = None
 
     # ---------- 攻击通用参数 ----------
     attack: str = "badnets"  # none / badnets / wanet / frequency / dba / fcba
@@ -147,6 +150,9 @@ class ExperimentConfig:
             batch_size=get("batch-size", 32, int),
             seed=get("seed", 42, int),
             dataset=get("dataset", "cifar10", str),
+            partition_mode=get("partition-mode", "iid", str),
+            partition_alpha=get("partition-alpha", 0.5, float),
+            partition_seed=get("partition-seed", None, lambda x: int(x) if x is not None else None),
             # 攻击通用
             attack=get("attack", "badnets", str),
             malicious_ratio=get("malicious-ratio", 0.2, float),

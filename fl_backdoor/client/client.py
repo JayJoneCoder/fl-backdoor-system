@@ -40,7 +40,10 @@ def train(msg: Message, context: Context):
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
     trainloader, _ = load_data(partition_id, num_partitions, cfg.batch_size, cfg.dataset,
-                               seed=cfg.seed, shuffle_seed=training_seed)
+                               seed=cfg.seed, shuffle_seed=training_seed,
+                               partition_mode=cfg.partition_mode,
+                               partition_alpha=cfg.partition_alpha,
+                               partition_seed=cfg.partition_seed)
 
     server_round = int(msg.content["config"].get("server-round", 0))
 
@@ -114,8 +117,11 @@ def evaluate(msg: Message, context: Context):
     # Load the data
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    batch_size = context.run_config["batch-size"]
-    _, valloader = load_data(partition_id, num_partitions, batch_size, dataset_name, seed=cfg.seed)
+    _, valloader = load_data(
+        partition_id, num_partitions, cfg.batch_size, dataset_name, seed=cfg.seed,
+        partition_mode=cfg.partition_mode, partition_alpha=cfg.partition_alpha,
+        partition_seed=cfg.partition_seed,
+    )
 
     # Call the evaluation function
     eval_loss, eval_acc = test_fn(

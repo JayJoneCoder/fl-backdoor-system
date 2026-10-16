@@ -6,7 +6,9 @@ import unittest
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
+from unittest.mock import Mock, patch
 
+from fl_backdoor.task import load_data
 from fl_backdoor.dataset.partition import partition_loaders
 from fl_backdoor.utils.randomness import derived_seed, seed_everything
 
@@ -124,6 +126,78 @@ class PartitionTests(unittest.TestCase):
                 with self.subTest(samples=samples, partitions=partitions, pid=pid):
                     with self.assertRaisesRegex(ValueError, "至少需要 2 个样本"):
                         partition_loaders(DummyDataset(samples), pid, partitions, batch_size=1)
+
+    def test_dirichlet_partitions_are_deterministic_and_cover_every_sample(self):
+        total = 300
+        num_partitions = 6
+        dataset = DummyDataset(total)
+        first = []
+        second = []
+        seen = []
+        for pid in range(num_partitions):
+            train, val = partition_loaders(
+                dataset, pid, num_partitions, batch_size=4, seed=11,
+                partition_mode="dirichlet", partition_alpha=0.1, partition_seed=99,
+            )
+            train_indices = leaf_indices(train.dataset)
+            val_indices = leaf_indices(val.dataset)
+            first.append(train_indices + val_indices)
+            seen.extend(train_indices + val_indices)
+
+            repeat_train, repeat_val = partition_loaders(
+                dataset, pid, num_partitions, batch_size=4, seed=11,
+                partition_mode="dirichlet", partition_alpha=0.1, partition_seed=99,
+            )
+            second.append(leaf_indices(repeat_train.dataset) + leaf_indices(repeat_val.dataset))
+
+        self.assertEqual(first, second)
+        self.assertEqual(sorted(seen), list(range(total)))
+        self.assertTrue(all(len(indices) >= 2 for indices in first))
+
+        class_counts = [
+            [sum(dataset[index]["label"] == label for index in indices) for label in range(3)]
+            for indices in first
+        ]
+        self.assertGreater(len({tuple(counts) for counts in class_counts}), 1)
+
+    def test_dirichlet_partition_does_not_pollute_global_rng(self):
+        dataset = DummyDataset(120)
+        torch.manual_seed(999)
+        np.random.seed(999)
+        random.seed(999)
+        expected = (torch.rand(3).tolist(), np.random.rand(3).tolist(), [random.random() for _ in range(3)])
+        torch.manual_seed(999)
+        np.random.seed(999)
+        random.seed(999)
+        partition_loaders(dataset, 0, 4, batch_size=2, seed=123,
+                          partition_mode="dirichlet", partition_alpha=0.3)
+        actual = (torch.rand(3).tolist(), np.random.rand(3).tolist(), [random.random() for _ in range(3)])
+        self.assertEqual(expected[0], actual[0])
+        self.assertEqual(expected[1], actual[1])
+        self.assertEqual(expected[2], actual[2])
+
+    def test_dirichlet_partition_rejects_invalid_parameters(self):
+        dataset = DummyDataset(40)
+        with self.assertRaisesRegex(ValueError, "partition-mode"):
+            partition_loaders(dataset, 0, 4, batch_size=2, partition_mode="shards")
+        with self.assertRaisesRegex(ValueError, "partition-alpha"):
+            partition_loaders(dataset, 0, 4, batch_size=2, partition_mode="dirichlet", partition_alpha=0)
+        with self.assertRaisesRegex(ValueError, "partition-seed"):
+            partition_loaders(dataset, 0, 4, batch_size=2, partition_seed=-1)
+
+    def test_task_loader_forwards_partition_parameters(self):
+        dataset = Mock()
+        dataset.load_partition.return_value = ("train", "val")
+        with patch("fl_backdoor.task.get_dataset", return_value=dataset):
+            result = load_data(
+                2, 5, 8, "mnist", seed=7, shuffle_seed=13,
+                partition_mode="dirichlet", partition_alpha=0.2, partition_seed=99,
+            )
+        self.assertEqual(result, ("train", "val"))
+        dataset.load_partition.assert_called_once_with(
+            2, 5, 8, seed=7, shuffle_seed=13, partition_mode="dirichlet",
+            partition_alpha=0.2, partition_seed=99,
+        )
 
 
 if __name__ == "__main__":

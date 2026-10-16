@@ -52,6 +52,14 @@ class StrategyClientCountTests(unittest.TestCase):
         self.assertEqual(cfg.num_clients, 5)
         self.assertEqual(cfg.num_server_rounds, 3)
 
+    def test_config_parses_partition_parameters(self):
+        cfg = ExperimentConfig.from_run_config({
+            "partition-mode": "dirichlet", "partition-alpha": 0.2, "partition-seed": 123,
+        })
+        self.assertEqual(cfg.partition_mode, "dirichlet")
+        self.assertEqual(cfg.partition_alpha, 0.2)
+        self.assertEqual(cfg.partition_seed, 123)
+
 
 class RayRuntimeTests(unittest.TestCase):
     def test_snapshot_path_uses_native_separator_and_preserves_options(self):
