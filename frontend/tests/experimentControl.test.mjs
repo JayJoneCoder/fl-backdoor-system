@@ -216,6 +216,10 @@ const assertCharts = (harness, rounds) => {
   assert.deepEqual(harness.charts[1].options.xAxis.data, rounds);
   assert.deepEqual(harness.charts[0].options.series[0].data, rounds.map(round => point(round).accuracy));
   assert.deepEqual(harness.charts[1].options.series[0].data, rounds.map(round => point(round).loss));
+  for (const chart of harness.charts) {
+    assert.equal(chart.options.legend.bottom, 4);
+    assert.ok(chart.options.grid.bottom >= 80);
+  }
 };
 
 test('刷新时历史数据早于图表初始化也能完整绘制，无需等待下一轮', async () => {

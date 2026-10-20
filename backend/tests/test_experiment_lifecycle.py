@@ -311,6 +311,142 @@ class BatchLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.status, "cancelled")
         self.assertEqual(self.runner.start.await_count, 1)
 
+    async def test_stop_current_cancels_only_observed_run_and_continues_queue(self):
+        task = self.task()
+        waiting, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def wait():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                waiting.set()
+                await release.wait()
+                return {"status": "cancelled", "exit_code": 1}
+            return {"status": "finished", "exit_code": 0}
+
+        async def stop():
+            release.set()
+            return {"status": "cancelled"}
+
+        self.runner.wait.side_effect = wait
+        self.runner.stop.side_effect = stop
+        task.job = asyncio.create_task(main._run_batch_sequence(task))
+        await waiting.wait()
+        await main.stop_current_batch_experiment(task.batch_id, {"run_id": "test-run-id"})
+        await asyncio.wait_for(task.job, 2)
+        self.assertFalse(task.cancel_requested)
+        self.assertEqual(self.runner.start.await_count, 2)
+        self.assertEqual([item["status"] for item in task.results], ["cancelled", "completed"])
+        self.assertEqual(task.status, "cancelled")
+        self.assertEqual(task.to_dict()["failed_count"], 0)
+
+    async def test_stop_current_rejects_stale_run_without_stopping_another_worker(self):
+        task = self.task()
+        task.status = "running"
+        task.current_index = 0
+        task.current_exp_name = "one"
+        task.results[0].update(status="running", run_id="new-run")
+        for request in ({}, {"run_id": "old-run"}):
+            with self.assertRaises(HTTPException) as exc:
+                await main.stop_current_batch_experiment(task.batch_id, request)
+            self.assertEqual(exc.exception.status_code, 409)
+        self.runner.stop.assert_not_awaited()
+        self.assertIsNone(task.stop_current_index)
+
+    async def test_pause_keeps_current_running_then_blocks_next_until_resume(self):
+        task = self.task()
+        waiting, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def wait():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                waiting.set()
+                await release.wait()
+            return {"status": "finished", "exit_code": 0}
+
+        self.runner.wait.side_effect = wait
+        task.job = asyncio.create_task(main._run_batch_sequence(task))
+        try:
+            await waiting.wait()
+            response = await main.pause_batch_task(task.batch_id)
+            self.assertTrue(response["pause_requested"])
+            self.assertEqual(task.status, "running")
+            self.runner.stop.assert_not_awaited()
+            release.set()
+            await asyncio.sleep(0.02)
+            self.assertEqual(task.status, "paused")
+            self.assertIsNone(task.current_exp_name)
+            self.assertEqual(self.runner.start.await_count, 1)
+            self.assertEqual(task.results[1]["status"], "pending")
+            self.assertIs(self.manager.get_active_task(), task)
+            await main.resume_batch_task(task.batch_id)
+            await asyncio.wait_for(task.job, 2)
+            self.assertEqual(task.status, "completed")
+            self.assertFalse(task.pause_requested)
+        finally:
+            release.set()
+            task.resume_event.set()
+            if not task.job.done():
+                task.cancel_requested = True
+                await task.job
+
+    async def test_cancelling_paused_queue_wakes_controller_without_starting_items(self):
+        task = self.task()
+        await main.pause_batch_task(task.batch_id)
+        task.job = asyncio.create_task(main._run_batch_sequence(task))
+        await asyncio.sleep(0.01)
+        self.assertEqual(task.status, "paused")
+        response = await main.cancel_batch_task(task.batch_id)
+        self.assertEqual(response["status"], "cancelled")
+        self.runner.start.assert_not_awaited()
+        self.assertTrue(task.job.done())
+
+    async def test_pause_winning_execution_lock_prevents_queued_start(self):
+        task = self.task()
+        await main.execution_lock.acquire()
+        pause = asyncio.create_task(main.pause_batch_task(task.batch_id))
+        task.job = asyncio.create_task(main._run_batch_sequence(task))
+        await asyncio.sleep(0)
+        main.execution_lock.release()
+        await pause
+        await asyncio.sleep(0.01)
+        try:
+            self.runner.start.assert_not_awaited()
+            self.assertEqual(task.status, "paused")
+            self.assertTrue(all(item["status"] == "pending" for item in task.results))
+        finally:
+            await main.cancel_batch_task(task.batch_id)
+
+    async def test_finished_batch_cannot_pause_resume_or_stop_current(self):
+        task = self.task()
+        await main._run_batch_sequence(task)
+        for call in (main.pause_batch_task(task.batch_id), main.resume_batch_task(task.batch_id),
+                     main.stop_current_batch_experiment(task.batch_id, {"run_id": "test-run-id"})):
+            with self.assertRaises(HTTPException) as exc:
+                await call
+            self.assertEqual(exc.exception.status_code, 409)
+
+    async def test_shutdown_unblocks_paused_queue(self):
+        task = self.task()
+        await main.pause_batch_task(task.batch_id)
+        task.job = asyncio.create_task(main._run_batch_sequence(task))
+        await asyncio.sleep(0.01)
+        async with main.lifespan(main.app):
+            pass
+        self.assertTrue(task.job.done())
+        self.assertEqual(task.status, "cancelled")
+        self.runner.start.assert_not_awaited()
+
+    async def test_restarted_paused_queue_is_interrupted_not_resumed(self):
+        task = self.task()
+        await main.pause_batch_task(task.batch_id)
+        reloaded = BatchManager(self.manager._save_dir).get_task(task.batch_id)
+        self.assertEqual(reloaded.status, "failed")
+        self.assertIn("Backend restarted", reloaded.error)
+
     async def test_sequence_waits_for_previous_cleanup_before_next_start(self):
         task = self.task()
         waiting, release = asyncio.Event(), asyncio.Event()

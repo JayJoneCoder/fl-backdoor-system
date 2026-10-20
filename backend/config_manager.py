@@ -747,20 +747,41 @@ def get_config_schema() -> dict[str, Any]:
 
 def parse_batch_experiments(json_content: bytes) -> list[dict[str, Any]]:
     import json
-    data = json.loads(json_content)
+    try:
+        data = json.loads(json_content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"JSON 格式错误：第 {exc.lineno} 行，第 {exc.colno} 列。") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError("JSON 文件编码无效，请使用 UTF-8 编码。") from exc
+    common = {}
     if isinstance(data, list):
-        return data
+        experiments = data
     elif isinstance(data, dict) and "experiments" in data:
         common = data.get("common", {})
         experiments = data["experiments"]
-        merged = []
-        for exp in experiments:
-            merged_exp = common.copy()
-            merged_exp.update(exp)
-            merged.append(merged_exp)
-        return merged
     else:
-        raise ValueError("Invalid batch experiment JSON format")
+        raise ValueError("批量配置必须为实验数组，或包含 experiments 数组的对象。")
+    if not isinstance(common, dict):
+        raise ValueError("common 必须为 JSON 对象。")
+    if not isinstance(experiments, list) or not experiments:
+        raise ValueError("experiments 必须为非空数组，至少包含一个实验。")
+    merged, names = [], set()
+    for index, exp in enumerate(experiments, 1):
+        if not isinstance(exp, dict):
+            raise ValueError(f"第 {index} 项实验必须为 JSON 对象。")
+        item = {**common, **exp}
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"第 {index} 项实验：name 必须为非空字符串。")
+        try:
+            validate_name(name, label="Experiment name")
+        except ValueError as exc:
+            raise ValueError(f"第 {index} 项实验：名称不合法，不能包含路径、保留字符或首尾空格。") from exc
+        if name.casefold() in names:
+            raise ValueError(f"第 {index} 项实验：名称「{name}」重复（不区分大小写），请使用不同名称。")
+        names.add(name.casefold())
+        merged.append(item)
+    return merged
     
 
 # 匹配所有 .toml 文件，但排除主配置文件和 .bak 文件

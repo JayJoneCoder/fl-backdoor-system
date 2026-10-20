@@ -1,86 +1,113 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Card, Progress, Tag, Alert, Space, Typography } from 'antd';
+import { Card, Progress, Tag, Alert, Space, Typography, Row, Col, Button } from 'antd';
 import { SyncOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import LogViewer from '../LogViewer';
 import { getWebSocketUrl } from '../../api/endpoints';
 import { useBufferedLogs } from '../../hooks/useBufferedLogs';
 import { getUserErrorMessage } from '../../api/checkedFetch';
+import ExperimentMetrics from './ExperimentMetrics';
+import { isBatchActive, shouldAcceptBatchStatus } from '../../utils/batchStream';
+import type { BatchStatus, BatchMetricProgress } from '../../utils/batchStream';
+export type { BatchStatus } from '../../utils/batchStream';
 
 const { Text } = Typography;
-const RESULT_LABELS: Record<string, string> = {
-  pending: '等待中', running: '运行中', completed: '成功', failed: '失败', cancelled: '已取消', unknown: '未记录',
-};
-
-export interface BatchStatus {
-  batch_id: string;
-  status: 'pending' | 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled';
-  current_index: number;
-  current_exp_name: string | null;
-  total: number;
-  error: string | null;
-  completed_count: number;
-  success_count: number;
-  failed_count: number;
-  cancelled_count: number;
-  unknown_count?: number;
-  results: { name: string; status: string; exit_code: number | null; error: string | null }[];
+interface Props {
+  batchId: string;
+  onComplete?: (status: BatchStatus, notify: boolean) => void;
+  onStatus?: (status: BatchStatus) => boolean | void;
+  onProgress?: (progress: BatchMetricProgress) => void;
 }
 
-const BatchMonitor: React.FC<{ batchId: string; onComplete?: (status: BatchStatus, notify: boolean) => void }> = ({ batchId, onComplete }) => {
+const BatchMonitor: React.FC<Props> = ({ batchId, onComplete, onStatus, onProgress }) => {
   const [status, setStatus] = useState<BatchStatus | null>(null);
+  const [metricProgress, setMetricProgress] = useState<BatchMetricProgress | null>(null);
+  const [connectionError, setConnectionError] = useState(false);
+  const [logsCollapsed, setLogsCollapsed] = useState(false);
   const { logs, queueLog, flushLogs, resetLogs } = useBufferedLogs();
 
   const onCompleteRef = useRef(onComplete);
+  const onStatusRef = useRef(onStatus);
+  const reconnectRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     onCompleteRef.current = onComplete;
-  }, [onComplete]);
+    onStatusRef.current = onStatus;
+  }, [onComplete, onStatus]);
 
   useEffect(() => {
-    resetLogs();
     let active = true;
     let completed = false;
     let observedActive = false;
-    const socket = new WebSocket(getWebSocketUrl(`/ws/batch/${encodeURIComponent(batchId)}`));
-
-    socket.onmessage = (event) => {
+    let socket: WebSocket | null = null;
+    let lastStatus: BatchStatus | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const connect = () => {
       if (!active) return;
-      try {
-        const data = JSON.parse(event.data);
+      resetLogs();
+      const connection = new WebSocket(getWebSocketUrl(`/ws/batch/${encodeURIComponent(batchId)}`));
+      socket = connection;
+      connection.onopen = () => { if (active && socket === connection) setConnectionError(false); };
 
-        if (data.type === 'status') {
-          setStatus(data.data);
-          if (['pending', 'running', 'stopping'].includes(data.data.status)) observedActive = true;
-          if (!completed && ['completed', 'failed', 'cancelled'].includes(data.data.status)) {
-            completed = true;
-            flushLogs();
-            // Always synchronize the parent's busy state, but don't announce a
-            // historical terminal snapshot as a newly completed experiment.
-            onCompleteRef.current?.(data.data, observedActive);
+      connection.onmessage = (event) => {
+        if (!active || socket !== connection) return;
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'status') {
+            if (data.data.batch_id !== batchId || !shouldAcceptBatchStatus(lastStatus, data.data)) return;
+            // The parent may already have a newer HTTP control response.
+            if (onStatusRef.current?.(data.data) === false) return;
+            lastStatus = data.data;
+            setConnectionError(false);
+            setStatus(data.data);
+            if (isBatchActive(data.data.status)) observedActive = true;
+            if (!completed && ['completed', 'failed', 'cancelled'].includes(data.data.status)) {
+              completed = true;
+              flushLogs();
+              // Restore terminal snapshots silently, but always release the parent's busy state.
+              onCompleteRef.current?.(data.data, observedActive);
+            }
+            return;
           }
-          return;
+        } catch {
+          // Preserve ANSI color escapes, but remove terminal-only backspace/VT/FF.
+          // eslint-disable-next-line no-control-regex
+          const clean = event.data.replace(/[\x08\x0B\x0C]/g, '');
+          queueLog(clean);
         }
-      } catch {
-        // Preserve ANSI color escapes, but remove terminal-only backspace/VT/FF.
-        // eslint-disable-next-line no-control-regex
-        const clean = event.data.replace(/[\x08\x0B\x0C]/g, '');
-        queueLog(clean);
-      }
-    };
+      };
 
-    socket.onclose = () => { if (active) flushLogs(); };
+      connection.onerror = () => { if (active && socket === connection && !completed) setConnectionError(true); };
+      connection.onclose = () => {
+        if (!active || socket !== connection) return;
+        flushLogs();
+        if (!completed) {
+          setConnectionError(true);
+          retry = setTimeout(connect, 2000);
+        }
+      };
+    };
+    reconnectRef.current = () => { clearTimeout(retry); socket?.close(); connect(); };
+    connect();
     return () => {
       active = false;
-      socket.close();
+      reconnectRef.current = null;
+      clearTimeout(retry);
+      socket?.close();
     };
   }, [batchId, queueLog, flushLogs, resetLogs]);
 
   const done = status?.completed_count ?? 0;
   const progress = status && status.total > 0 ? Math.round(done / status.total * 100) : 0;
+  const current = status?.current_exp_name ? status.results?.[status.current_index] : undefined;
+  const latestRun = status?.results?.filter(item => item.run_id).at(-1);
+  const target = current ?? latestRun;
+  const targetProgress = metricProgress?.runId === target?.run_id ? metricProgress : null;
+  const currentPercent = target?.status === 'completed' ? 100 : (targetProgress?.percent ?? 0);
 
   const renderTag = () => {
     if (!status) return null;
     if (status.status === 'running') return <Tag icon={<SyncOutlined spin />} color="processing">运行中</Tag>;
+    if (status.status === 'paused') return <Tag color="warning">队列已暂停</Tag>;
     if (status.status === 'stopping') return <Tag icon={<SyncOutlined spin />} color="warning">停止／清理中</Tag>;
     if (status.status === 'cancelled') return <Tag color="default">已取消</Tag>;
     if (status.status === 'completed') return <Tag icon={<CheckCircleOutlined />} color="success">已完成</Tag>;
@@ -90,10 +117,12 @@ const BatchMonitor: React.FC<{ batchId: string; onComplete?: (status: BatchStatu
 
   return (
     <Card title="批量实验监控" style={{ marginTop: 24 }}>
-      <Space direction="vertical" style={{ width: '100%' }}>
+      <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+        {connectionError && <Alert title="监控连接中断，正在自动重连。" type="warning" showIcon
+          action={<Button size="small" onClick={() => reconnectRef.current?.()}>重连监控</Button>} />}
         {status && (
           <>
-            <Space>
+            <Space wrap>
               <Text strong>状态：</Text>
               {renderTag()}
               <Text>已结束：{done}/{status.total}</Text>
@@ -102,17 +131,31 @@ const BatchMonitor: React.FC<{ batchId: string; onComplete?: (status: BatchStatu
               {status.current_exp_name && <Text>当前实验：{status.current_exp_name}</Text>}
             </Space>
 
-            <Progress percent={progress} status={status.status === 'failed' ? 'exception' : status.status === 'completed' ? 'success' : 'normal'} />
+            <Row gutter={[24, 16]}>
+              <Col xs={24} md={12}>
+                <Text strong>全批次实验进度</Text>
+                <Progress percent={progress} status={status.status === 'failed' ? 'exception' : status.status === 'completed' ? 'success' : 'normal'} />
+                <Text type="secondary">按已结束项统计（含完成、失败和取消）：{done} / {status.total}</Text>
+              </Col>
+              <Col xs={24} md={12}>
+                <Text strong>{current ? '当前实验进度' : '最近实验进度'}{target ? `：${target.name}` : ''}</Text>
+                <Progress percent={currentPercent} status={target?.status === 'failed' ? 'exception' : target?.status === 'completed' ? 'success' : current ? 'active' : 'normal'} />
+                <Text type="secondary">{targetProgress?.total ? `ROUND ${targetProgress.round ?? 0} / ${targetProgress.total}` : '等待实验启动及轮次信息'}</Text>
+              </Col>
+            </Row>
 
-            {status.error && <Alert message={getUserErrorMessage(status.error)} type="error" />}
-            {status.results?.map((item, index) => (
-              <Text key={`${index}-${item.name}`}>{item.name}：{RESULT_LABELS[item.status] ?? '未知状态'}
-                {item.exit_code !== null && `（退出码 ${item.exit_code}）`}{item.error && ` — ${getUserErrorMessage(item.error)}`}</Text>
-            ))}
+            {status.error && <Alert title={getUserErrorMessage(status.error)} type="error" showIcon />}
+            {status.pause_requested && <Alert title={status.status === 'paused' ? '队列已暂停，点击“继续队列”后启动后续实验。' : '已请求暂停队列：当前实验继续运行，结束后暂停。'} type="warning" showIcon />}
           </>
         )}
 
-        <LogViewer logs={logs} height={300} />
+        {target?.run_id && <ExperimentMetrics key={target.run_id} name={target.name} runId={target.run_id}
+          onProgress={value => { setMetricProgress(value); onProgress?.(value); }} />}
+        <Card size="small" title="批次日志" styles={{ body: logsCollapsed ? { display: 'none' } : {} }}
+          extra={<Button type="text" size="small" aria-label={logsCollapsed ? '展开批次日志' : '收起批次日志'}
+            aria-expanded={!logsCollapsed} onClick={() => setLogsCollapsed(!logsCollapsed)}>{logsCollapsed ? '展开' : '收起'}</Button>}>
+          <LogViewer logs={logs} height={300} />
+        </Card>
       </Space>
     </Card>
   );

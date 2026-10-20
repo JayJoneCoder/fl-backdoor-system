@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
         task = batch_manager.get_active_task()
         if task:
             task.cancel_requested = True
+            task.resume_event.set()
         await runner.stop()
         if task and task.job and not task.job.done():
             await asyncio.shield(task.job)
@@ -264,12 +265,18 @@ async def websocket_batch_logs(websocket: WebSocket, batch_id: str):
         await websocket.send_json({"type": "status", "data": task.to_dict()})
 
         try:
+            next_status = asyncio.get_running_loop().time() + 1
             while True:
                 try:
-                    line = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    timeout = max(0.001, next_status - asyncio.get_running_loop().time())
+                    line = await asyncio.wait_for(queue.get(), timeout=timeout)
                     await websocket.send_text(line)
                 except asyncio.TimeoutError:
+                    pass
+                # Continuous worker output must not starve status updates.
+                if asyncio.get_running_loop().time() >= next_status:
                     await websocket.send_json({"type": "status", "data": task.to_dict()})
+                    next_status = asyncio.get_running_loop().time() + 1
                     if task.status in ("completed", "failed", "cancelled"):
                         await asyncio.sleep(1)
                         break
@@ -592,10 +599,6 @@ async def _run_batch_sequence(task: BatchTask) -> None:
                 break
             exp_name = exp["name"]
             item = task.results[idx]
-            task.current_index = idx
-            task.current_exp_name = exp_name
-            item.update(status="running", start_time=datetime.now().isoformat())
-            batch_manager.update_task(task)
             config = {k: v for k, v in exp.items() if k != "name"}
             config["run-name"] = exp_name
             original_callback = runner._on_log_line
@@ -607,19 +610,37 @@ async def _run_batch_sequence(task: BatchTask) -> None:
 
             runner.set_log_callback(forward_log)
             try:
-                task.add_log(f"[Batch] Starting {idx + 1}/{len(task.experiments)}: {exp_name}")
-                async with execution_lock:
-                    if task.cancel_requested:
-                        item["status"] = "cancelled"
-                        break
-                    await runner.start(exp_name, config, backup_config=False, base_config=task.base_config)
-                    item["run_id"] = runner.run_id
+                while not task.cancel_requested:
+                    async with execution_lock:
+                        if task.cancel_requested:
+                            break
+                        # Pause and start must be serialized. A pause request
+                        # queued before this lock must prevent this item starting.
+                        if not task.pause_requested:
+                            task.status = "running"
+                            task.current_index = idx
+                            task.current_exp_name = exp_name
+                            item.update(status="running", start_time=datetime.now().isoformat())
+                            batch_manager.update_task(task)
+                            task.add_log(f"[Batch] Starting {idx + 1}/{len(task.experiments)}: {exp_name}")
+                            await runner.start(exp_name, config, backup_config=False, base_config=task.base_config)
+                            item["run_id"] = runner.run_id
+                            break
+                        task.status = "paused"
+                        task.current_exp_name = None
+                        batch_manager.update_task(task)
+                    await task.resume_event.wait()
+                if task.cancel_requested:
+                    item["status"] = "cancelled"
+                    break
                 result = await runner.wait()
                 item.update(exit_code=result.get("exit_code"), error=result.get("error"),
                             flower_run_id=result.get("flower_run_id"))
                 item["status"] = "completed" if result["status"] == "finished" else (
                     "cancelled" if result["status"] == "cancelled" else "failed")
-                if item["status"] == "cancelled":
+                if item["status"] == "cancelled" and task.stop_current_index == idx:
+                    item["error"] = "已手动结束当前实验。"
+                elif item["status"] == "cancelled":
                     task.cancel_requested = True
                 if item["status"] == "failed":
                     task.error = item["error"] or f"Experiment {exp_name} failed."
@@ -638,6 +659,8 @@ async def _run_batch_sequence(task: BatchTask) -> None:
             finally:
                 runner.set_log_callback(original_callback)
                 item["end_time"] = datetime.now().isoformat()
+                task.stop_current_index = None
+            task.current_exp_name = None
             task.add_log(f"[Batch] {exp_name}: {item['status']}; exit_code={item['exit_code']}")
             batch_manager.update_task(task)
         _finish_batch(task)
@@ -666,7 +689,10 @@ def _finish_batch(task: BatchTask, *, failed: bool = False) -> None:
         if item["status"] in {"pending", "running"}:
             item.update(status="cancelled", error="Batch cancelled before completion.", end_time=datetime.now().isoformat())
     task.status = "failed" if failed else ("cancelled" if task.cancel_requested else (
-        "completed" if all(item["status"] == "completed" for item in task.results) else "failed"))
+        "failed" if any(item["status"] in {"failed", "unknown"} for item in task.results) else (
+            "cancelled" if any(item["status"] == "cancelled" for item in task.results) else "completed")))
+    task.pause_requested = False
+    task.resume_event.set()
     task.end_time = datetime.now()
     task.current_index = len(task.experiments)
     task.current_exp_name = None
@@ -680,9 +706,10 @@ async def cancel_batch_task(batch_id: str):
     if task is None:
         raise HTTPException(404, "Batch task not found")
     async with execution_lock:
-        if task.status not in {"pending", "running", "stopping"}:
+        if task.status not in {"pending", "running", "paused", "stopping"}:
             return task.to_dict()
         task.cancel_requested = True
+        task.resume_event.set()
         task.status = "stopping"
         batch_manager.update_task(task)
     try:
@@ -697,6 +724,67 @@ async def cancel_batch_task(batch_id: str):
             _finish_batch(task)
     except asyncio.TimeoutError:
         return JSONResponse(status_code=202, content=task.to_dict())
+    return task.to_dict()
+
+
+@app.post("/api/batch/{batch_id}/pause")
+async def pause_batch_task(batch_id: str):
+    task = batch_manager.get_task(batch_id)
+    if task is None:
+        raise HTTPException(404, "Batch task not found")
+    async with execution_lock:
+        if task.status not in {"pending", "running", "paused"} or task.cancel_requested:
+            raise HTTPException(409, "该批次已结束或正在停止，无法暂停队列。")
+        task.pause_requested = True
+        task.resume_event.clear()
+        if not task.current_exp_name:
+            task.status = "paused"
+        task.add_log("[Batch] 已请求暂停队列；当前实验结束后不会启动下一项。")
+        batch_manager.update_task(task)
+    return task.to_dict()
+
+
+@app.post("/api/batch/{batch_id}/resume")
+async def resume_batch_task(batch_id: str):
+    task = batch_manager.get_task(batch_id)
+    if task is None:
+        raise HTTPException(404, "Batch task not found")
+    async with execution_lock:
+        if task.status not in {"pending", "running", "paused"} or task.cancel_requested:
+            raise HTTPException(409, "该批次已结束或正在停止，无法继续队列。")
+        task.pause_requested = False
+        task.status = "running"
+        task.resume_event.set()
+        task.add_log("[Batch] 队列已继续。")
+        batch_manager.update_task(task)
+    return task.to_dict()
+
+
+@app.post("/api/batch/{batch_id}/stop-current")
+async def stop_current_batch_experiment(batch_id: str, request: dict[str, Any]):
+    """Bind the stop to an observed run, never accidentally stop the next item."""
+    task = batch_manager.get_task(batch_id)
+    if task is None:
+        raise HTTPException(404, "Batch task not found")
+    async with execution_lock:
+        if task.status != "running" or not task.current_exp_name or task.cancel_requested:
+            raise HTTPException(409, "当前没有可结束的实验，请刷新状态。")
+        item = task.results[task.current_index]
+        if not request.get("run_id") or request["run_id"] != item.get("run_id"):
+            raise HTTPException(409, "当前实验已切换，请确认最新状态后重试。")
+        task.stop_current_index = task.current_index
+        task.add_log(f"[Batch] 仅结束当前实验：{task.current_exp_name}，保留后续队列。")
+        # Keep the execution lock until this stop has captured/finished the owned
+        # run. The controller cannot start another worker while it is held.
+        try:
+            result = await asyncio.wait_for(asyncio.shield(runner.stop()), timeout=15)
+        except asyncio.TimeoutError:
+            return JSONResponse(status_code=202, content=task.to_dict())
+        if result["status"] == "cleanup_failed":
+            task.status = "stopping"
+            task.error = result.get("error")
+            batch_manager.update_task(task)
+            raise HTTPException(503, task.error)
     return task.to_dict()
 
 @app.get("/api/batch/status")

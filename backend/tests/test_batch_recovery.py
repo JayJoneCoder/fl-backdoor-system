@@ -92,6 +92,19 @@ class BatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.to_dict()["unknown_count"], 0)
         self.assertIsNotNone(restored.results[1]["end_time"])
 
+    async def test_status_revision_increases_on_updates_and_after_restart(self):
+        manager = BatchManager(self.directory)
+        task = manager.create_task([{"name": "one"}])
+        self.assertEqual(task.to_dict()["revision"], 0)
+        manager.update_task(task)
+        first = task.to_dict()["revision"]
+        task.pause_requested = True
+        manager.update_task(task)
+        self.assertGreater(task.to_dict()["revision"], first)
+        saved_revision = json.loads((self.directory / f"{task.batch_id}.json").read_text(encoding="utf-8"))["revision"]
+        restored = BatchManager(self.directory).get_task(task.batch_id)
+        self.assertGreater(restored.to_dict()["revision"], saved_revision)
+
     async def test_missing_or_mismatched_detail_is_not_assigned_to_another_experiment(self):
         for saved in (None, [], [{"name": "another", "status": "completed"}]):
             self.write_record(status="completed", results=saved)

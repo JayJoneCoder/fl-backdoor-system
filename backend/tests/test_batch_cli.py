@@ -8,7 +8,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from backend.config_manager import parse_batch_experiments
 from scripts import batch_runner as cli
@@ -89,6 +89,17 @@ class BatchCliTests(unittest.TestCase):
         for status, expected in (("failed", 1), ("cancelled", 3)):
             self.status = status
             self.assertEqual(self.invoke(), expected)
+
+    def test_paused_queue_remains_pollable_until_resumed(self):
+        client = Mock()
+        client.status.side_effect = [
+            {"status": "paused", "total": 2, "completed_count": 1},
+            {"status": "running", "total": 2, "completed_count": 1},
+            {"status": "completed", "total": 2, "completed_count": 2},
+        ]
+        with patch.object(cli.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.wait_for_batch(client, "batch-1", .01), 0)
+        self.assertEqual(client.status.call_count, 3)
 
     def test_http_conflict_keeps_detail_and_does_not_poll(self):
         self.rejection = (409, {"detail": "实验名称已存在，请换一个名称。"})

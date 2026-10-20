@@ -80,7 +80,8 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
           xAxis: { type: 'category', data: [] },
           yAxis: { type: 'value' },
           tooltip: { trigger: 'axis' },
-          legend: { data: ['ACC', 'ASR'] },            // ★ 固定图例
+          legend: { data: ['ACC', 'ASR'], bottom: 4, left: 'center' },
+          grid: { left: 50, right: 24, top: 24, bottom: 86 },
           series: [
             { name: 'ACC', type: 'line', data: [] },
             { name: 'ASR', type: 'line', data: [] },
@@ -94,7 +95,8 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
           xAxis: { type: 'category', data: [] },
           yAxis: { type: 'value' },
           tooltip: { trigger: 'axis' },
-          legend: { data: ['Loss'] },
+          legend: { data: ['Loss'], bottom: 4, left: 'center' },
+          grid: { left: 50, right: 24, top: 24, bottom: 86 },
           series: [
             { name: 'Loss', type: 'line', data: [] },
           ],

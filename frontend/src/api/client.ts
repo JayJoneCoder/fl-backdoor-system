@@ -62,6 +62,15 @@ export const getBatchStatus = () => apiClient.get('/api/batch/status');
 export const cancelBatch = (batchId: string) =>
   apiClient.post(`/api/batch/${encodeURIComponent(batchId)}/cancel`);
 
+export const pauseBatch = (batchId: string) =>
+  apiClient.post(`/api/batch/${encodeURIComponent(batchId)}/pause`);
+
+export const resumeBatch = (batchId: string) =>
+  apiClient.post(`/api/batch/${encodeURIComponent(batchId)}/resume`);
+
+export const stopCurrentBatchExperiment = (batchId: string, runId: string) =>
+  apiClient.post(`/api/batch/${encodeURIComponent(batchId)}/stop-current`, { run_id: runId });
+
 // 上传整个 toml 文件（高级模式）
 export const uploadConfigFile = (file: File) => {
   const formData = new FormData();

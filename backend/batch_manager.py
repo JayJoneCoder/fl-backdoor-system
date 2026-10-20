@@ -25,6 +25,7 @@ class BatchTask:
         self.batch_id = batch_id
         self.experiments = experiments  # list of {name, config}
         self.status = "pending"
+        self.revision = 0
         self.current_index = -1
         self.current_exp_name: Optional[str] = None
         self.start_time: Optional[datetime] = None
@@ -35,6 +36,10 @@ class BatchTask:
         self._log_file: Optional[Path] = None
         self.base_config = base_config
         self.cancel_requested = False
+        self.pause_requested = False
+        self.resume_event = asyncio.Event()
+        self.resume_event.set()
+        self.stop_current_index: Optional[int] = None
         self.job: Optional[asyncio.Task] = None
         self.results = [{"name": exp.get("name"), "status": "pending", "exit_code": None,
                          "error": None, "start_time": None, "end_time": None} for exp in experiments]
@@ -42,6 +47,7 @@ class BatchTask:
     def to_dict(self) -> dict:
         return {
             "record_version": 2,
+            "revision": self.revision,
             "batch_id": self.batch_id,
             "status": self.status,
             "current_index": self.current_index,
@@ -50,6 +56,7 @@ class BatchTask:
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "error": self.error,
+            "pause_requested": self.pause_requested,
             "experiments": self.experiments,
             "results": self.results,
             "completed_count": sum(item["status"] in {"completed", "failed", "cancelled"} for item in self.results),
@@ -100,6 +107,7 @@ class BatchManager:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 task = BatchTask(data["batch_id"], data["experiments"])
                 task.status = data["status"]
+                task.revision = data.get("revision", 0) + 1
                 task.current_index = data.get("current_index", -1)
                 task.current_exp_name = data.get("current_exp_name")
                 task.error = data.get("error")
@@ -126,7 +134,7 @@ class BatchManager:
                 task._log_file = self._save_dir / f"{task.batch_id}.log"
                 if task._log_file.exists():
                     task.logs = task._log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-10000:]
-                if task.status in {"pending", "running", "stopping"}:
+                if task.status in {"pending", "running", "paused", "stopping"}:
                     task.status = "failed"
                     task.error = RESTART_ERROR
                     task.end_time = datetime.now()
@@ -153,7 +161,7 @@ class BatchManager:
 
     def get_active_task(self) -> Optional[BatchTask]:
         for task in self._tasks.values():
-            if task.status in ("pending", "running", "stopping"):
+            if task.status in ("pending", "running", "paused", "stopping"):
                 return task
         return None
 
@@ -172,6 +180,7 @@ class BatchManager:
             raise
 
     def update_task(self, task: BatchTask):
+        task.revision += 1
         self._save_task(task)
 
 

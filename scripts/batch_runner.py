@@ -96,7 +96,7 @@ def wait_for_batch(client, batch_id, interval):
             if state.get("error"):
                 print(f"批次说明：{state['error']}", flush=True)
             return {"completed": 0, "failed": 1, "cancelled": 3}[state["status"]]
-        if state["status"] not in {"pending", "running", "stopping"}:
+        if state["status"] not in {"pending", "running", "paused", "stopping"}:
             raise RuntimeError(f"无法识别的批次状态：{state['status']}；请在网页查看任务。")
         time.sleep(interval)
 

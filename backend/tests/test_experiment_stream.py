@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from fastapi import WebSocketDisconnect
 
 from backend import main
+from backend.batch_manager import BatchTask
 from backend.experiment_runner import ExperimentRunner
 from fl_backdoor.utils.run_artifacts import reserve_experiment
 
@@ -56,6 +57,46 @@ class MemoryWebSocket:
                     return message
 
         return await asyncio.wait_for(read(), timeout=3)
+
+
+class BatchWebSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_continuous_logs_do_not_starve_batch_status_updates(self):
+        task = BatchTask("stream-test", [{"name": "one"}, {"name": "two"}])
+        task.status = "running"
+        task.current_index = 0
+        socket = MemoryWebSocket()
+        manager = Mock()
+        manager.get_task.return_value = task
+
+        disconnected = False
+        send_text = socket.send_text
+
+        async def send_continuous_log(text):
+            if disconnected:
+                raise WebSocketDisconnect(code=1000)
+            await send_text(text)
+            # Each delivered log schedules another before the one-second idle
+            # timeout. No independent infinite producer needs cancellation.
+            await asyncio.sleep(.05)
+            task.add_log(f"line {len(socket.history)}")
+
+        socket.send_text = send_continuous_log
+
+        with patch.object(main, "batch_manager", manager):
+            connection = asyncio.create_task(main.websocket_batch_logs(socket, task.batch_id))
+            try:
+                await socket.until(lambda message: isinstance(message, dict) and message["data"]["current_index"] == 0)
+                task.current_index = 1
+                task.add_log("first live line")
+                update = await socket.until(lambda message: isinstance(message, dict) and message["data"]["current_index"] == 1)
+                self.assertEqual(update["type"], "status")
+                self.assertTrue(any(isinstance(message, str) for message in socket.history))
+                self.assertFalse(connection.done(), "Status must arrive before the log stream ends")
+            finally:
+                disconnected = True
+                task.add_log("disconnect")
+                await asyncio.wait_for(connection, timeout=3)
+            self.assertEqual(task.log_subscribers, [])
 
 
 class ExperimentWebSocketTests(unittest.IsolatedAsyncioTestCase):
