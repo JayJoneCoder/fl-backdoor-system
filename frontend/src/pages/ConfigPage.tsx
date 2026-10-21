@@ -14,8 +14,11 @@ const ConfigPage: React.FC = () => {
   };
 
   return (
-    <div>
-      <h2 className="page-title">单个实验配置</h2>
+    <div className="workspace-page">
+      <div className="page-heading">
+        <h2 className="page-title">单个实验配置</h2>
+        <p className="page-description">设置联邦训练、攻击与防御参数，运行实验并查看实时指标。</p>
+      </div>
       <ConfigForm ref={configFormRef} />
       <ExperimentControl onBeforeStart={handleBeforeStart} />
     </div>

@@ -34,6 +34,25 @@ def _flatten_update(
     return np.concatenate(deltas, axis=0)
 
 
+def resolve_krum_params(n: int, f: int, k: int) -> tuple[int, int]:
+    """Clamp Krum's ``(f, k)`` to the largest values feasible for ``n`` updates.
+
+    Server-side detection can filter client updates before aggregation, so the
+    configured ``f`` may no longer satisfy Krum's ``n > 2*f + 2`` bound. Lowering
+    ``f`` to the largest feasible value preserves the Byzantine-resilience
+    guarantee instead of aborting a long-running experiment.
+    """
+    n = int(n)
+    if n < 3:
+        raise ValueError(
+            f"Krum requires at least 3 client updates after detection, got n={n}. "
+            "Increase participating clients or relax detection filtering."
+        )
+    f_effective = min(max(int(f), 0), (n - 3) // 2)
+    k_effective = min(max(int(k), 1), max(1, n - f_effective - 2))
+    return f_effective, k_effective
+
+
 def _krum_select(
     flat_updates: list[np.ndarray],
     f: int,
@@ -172,8 +191,19 @@ class KrumFedAvg(FedAvg):
             flat_updates.append(flat)
 
         n = len(flat_updates)
-        f = self.num_malicious
-        k = self.krum_k
+        f_configured = self.num_malicious
+        k_configured = self.krum_k
+        f, k = resolve_krum_params(n, f_configured, k_configured)
+        if (f, k) != (f_configured, k_configured):
+            from logging import WARNING
+            from flwr.common.logger import log
+
+            log(
+                WARNING,
+                "Krum parameters adjusted after filtering: n=%d, "
+                "configured=(f=%d, k=%d), effective=(f=%d, k=%d)",
+                n, f_configured, k_configured, f, k,
+            )
 
         selected_indices = _krum_select(flat_updates, f=f, k=k)
 
@@ -218,6 +248,9 @@ class KrumFedAvg(FedAvg):
         metrics["agg_selected_clients"] = int(len(selected_indices))
         metrics["agg_krum_f"] = int(f)
         metrics["agg_krum_k"] = int(k)
+        metrics["agg_krum_f_configured"] = int(f_configured)
+        metrics["agg_krum_k_configured"] = int(k_configured)
+        metrics["agg_krum_adapted"] = int((f, k) != (f_configured, k_configured))
 
         return aggregated_arrays, metrics
 

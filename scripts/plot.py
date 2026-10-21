@@ -31,6 +31,74 @@ import pandas as pd
 import numpy as np
 from matplotlib.colors import Normalize
 
+# 图表面向中文用户：优先使用系统中常见的中文字体，避免中文显示为方框。
+plt.rcParams["font.sans-serif"] = [
+    "Microsoft YaHei",
+    "SimHei",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    "WenQuanYi Zen Hei",
+    "Arial Unicode MS",
+    "DejaVu Sans",
+]
+plt.rcParams["axes.unicode_minus"] = False
+
+# 指标键名保留英文以对应 CSV，图例统一显示中文名称。
+METRIC_LABELS = {
+    "detect_tp": "真阳性 (TP)",
+    "detect_fp": "假阳性 (FP)",
+    "detect_fn": "假阴性 (FN)",
+    "detect_tn": "真阴性 (TN)",
+    "detect_precision": "精确率",
+    "detect_recall": "召回率",
+    "detect_fpr": "假正例率",
+    "detect_total_clients": "总客户端数",
+    "detect_kept_clients": "保留客户端数",
+    "detect_filtered_clients": "过滤客户端数",
+    "detect_suspicious_clients": "可疑客户端数",
+    "detect_raw_suspicious_count": "原始可疑数",
+    "detect_skip_count": "跳过轮次数",
+    "detect_mean_score": "平均分数",
+    "detect_max_score": "最高分数",
+    "detect_min_score": "最低分数",
+    "detect_mean_cosine": "平均余弦相似度",
+    "detect_min_cosine": "最低余弦相似度",
+    "detect_mean_update_norm": "平均更新范数",
+    "detect_max_update_norm": "最大更新范数",
+    "agg_total_clients": "总客户端数",
+    "agg_clipped_clients": "裁剪客户端数",
+    "agg_clipped_ratio": "裁剪比例",
+    "agg_avg_update_norm": "平均更新范数",
+    "agg_max_update_norm": "最大更新范数",
+    "agg_avg_post_norm": "聚合后平均范数",
+    "agg_selected_clients": "选中客户端数",
+    "agg_malicious_removal_rate": "恶意客户端移除率",
+    "agg_benign_removal_rate": "良性客户端移除率",
+    "agg_removed_malicious": "移除恶意客户端数",
+    "agg_removed_benign": "移除良性客户端数",
+    "agg_removed_clients": "移除客户端数",
+    "agg_kept_malicious": "保留恶意客户端数",
+    "agg_kept_benign": "保留良性客户端数",
+    "agg_kept_clients": "保留客户端数",
+    "client_defense_applied": "客户端防御启用",
+    "client_defense_filtered_samples": "过滤样本数",
+    "client_defense_kept_samples": "保留样本数",
+    "client_defense_filter_ratio": "过滤比例",
+    "client_defense_mean_score": "平均分数",
+    "client_defense_max_score": "最高分数",
+    "client_defense_label_aware": "标签感知",
+    "client_defense_label_blend_alpha": "标签混合系数",
+    "precision": "精确率",
+    "recall": "召回率",
+    "fpr": "假正例率",
+    "auc": "AUC",
+}
+
+
+def _metric_label(key: str) -> str:
+    return METRIC_LABELS.get(key, key)
+
+
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -98,10 +166,10 @@ def _round_label(r: float | int) -> str:
     try:
         rr = float(r)
         if rr.is_integer():
-            return f"round {int(rr)}"
-        return f"round {rr:.2f}"
+            return f"第 {int(rr)} 轮"
+        return f"第 {rr:.2f} 轮"
     except Exception:
-        return f"round {r}"
+        return f"第 {r} 轮"
 
 
 def _safe_mean(series: pd.Series) -> float:
@@ -139,9 +207,9 @@ def plot_main_log(csv_path: Path, df: pd.DataFrame) -> None:
     # Accuracy
     fig, ax = plt.subplots()
     ax.plot(df["round"], df["accuracy"], marker="o")
-    ax.set_xlabel("Round")
-    ax.set_ylabel("Accuracy")
-    ax.set_title(f"Accuracy Curve ({csv_path.stem})")
+    ax.set_xlabel("轮次")
+    ax.set_ylabel("准确率")
+    ax.set_title(f"准确率曲线（{csv_path.stem}）")
     ax.grid(True, alpha=0.3)
     _force_integer_axis(ax)
     _savefig(out_acc)
@@ -149,9 +217,9 @@ def plot_main_log(csv_path: Path, df: pd.DataFrame) -> None:
     # ASR
     fig, ax = plt.subplots()
     ax.plot(df["round"], df["asr"], marker="o")
-    ax.set_xlabel("Round")
-    ax.set_ylabel("ASR")
-    ax.set_title(f"ASR Curve ({csv_path.stem})")
+    ax.set_xlabel("轮次")
+    ax.set_ylabel("攻击成功率（ASR）")
+    ax.set_title(f"攻击成功率曲线（{csv_path.stem}）")
     ax.grid(True, alpha=0.3)
     _force_integer_axis(ax)
     _savefig(out_asr)
@@ -159,18 +227,18 @@ def plot_main_log(csv_path: Path, df: pd.DataFrame) -> None:
     # ACC vs ASR
     fig, ax = plt.subplots()
     ax.plot(df["asr"], df["accuracy"], marker="o")
-    ax.set_xlabel("ASR")
-    ax.set_ylabel("Accuracy")
-    ax.set_title(f"ACC vs ASR ({csv_path.stem})")
+    ax.set_xlabel("攻击成功率（ASR）")
+    ax.set_ylabel("准确率")
+    ax.set_title(f"准确率与攻击成功率（{csv_path.stem}）")
     ax.grid(True, alpha=0.3)
     _savefig(out_acc_vs_asr)
 
     # Loss
     fig, ax = plt.subplots()
     ax.plot(df["round"], df["loss"], marker="o")
-    ax.set_xlabel("Round")
-    ax.set_ylabel("Loss")
-    ax.set_title(f"Loss Curve ({csv_path.stem})")
+    ax.set_xlabel("轮次")
+    ax.set_ylabel("损失")
+    ax.set_title(f"损失曲线（{csv_path.stem}）")
     ax.grid(True, alpha=0.3)
     _force_integer_axis(ax)
     _savefig(out_loss)
@@ -207,7 +275,7 @@ def _plot_grouped_scatter_by_round(
                 alpha=0.85,
                 label=_round_label(r),
             )
-        _legend_outside(ax, title="Round")
+        _legend_outside(ax, title="轮次")
     else:
         rounds = df["round"].to_numpy(dtype=float)
 
@@ -222,7 +290,7 @@ def _plot_grouped_scatter_by_round(
                 alpha=0.85,
             )
             cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-            cbar.set_label(color_by)
+            cbar.set_label(_metric_label(color_by))
         else:
             norm = Normalize(
                 vmin=float(pd.Series(rounds).min()),
@@ -239,11 +307,11 @@ def _plot_grouped_scatter_by_round(
                 alpha=0.85,
             )
             cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-            cbar.set_label("Round")
+            cbar.set_label("轮次")
             cbar.locator = mticker.MaxNLocator(integer=True)
             cbar.update_ticks()
 
-    ax.set_xlabel("Client ID")
+    ax.set_xlabel("客户端 ID")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
@@ -289,8 +357,8 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         df,
         ycol="score",
-        ylabel="Score",
-        title=f"Client Score by Round ({csv_path.stem})",
+        ylabel="分数",
+        title=f"客户端分数随轮次变化（{csv_path.stem}）",
         outfile_suffix="_score_by_round.png",
     )
 
@@ -299,8 +367,8 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         df,
         ycol="norm",
-        ylabel="Norm",
-        title=f"Client Norm by Round ({csv_path.stem})",
+        ylabel="更新范数",
+        title=f"客户端更新范数随轮次变化（{csv_path.stem}）",
         outfile_suffix="_norm_by_round.png",
     )
 
@@ -309,8 +377,8 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         df,
         ycol="cosine",
-        ylabel="Cosine",
-        title=f"Client Cosine by Round ({csv_path.stem})",
+        ylabel="余弦相似度",
+        title=f"客户端余弦相似度随轮次变化（{csv_path.stem}）",
         outfile_suffix="_cosine_by_round.png",
     )
 
@@ -320,12 +388,12 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
     suspicious_scores = df.loc[df["suspicious"] == 1, "score"]
 
     if len(benign_scores) > 0:
-        ax.hist(benign_scores, bins=20, alpha=0.65, label="benign")
+        ax.hist(benign_scores, bins=20, alpha=0.65, label="良性")
     if len(suspicious_scores) > 0:
-        ax.hist(suspicious_scores, bins=20, alpha=0.65, label="suspicious")
-    ax.set_xlabel("Score")
-    ax.set_ylabel("Count")
-    ax.set_title(f"Score Distribution ({csv_path.stem})")
+        ax.hist(suspicious_scores, bins=20, alpha=0.65, label="可疑")
+    ax.set_xlabel("分数")
+    ax.set_ylabel("数量")
+    ax.set_title(f"分数分布（{csv_path.stem}）")
     ax.grid(True, alpha=0.3)
     if len(benign_scores) > 0 or len(suspicious_scores) > 0:
         _legend_outside(ax)
@@ -343,16 +411,16 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
 
     ax.plot(suspicious_by_round["round"], suspicious_by_round["suspicious"],
             marker="o", linestyle="-", linewidth=2, markersize=6,
-            label="Suspicious (detected)", color="red")
+            label="可疑客户端（检测结果）", color="red")
 
     if not malicious_by_round.empty:
         ax.plot(malicious_by_round["round"], malicious_by_round["is_malicious"],
                 marker="s", linestyle="--", linewidth=2, markersize=6,
-                label="Malicious (ground truth)", color="blue")
+                label="恶意客户端（真实标签）", color="blue")
 
-    ax.set_xlabel("Round")
-    ax.set_ylabel("Count")
-    ax.set_title(f"Suspicious vs Malicious Clients by Round ({csv_path.stem})")
+    ax.set_xlabel("轮次")
+    ax.set_ylabel("数量")
+    ax.set_title(f"每轮可疑客户端与恶意客户端数量（{csv_path.stem}）")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best")
     _force_integer_axis(ax)
@@ -366,14 +434,14 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
     labels = []
     if benign_scores:
         groups.append(benign_scores)
-        labels.append("benign")
+        labels.append("良性")
     if suspicious_scores:
         groups.append(suspicious_scores)
-        labels.append("suspicious")
+        labels.append("可疑")
     if groups:
         ax.boxplot(groups, tick_labels=labels, showfliers=False)
-        ax.set_ylabel("Score")
-        ax.set_title(f"Score Boxplot by Detection Label ({csv_path.stem})")
+        ax.set_ylabel("分数")
+        ax.set_title(f"按检测标签分组的分数箱线图（{csv_path.stem}）")
         ax.grid(True, axis="y", alpha=0.3)
         _savefig(out_score_box)
     else:
@@ -389,12 +457,12 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
         alpha=0.85,
         s=28,
     )
-    ax.set_xlabel("Norm")
-    ax.set_ylabel("Score")
-    ax.set_title(f"Score vs Norm ({csv_path.stem})")
+    ax.set_xlabel("更新范数")
+    ax.set_ylabel("分数")
+    ax.set_title(f"分数与更新范数（{csv_path.stem}）")
     ax.grid(True, alpha=0.3)
     cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-    cbar.set_label("Suspicious (0=benign, 1=suspicious)")
+    cbar.set_label("可疑标记（0=良性，1=可疑）")
     _savefig(out_score_norm_scatter)
 
     # 8) Score vs cosine scatter
@@ -407,12 +475,12 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
         alpha=0.85,
         s=28,
     )
-    ax.set_xlabel("Cosine")
-    ax.set_ylabel("Score")
-    ax.set_title(f"Score vs Cosine ({csv_path.stem})")
+    ax.set_xlabel("余弦相似度")
+    ax.set_ylabel("分数")
+    ax.set_title(f"分数与余弦相似度（{csv_path.stem}）")
     ax.grid(True, alpha=0.3)
     cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-    cbar.set_label("Suspicious (0=benign, 1=suspicious)")
+    cbar.set_label("可疑标记（0=良性，1=可疑）")
     _savefig(out_score_cosine_scatter)
 
     # 9) Score colored by GT malicious label
@@ -427,12 +495,12 @@ def plot_client_log(csv_path: Path, df: pd.DataFrame) -> None:
             alpha=0.85,
             s=28,
         )
-        ax.set_xlabel("Client ID")
-        ax.set_ylabel("Score")
-        ax.set_title(f"Score by Ground Truth ({csv_path.stem})")
+        ax.set_xlabel("客户端 ID")
+        ax.set_ylabel("分数")
+        ax.set_title(f"按真实标签着色的客户端分数（{csv_path.stem}）")
         ax.grid(True, alpha=0.3)
         cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-        cbar.set_label("is_malicious (0=benign, 1=malicious)")
+        cbar.set_label("是否为恶意客户端（0=良性，1=恶意）")
         _force_integer_axis(ax)
         _savefig(out_label_scatter)
     else:
@@ -465,13 +533,13 @@ def plot_roc_from_clients_csv(csv_path: Path, df: pd.DataFrame) -> None:
         return
 
     fig, ax = plt.subplots(figsize=(7.0, 6.0))
-    ax.plot(fpr, tpr, lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
-    ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random (AUC=0.5)')
+    ax.plot(fpr, tpr, lw=2, label=f'ROC 曲线（AUC = {roc_auc:.3f}）')
+    ax.plot([0, 1], [0, 1], 'k--', lw=1, label='随机猜测（AUC=0.5）')
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
-    ax.set_xlabel('False Positive Rate (FPR)')
-    ax.set_ylabel('True Positive Rate (TPR)')
-    ax.set_title(f'ROC Curve - {csv_path.stem}')
+    ax.set_xlabel('假正例率（FPR）')
+    ax.set_ylabel('真正例率（TPR）')
+    ax.set_title(f'ROC 曲线 - {csv_path.stem}')
     ax.legend(loc="lower right")
     ax.grid(alpha=0.3)
 
@@ -525,9 +593,9 @@ def _plot_metric_lines(
 
     fig, ax = plt.subplots(figsize=(8.5, 5.2))
     for k in present:
-        ax.plot(wide["round"], wide[k], marker="o", label=k)
+        ax.plot(wide["round"], wide[k], marker="o", label=_metric_label(k))
 
-    ax.set_xlabel("Round")
+    ax.set_xlabel("轮次")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
@@ -565,8 +633,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         wide,
         detection_keys,
-        title=f"Detection Confusion Counts ({csv_path.stem})",
-        ylabel="Count",
+        title=f"检测混淆计数（{csv_path.stem}）",
+        ylabel="数量",
         outfile_suffix="_detection_confusion.png",
     )
 
@@ -579,8 +647,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         wide,
         detection_rate_keys,
-        title=f"Detection Rates ({csv_path.stem})",
-        ylabel="Rate",
+        title=f"检测比率（{csv_path.stem}）",
+        ylabel="比率",
         outfile_suffix="_detection_rates.png",
     )
 
@@ -597,8 +665,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         wide,
         summary_keys,
-        title=f"Detection Summary ({csv_path.stem})",
-        ylabel="Count",
+        title=f"检测汇总（{csv_path.stem}）",
+        ylabel="数量",
         outfile_suffix="_detection_summary.png",
     )
 
@@ -616,8 +684,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         wide,
         score_keys,
-        title=f"Detection Score Statistics ({csv_path.stem})",
-        ylabel="Value",
+        title=f"检测分数统计（{csv_path.stem}）",
+        ylabel="数值",
         outfile_suffix="_detection_scores.png",
     )
 
@@ -635,8 +703,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         wide,
         agg_keys,
-        title=f"Aggregation Metrics ({csv_path.stem})",
-        ylabel="Value",
+        title=f"聚合指标（{csv_path.stem}）",
+        ylabel="数值",
         outfile_suffix="_aggregation_metrics.png",
     )
 
@@ -655,8 +723,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
         csv_path,
         wide,
         client_keys,
-        title=f"Client Defense Metrics ({csv_path.stem})",
-        ylabel="Value",
+        title=f"客户端防御指标（{csv_path.stem}）",
+        ylabel="数值",
         outfile_suffix="_client_defense_metrics.png",
     )
 
@@ -676,9 +744,9 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
     if present:
         fig, ax = plt.subplots(figsize=(9.0, 5.4))
         for k in present:
-            ax.plot(wide["round"], wide[k], marker="o", label=k)
-        ax.set_xlabel("Round")
-        ax.set_title(f"Detection Overview ({csv_path.stem})")
+            ax.plot(wide["round"], wide[k], marker="o", label=_metric_label(k))
+        ax.set_xlabel("轮次")
+        ax.set_title(f"检测总览（{csv_path.stem}）")
         ax.grid(True, alpha=0.3)
         _force_integer_axis(ax)
         _legend_outside(ax, ncol=2)
@@ -694,8 +762,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
             csv_path,
             wide,
             agg_removal_rate_keys,
-            title=f"Aggregation Removal Rates ({csv_path.stem})",
-            ylabel="Rate",
+            title=f"聚合移除率（{csv_path.stem}）",
+            ylabel="比率",
             outfile_suffix="_aggregation_removal_rates.png",
         )
 
@@ -709,8 +777,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
             csv_path,
             wide,
             agg_removed_count_keys,
-            title=f"Aggregation Removed Clients ({csv_path.stem})",
-            ylabel="Count",
+            title=f"聚合移除客户端数（{csv_path.stem}）",
+            ylabel="数量",
             outfile_suffix="_aggregation_removed_counts.png",
         )
 
@@ -724,8 +792,8 @@ def plot_metrics_log(csv_path: Path, df: pd.DataFrame) -> None:
             csv_path,
             wide,
             agg_kept_count_keys,
-            title=f"Aggregation Kept Clients ({csv_path.stem})",
-            ylabel="Count",
+            title=f"聚合保留客户端数（{csv_path.stem}）",
+            ylabel="数量",
             outfile_suffix="_aggregation_kept_counts.png",
         )
 
@@ -762,10 +830,10 @@ def plot_multi_experiment_curves(results_dir: Path, metric: str = "accuracy", ex
     for exp_name, df in exp_data:
         ax.plot(df["round"], df[metric], marker='o', label=exp_name)
 
-    ax.set_xlabel("Round")
-    ylabel = "Accuracy" if metric == "accuracy" else "Attack Success Rate (ASR)"
+    ax.set_xlabel("轮次")
+    ylabel = "准确率" if metric == "accuracy" else "攻击成功率（ASR）"
     ax.set_ylabel(ylabel)
-    ax.set_title(f"{ylabel} Comparison Across Experiments")
+    ax.set_title(f"各实验{ylabel}对比")
     ax.grid(True, alpha=0.3)
     _force_integer_axis(ax)
     _legend_outside(ax, ncol=1)
@@ -811,9 +879,9 @@ def plot_multi_experiment_aggregation_metric(results_dir: Path, metric_key: str,
     fig, ax = plt.subplots(figsize=(8.5, 5.2))
     for exp_name, df_metric in exp_data:
         ax.plot(df_metric["round"], df_metric["value"], marker='o', label=exp_name)
-    ax.set_xlabel("Round")
+    ax.set_xlabel("轮次")
     ax.set_ylabel(ylabel)
-    ax.set_title(f"{ylabel} Comparison Across Experiments")
+    ax.set_title(f"各实验{ylabel}对比")
     ax.grid(True, alpha=0.3)
     _force_integer_axis(ax)
     _legend_outside(ax, ncol=1)
@@ -839,9 +907,9 @@ def plot_multi_experiment_summary(summary_csv: Path) -> None:
         # 添加标签
     for _, row in df.iterrows():
         ax.annotate(row["experiment"], (row["asr"], row["accuracy"]), fontsize=8)
-    ax.set_xlabel("ASR (final round)")
-    ax.set_ylabel("Accuracy (final round)")
-    ax.set_title("Defense Effectiveness: ACC vs ASR")
+    ax.set_xlabel("攻击成功率（最终轮次）")
+    ax.set_ylabel("准确率（最终轮次）")
+    ax.set_title("防御效果：准确率与攻击成功率")
     ax.grid(alpha=0.3)
     # 添加理想区域标记
     ax.axhline(y=0.6, color='gray', linestyle='--', alpha=0.5)
@@ -861,11 +929,11 @@ def plot_multi_experiment_summary(summary_csv: Path) -> None:
                 x = np.arange(len(det_df))
                 width = 0.2
                 for i, m in enumerate(present):
-                    ax.bar(x + i*width, det_df[m], width, label=m)
+                    ax.bar(x + i*width, det_df[m], width, label=_metric_label(m))
                 ax.set_xticks(x + width*(len(present)-1)/2)
                 ax.set_xticklabels(det_df["experiment"], rotation=45, ha="right")
-                ax.set_ylabel("Score")
-                ax.set_title("Detection Performance Comparison")
+                ax.set_ylabel("分数")
+                ax.set_title("检测性能对比")
                 ax.legend()
                 ax.grid(axis='y', alpha=0.3)
                 out_path = summary_csv.parent / "summary_detection_metrics.png"
@@ -887,10 +955,10 @@ def plot_multi_experiment_summary(summary_csv: Path) -> None:
         if not agg_df.empty:
             # 重命名列名以便绘图显示更友好
             rename_map = {
-                "avg_malicious_removal_rate": "Malicious Removal Rate",
-                "avg_benign_removal_rate": "Benign Removal Rate",
-                "avg_kept_malicious": "Avg Kept Malicious",
-                "avg_selected_clients": "Avg Selected Clients",
+                "avg_malicious_removal_rate": "恶意移除率",
+                "avg_benign_removal_rate": "良性移除率",
+                "avg_kept_malicious": "平均保留恶意数",
+                "avg_selected_clients": "平均选中客户端数",
             }
             fig, ax = plt.subplots(figsize=(max(8, len(agg_df)*0.8), 5.0))
             x = np.arange(len(agg_df))
@@ -900,8 +968,8 @@ def plot_multi_experiment_summary(summary_csv: Path) -> None:
                 ax.bar(x + offset, agg_df[col], width, label=rename_map.get(col, col))
             ax.set_xticks(x)
             ax.set_xticklabels(agg_df["experiment"], rotation=45, ha="right")
-            ax.set_ylabel("Value")
-            ax.set_title("Aggregation Performance Comparison (Averages)")
+            ax.set_ylabel("数值")
+            ax.set_title("聚合性能对比（平均值）")
             ax.legend()
             ax.grid(axis='y', alpha=0.3)
             out_path = summary_csv.parent / "summary_aggregation_metrics.png"
@@ -962,13 +1030,13 @@ def main(argv: list[str]) -> int:
                     plot_multi_experiment_aggregation_metric(
                         results_root, exp_filter=exp_names, output_dir=p,
                         metric_key="agg_malicious_removal_rate",
-                        ylabel="Malicious Removal Rate",
+                        ylabel="恶意客户端移除率",
                         filename="comparison_malicious_removal_rate.png"
                     )
                     plot_multi_experiment_aggregation_metric(
                         results_root, exp_filter=exp_names, output_dir=p,
                         metric_key="agg_benign_removal_rate",
-                        ylabel="Benign Removal Rate",
+                        ylabel="良性客户端移除率",
                         filename="comparison_benign_removal_rate.png"
                     )
                 # 生成总结图表（散点图、条形图）

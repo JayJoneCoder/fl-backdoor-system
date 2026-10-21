@@ -128,7 +128,7 @@ const FIELD_LABELS: Record<string, string> = {
 const GROUP_LABELS: Record<string, string> = {
   core: '核心配置',
   federated: '联邦学习参数',
-  attack: '攻击参数',
+  attack: '对抗性安全测试参数',
   defense: '防御参数',
   management: '实验管理',
   other: '其他配置',
@@ -537,7 +537,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       title={
         <Space>
           {GROUP_LABELS.defense || '防御参数'}
-          <Tag color={isDirty ? 'error' : 'success'}>
+          <Tag color={isDirty ? 'error' : 'default'}>
             {isDirty ? '有未保存的更改' : '所有更改已保存'}
           </Tag>
         </Space>
@@ -546,16 +546,16 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       styles={{ body: collapsedGroups.defense ? { display: 'none' } : {} }}
       extra={sectionActions('defense', '配置组: defense')}
     >
-      <Row gutter={16}>
+      <Row className="config-field-grid">
         {mainFieldItems.map(key => {
           const visible = isFieldVisible(key);
           return visible ? (
-            <Col span={8} key={key}>
+            <Col key={key}>
               <Form.Item
                 name={key}
                 label={FIELD_LABELS[key] || key}
                 tooltip={`${key}: ${schema[key]?.description || ''}`}
-                validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                className={isFieldDirty(key) ? 'is-unsaved' : undefined}
               >
                 {renderField(key)}
               </Form.Item>
@@ -566,16 +566,16 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       {clientVisible && (
         <>
           <Divider style={{ margin: '16px 0 8px' }}>客户端防御参数</Divider>
-          <Row gutter={16}>
+          <Row className="config-field-grid">
             {clientFields.map(key => {
               const visible = isFieldVisible(key);
               return visible ? (
-                <Col span={8} key={key}>
+                <Col key={key}>
                   <Form.Item
                     name={key}
                     label={FIELD_LABELS[key] || key}
                     tooltip={`${key}: ${schema[key]?.description || ''}`}
-                    validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                    className={isFieldDirty(key) ? 'is-unsaved' : undefined}
                   >
                     {renderField(key)}
                   </Form.Item>
@@ -588,16 +588,16 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       {detectionVisible && (
         <>
           <Divider style={{ margin: '16px 0 8px' }}>服务端检测参数</Divider>
-          <Row gutter={16}>
+          <Row className="config-field-grid">
             {detectionFields.map(key => {
               const visible = isFieldVisible(key);
               return visible ? (
-                <Col span={8} key={key}>
+                <Col key={key}>
                   <Form.Item
                     name={key}
                     label={FIELD_LABELS[key] || key}
                     tooltip={`${key}: ${schema[key]?.description || ''}`}
-                    validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                    className={isFieldDirty(key) ? 'is-unsaved' : undefined}
                   >
                     {renderField(key)}
                   </Form.Item>
@@ -610,16 +610,16 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       {aggregationVisible && (
         <>
           <Divider style={{ margin: '16px 0 8px' }}>聚合防御参数</Divider>
-          <Row gutter={16}>
+          <Row className="config-field-grid">
             {aggregationFields.map(key => {
               const visible = isFieldVisible(key);
               return visible ? (
-                <Col span={8} key={key}>
+                <Col key={key}>
                   <Form.Item
                     name={key}
                     label={FIELD_LABELS[key] || key}
                     tooltip={`${key}: ${schema[key]?.description || ''}`}
-                    validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                    className={isFieldDirty(key) ? 'is-unsaved' : undefined}
                   >
                     {renderField(key)}
                   </Form.Item>
@@ -990,8 +990,9 @@ const renderDefenseGroup = (defenseFields: string[]) => {
 
   return (
     <>
-      <div style={{ marginBottom: 16, textAlign: 'right' }}>
-        <Space>
+      <div className="config-toolbar">
+        <span className="config-toolbar__label">实验参数</span>
+        <Space wrap>
           <Button icon={<HistoryOutlined />} onClick={() => { setBackupModalVisible(true); loadBackups(); }}>
             备份管理
           </Button>
@@ -1001,6 +1002,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
         </Space>
       </div>
       <Form
+        className="configuration-form"
         form={form}
         layout="vertical"
         onFinish={onFinish}
@@ -1017,7 +1019,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
                 title={
                   <Space>
                     {GROUP_LABELS.other}
-                    <Tag color={getGroupDirtyStatus(unknownFields) ? 'error' : 'success'}>
+                    <Tag color={getGroupDirtyStatus(unknownFields) ? 'error' : 'default'}>
                       {getGroupDirtyStatus(unknownFields) ? '有未保存的更改' : '所有更改已保存'}
                     </Tag>
                   </Space>
@@ -1026,14 +1028,14 @@ const renderDefenseGroup = (defenseFields: string[]) => {
                 styles={{ body: collapsedGroups.other ? { display: 'none' } : {} }}
                 extra={sectionActions('other', '无法被标准表单解析的字段，可直接编辑')}
               >
-                <Row gutter={16}>
+                <Row className="config-field-grid">
                   {unknownFields.map((key) => (
-                    <Col span={8} key={key}>
+                    <Col key={key}>
                       <Form.Item
                         name={key}
                         label={FIELD_LABELS[key] || key}
                         tooltip={`${key} (自定义字段)`}
-                        validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                        className={isFieldDirty(key) ? 'is-unsaved' : undefined}
                       >
                         {renderField(key)}
                       </Form.Item>
@@ -1056,7 +1058,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
               title={
                 <Space>
                   {GROUP_LABELS[group] || group}
-                  <Tag color={isDirty ? 'error' : 'success'}>
+                  <Tag color={isDirty ? 'error' : 'default'}>
                     {isDirty ? '有未保存的更改' : '所有更改已保存'}
                   </Tag>
                 </Space>
@@ -1065,16 +1067,16 @@ const renderDefenseGroup = (defenseFields: string[]) => {
               styles={{ body: collapsedGroups[group] ? { display: 'none' } : {} }}
               extra={sectionActions(group, `配置组: ${group}`)}
             >
-              <Row gutter={16}>
+              <Row className="config-field-grid">
                 {groupFields.map((key) => {
                   const visible = isFieldVisible(key);
                   return visible ? (
-                    <Col span={8} key={key}>
+                    <Col key={key}>
                       <Form.Item
                         name={key}
                         label={FIELD_LABELS[key] || key}
                         tooltip={`${key}: ${schema[key]?.description || ''}`}
-                        validateStatus={isFieldDirty(key) ? 'error' : undefined}
+                        className={isFieldDirty(key) ? 'is-unsaved' : undefined}
                       >
                         {renderField(key)}
                       </Form.Item>
@@ -1087,17 +1089,18 @@ const renderDefenseGroup = (defenseFields: string[]) => {
             </div>
           );
         })}
-        <Form.Item>
-          <Space>
+        <Form.Item className="config-savebar">
+          <Space wrap>
             <Tooltip title="保存当前用户设置的配置，并生成 .bak 备份供用户恢复">
-              <Button type="primary" htmlType="submit" loading={loading}>
+              <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading}>
                 保存配置
               </Button>
             </Tooltip>
             <Dropdown menu={{ items: resetMenuItems }}>
-              <Button>重置 ▼</Button>
+              <Button>重置 <DownOutlined /></Button>
             </Dropdown>
           </Space>
+          <span className="config-savebar__hint">保存参数后即可在下方启动实验</span>
         </Form.Item>
       </Form>
 
@@ -1191,6 +1194,7 @@ const renderDefenseGroup = (defenseFields: string[]) => {
       >
         <Table
           loading={backupLoading}
+          scroll={{ x: 720 }}
           dataSource={backups}
           rowKey="filename"
           columns={[

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from backend.tests.auth_support import authenticated_client
 
 from backend import main
 from backend.catalog import APPLICATION_ID, Catalog
@@ -113,6 +114,18 @@ class CatalogTests(CatalogFixture):
         for kwargs in ({"limit": 0}, {"limit": 201}, {"offset": -1}):
             with self.assertRaises(ValueError):
                 self.catalog.query(self.root, **kwargs)
+
+    def test_search_matches_name_or_run_uuid(self):
+        self.run_files("实验A")
+        directory = self.run_files("实验B")
+        self.catalog.sync_root(self.root)
+        run_id = json.loads((directory / "run.json").read_text(encoding="utf-8"))["run_id"]
+        self.assertEqual([item["name"] for item in self.catalog.query(self.root, search=run_id)["items"]],
+                         ["实验B"])
+        self.assertEqual(self.catalog.query(self.root, search=run_id.upper())["total"], 1)
+        self.assertEqual(self.catalog.query(self.root, search=run_id[:8])["total"], 1)
+        self.assertEqual([item["name"] for item in self.catalog.query(self.root, search="实验A")["items"]],
+                         ["实验A"])
 
     def test_replacement_at_same_path_retains_distinct_run_ids(self):
         directory = self.run_files()
@@ -277,7 +290,7 @@ class CatalogApiTests(CatalogFixture):
                             patch.object(main, "_results_root", return_value=self.root)):
             replacement.start()
             self.addCleanup(replacement.stop)
-        self.client = TestClient(main.app, raise_server_exceptions=False)
+        self.client = authenticated_client(self, main.app, raise_server_exceptions=False)
         self.addCleanup(self.client.close)
 
     def test_legacy_and_paginated_api_and_detail_use_imported_records(self):
@@ -291,6 +304,11 @@ class CatalogApiTests(CatalogFixture):
         detail = self.client.get("/api/experiments/one").json()
         self.assertEqual(detail["metrics"]["accuracy"], 0.8)
         self.assertTrue(detail["catalog_id"])
+        response = self.client.get("/api/experiments",
+                                   params={"search": detail["run_id"], "paginated": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["total"], 1)
+        self.assertEqual(response.json()["items"][0]["name"], "one")
         self.assertEqual(self.client.get("/api/experiments", params={"limit": 0}).status_code, 422)
         self.assertEqual(self.client.get("/api/catalog/status").json()["integrity"], "ok")
 

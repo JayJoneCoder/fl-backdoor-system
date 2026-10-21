@@ -17,11 +17,34 @@ from fl_backdoor.utils.paths import child_path, validate_name
 from backend.config_validation import (
     OPTIONAL_FIELDS, normalize_values, parse_integer, validate_constraints,
 )
+from backend.identity import CURRENT_USER, CURRENT_STORE
 
 PROJECT_ROOT = Path(__file__).parent.parent
 TOML_PATH = PROJECT_ROOT / "pyproject.toml"
 BACKUP_PATH = PROJECT_ROOT / "pyproject.toml.bak"
 _CONFIG_LOCK = RLock()
+
+
+def config_path() -> Path:
+    """Private drafts/backups share the original schema, not another user's values."""
+    user, store = CURRENT_USER.get(), CURRENT_STORE.get()
+    if not user or not store:
+        return TOML_PATH
+    directory = store.path.parent / "user-configs" / user["uid"]
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "pyproject.toml"
+    with _CONFIG_LOCK:
+        if not path.exists():
+            _atomic_write(path, TOML_PATH.read_bytes())
+    return path
+
+
+def _backup_project_root() -> Path:
+    return config_path().parent if CURRENT_USER.get() else PROJECT_ROOT
+
+
+def _write_config_path() -> Path:
+    return config_path()
 
 # ----------------------------------------------------------------------
 # Configuration schema for frontend dynamic forms
@@ -526,7 +549,7 @@ CONFIG_GROUPS = ["core", "federated", "attack", "defense", "management"]
 
 def _read_toml() -> dict[str, Any]:
     with _CONFIG_LOCK:
-        with open(TOML_PATH, "rb") as f:
+        with open(config_path(), "rb") as f:
             return tomli.load(f)
 
 
@@ -551,7 +574,7 @@ def _write_toml(data: dict[str, Any]) -> None:
     # Serialize completely before creating/opening any destination file.
     content = tomli_w.dumps(data).encode("utf-8")
     with _CONFIG_LOCK:
-        _atomic_write(TOML_PATH, content)
+        _atomic_write(_write_config_path(), content)
 
 
 def validate_document(content: str) -> dict[str, Any]:
@@ -589,7 +612,7 @@ def replace_config(content: str, *, backup_current: bool = False, backup_name: s
     with _CONFIG_LOCK:
         if backup_current:
             _backup_before_save(backup_name)
-        _atomic_write(TOML_PATH, encoded)
+        _atomic_write(_write_config_path(), encoded)
 
 
 def _get_config_section(data: dict[str, Any]) -> dict[str, Any]:
@@ -636,7 +659,16 @@ def get_results_dir(section: dict[str, Any] | None = None, *, default: Path | No
     if section is None:
         section = _get_config_section(_read_toml())
     from fl_backdoor.utils.paths import resolve_results_root
-    return resolve_results_root(section.get("results-dir", str(default) if default is not None else "results"), TOML_PATH.parent)
+    root = resolve_results_root(section.get("results-dir", str(default) if default is not None else "results"), TOML_PATH.parent)
+    if CURRENT_USER.get():
+        # Never allow a web account to point StaticFiles/runner at database,
+        # source, backups or another filesystem directory.
+        with TOML_PATH.open("rb") as stream:
+            baseline = _get_config_section(tomli.load(stream))
+        allowed = resolve_results_root(baseline.get("results-dir", "results"), TOML_PATH.parent)
+        if root != allowed:
+            raise ValueError("多用户模式下结果根目录由部署配置统一管理，不能在网页中更改。")
+    return root
 
 
 def get_ui_config() -> dict[str, Any]:
@@ -677,23 +709,24 @@ def build_run_config(content: bytes, updates: dict[str, Any]) -> bytes:
     return serialized.encode("utf-8")
 
 
-def restore_run_config(original: bytes, applied: bytes) -> bool:
+def restore_run_config(original: bytes, applied: bytes, *, path: Path | None = None) -> bool:
     """Restore only our own write; never overwrite a user's later config save."""
     with _CONFIG_LOCK:
-        if TOML_PATH.read_bytes() != applied:
+        target = path or config_path()
+        if target.read_bytes() != applied:
             return False
-        _atomic_write(TOML_PATH, original)
+        _atomic_write(target, original)
         return True
 
 
 def update_config(updates: dict[str, Any], *, backup_current: bool = False, backup_name: str | None = None) -> None:
     """Update configuration after converting UI-only fields."""
     with _CONFIG_LOCK:
-        content = build_run_config(TOML_PATH.read_bytes(), updates)
+        content = build_run_config(config_path().read_bytes(), updates)
         # All validation and serialization precedes backup mutation, too.
         if backup_current:
             _backup_before_save(backup_name)
-        _atomic_write(TOML_PATH, content)
+        _atomic_write(_write_config_path(), content)
 
 
 def _prepare_storage_updates(updates: dict[str, Any], current: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -720,7 +753,7 @@ def _prepare_storage_updates(updates: dict[str, Any], current: dict[str, Any] | 
 
 def backup_config() -> None:
     with _CONFIG_LOCK:
-        _atomic_write(_legacy_backup_path(), TOML_PATH.read_bytes())
+        _atomic_write(_legacy_backup_path(), config_path().read_bytes())
 
 
 def _backup_before_save(name: str | None) -> None:
@@ -789,10 +822,12 @@ BACKUP_PATTERN = re.compile(r"^(.+)\.toml$")
 
 
 def _backup_directory() -> Path:
-    return child_path(PROJECT_ROOT, "config_backups")
+    return child_path(_backup_project_root(), "config_backups")
 
 
 def _legacy_backup_path() -> Path:
+    if CURRENT_USER.get():
+        return config_path().parent / "pyproject.toml.bak"
     path = child_path(TOML_PATH.parent, BACKUP_PATH.name, label="Automatic backup")
     if path != BACKUP_PATH.resolve() or path == TOML_PATH.resolve():
         raise ValueError("Invalid automatic backup path.")
@@ -802,7 +837,7 @@ def list_backups() -> list[dict[str, Any]]:
     """列出所有备份文件及其元信息"""
     backups = []
     seen = set()
-    candidates = list(_backup_directory().glob("*.toml")) + list(PROJECT_ROOT.glob("*.toml"))
+    candidates = list(_backup_directory().glob("*.toml")) + list(_backup_project_root().glob("*.toml"))
     for p in candidates:
         # 排除主配置文件和旧式备份
         if p.name.casefold() in seen:
@@ -859,7 +894,7 @@ def _backup_path(filename: str, *, allow_legacy: bool = False, for_write: bool =
     path = child_path(_backup_directory(), filename, label="Backup filename")
     # Old root-level backups remain accessible without moving or deleting them.
     if not for_write and not path.exists():
-        path = child_path(PROJECT_ROOT, filename, label="Backup filename")
+        path = child_path(_backup_project_root(), filename, label="Backup filename")
         if path.is_file():
             # Compatibility is for actual old experiment configurations, not
             # arbitrary root-level TOML files the caller would like to delete.
@@ -939,7 +974,7 @@ def _resolve_backup_path(filename: str, on_conflict: str = 'ask') -> Path | None
     if on_conflict not in {"ask", "auto", "overwrite"}:
         raise ValueError("on_conflict must be ask, auto or overwrite.")
     path = _backup_path(filename, for_write=True)
-    legacy = child_path(PROJECT_ROOT, filename, label="Backup filename")
+    legacy = child_path(_backup_project_root(), filename, label="Backup filename")
     if not path.exists() and not legacy.exists():
         return path
 
@@ -951,7 +986,7 @@ def _resolve_backup_path(filename: str, on_conflict: str = 'ask') -> Path | None
         while True:
             new_filename = f"{base}({counter}){ext}"
             new_path = _backup_path(new_filename, for_write=True)
-            old_path = child_path(PROJECT_ROOT, new_filename, label="Backup filename")
+            old_path = child_path(_backup_project_root(), new_filename, label="Backup filename")
             if not new_path.exists() and not old_path.exists():
                 return new_path
             counter += 1
@@ -970,7 +1005,7 @@ def create_backup(custom_name: str | None = None, on_conflict: str = 'ask') -> P
         if path is None:
             return None
         path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(path, TOML_PATH.read_bytes())
+        _atomic_write(path, config_path().read_bytes())
         return path
 
 

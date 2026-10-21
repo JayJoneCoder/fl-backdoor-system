@@ -38,7 +38,7 @@ class ExperimentConfig:
     wanet_grid_size: Optional[int] = None
     wanet_noise: float = 0.05
 
-    # ---------- Frequency 攻击参数 ----------
+    # ---------- Frequency 对抗性安全测试参数 ----------
     frequency_mode: str = "dct"  # dct / fft
     frequency_band: str = "low"  # low / high
     frequency_window_size: Optional[int] = None

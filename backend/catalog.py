@@ -363,8 +363,8 @@ class Catalog:
         clauses = ["root=?", LATEST_RUN]
         values = [_root(root)]
         if search:
-            clauses.append("instr(lower(name), lower(?)) > 0")
-            values.append(search)
+            clauses.append("(instr(lower(name), lower(?)) > 0 OR instr(lower(coalesce(source_run_id, '')), lower(?)) > 0)")
+            values.extend([search, search])
         for column, value in (("status", status), ("dataset", dataset)):
             if value is not None:
                 clauses.append(f"{column}=?")

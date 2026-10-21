@@ -1,9 +1,21 @@
 import axios from 'axios';
 import { API_BASE } from './endpoints';
+import { getCsrfToken, notifySessionExpired } from './session';
 
 export const apiClient = axios.create({
   baseURL: API_BASE,
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
+});
+
+apiClient.interceptors.request.use(config => {
+  config.headers.set('X-Lianan-Request', '1');
+  if (getCsrfToken()) config.headers.set('X-CSRF-Token', getCsrfToken());
+  return config;
+});
+apiClient.interceptors.response.use(response => response, error => {
+  if (error.response?.status === 401 && !error.config?.url?.startsWith('/api/auth/')) notifySessionExpired();
+  return Promise.reject(error);
 });
 
 // 获取配置 schema
@@ -29,7 +41,17 @@ export const stopExperiment = () => apiClient.post('/api/experiment/stop');
 export const getExperimentStatus = () => apiClient.get('/api/experiment/status');
 
 // 获取实验列表
-export const listExperiments = () => apiClient.get('/api/experiments');
+export interface ExperimentListParams {
+  search?: string;
+  status?: string;
+  dataset?: string;
+  limit?: number;
+  offset?: number;
+  paginated?: boolean;
+}
+
+export const listExperiments = (params?: ExperimentListParams) =>
+  apiClient.get('/api/experiments', { params });
 
 // 获取实验详情
 export const getExperimentDetail = (name: string) =>
@@ -103,6 +125,10 @@ export const getSummaryImages = (summaryName: string) =>
 // 下载总结 ZIP 包
 export const downloadSummaryZip = (summaryName: string) =>
   apiClient.get(`/api/summaries/${summaryName}/download`, { responseType: 'blob' });
+
+// 删除总结目录及其中的全部文件
+export const deleteSummary = (summaryName: string) =>
+  apiClient.delete(`/api/summaries/${summaryName}`);
 
 // 下载实验所有图片 ZIP
 export const downloadExperimentImages = (expName: string) =>

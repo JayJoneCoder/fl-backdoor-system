@@ -30,7 +30,8 @@ const ExperimentMetrics: React.FC<Props> = ({ name, runId, onProgress }) => {
     if (!accuracyRef.current || !lossRef.current) return;
     const accuracyChart = echarts.init(accuracyRef.current);
     const lossChart = echarts.init(lossRef.current);
-    const options = (names: string[]) => ({
+    const options = (names: string[], color: string[]) => ({
+      color,
       tooltip: { trigger: 'axis' as const },
       legend: { data: names, bottom: 4, left: 'center' },
       grid: { left: 50, right: 24, top: 24, bottom: 86 },
@@ -38,8 +39,8 @@ const ExperimentMetrics: React.FC<Props> = ({ name, runId, onProgress }) => {
       yAxis: { type: 'value' as const },
       series: names.map(seriesName => ({ name: seriesName, type: 'line' as const, showSymbol: false, data: [] as number[] })),
     });
-    accuracyChart.setOption(options(['ACC', 'ASR']));
-    lossChart.setOption(options(['Loss']));
+    accuracyChart.setOption(options(['准确率 (ACC)', '攻击成功率 (ASR)'], ['#2563b8', '#c17a37']));
+    lossChart.setOption(options(['损失 (Loss)'], ['#398673']));
     let history: MetricPoint[] = [];
     let round: number | null = null;
     let total: number | null = null;
@@ -56,10 +57,10 @@ const ExperimentMetrics: React.FC<Props> = ({ name, runId, onProgress }) => {
         frame = null;
         const rounds = history.map(point => point.round);
         accuracyChart.setOption({ xAxis: { data: rounds }, series: [
-          { name: 'ACC', data: history.map(point => point.accuracy) },
-          { name: 'ASR', data: history.map(point => point.asr) },
+          { name: '准确率 (ACC)', data: history.map(point => point.accuracy) },
+          { name: '攻击成功率 (ASR)', data: history.map(point => point.asr) },
         ] });
-        lossChart.setOption({ xAxis: { data: rounds }, series: [{ name: 'Loss', data: history.map(point => point.loss) }] });
+        lossChart.setOption({ xAxis: { data: rounds }, series: [{ name: '损失 (Loss)', data: history.map(point => point.loss) }] });
       });
     };
     const connect = () => {

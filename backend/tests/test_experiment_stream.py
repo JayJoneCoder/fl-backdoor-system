@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import tempfile
+import tomli
 import unittest
 import uuid
 from pathlib import Path
@@ -14,7 +15,7 @@ from fastapi import WebSocketDisconnect
 from backend import main
 from backend.batch_manager import BatchTask
 from backend.experiment_runner import ExperimentRunner
-from fl_backdoor.utils.run_artifacts import reserve_experiment
+from fl_backdoor.utils.run_artifacts import read_run_metadata, reserve_experiment
 
 
 class MemoryWebSocket:
@@ -67,6 +68,7 @@ class BatchWebSocketTests(unittest.IsolatedAsyncioTestCase):
         socket = MemoryWebSocket()
         manager = Mock()
         manager.get_task.return_value = task
+        manager._save_dir = Path(tempfile.gettempdir())
 
         disconnected = False
         send_text = socket.send_text
@@ -366,7 +368,7 @@ class RunnerLogTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(lines, ["Starting local SuperLink", "[ROUND 1/10]", "final summary"])
             self.assertEqual(runner.log_file.read_text(encoding="utf-8").splitlines(), lines)
 
-    async def test_start_rejects_old_directory_and_new_run_exposes_total_rounds(self):
+    async def test_repeated_name_gets_new_directory_and_keeps_previous_log(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             exp_dir = root / "same_name"
@@ -389,13 +391,23 @@ class RunnerLogTests(unittest.IsolatedAsyncioTestCase):
                  patch("backend.experiment_runner.config_manager.TOML_PATH", snapshot), \
                  patch("backend.experiment_runner.config_manager.backup_config"), \
                  patch("backend.experiment_runner.OwnedProcessTree", return_value=owner):
-                with self.assertRaises(FileExistsError):
-                    await runner.start("same_name")
+                await runner.start("same_name")
+                started_name = runner.exp_name
+                self.assertNotEqual(started_name, "same_name")
+                self.assertTrue(started_name.startswith("same_name-"))
                 self.assertEqual(log.read_text(encoding="utf-8"), "previous experiment log\n")
-                owner.spawn.assert_not_called()
+                owner.spawn.assert_called_once()
+                metadata = read_run_metadata(root / started_name)
+                self.assertEqual(metadata["name"], started_name)
+                self.assertEqual(metadata["requested_name"], "same_name")
+                snapshot_doc = tomli.loads((root / started_name / "config_snapshot.toml").read_text(encoding="utf-8"))
+                self.assertEqual(snapshot_doc["tool"]["flwr"]["app"]["config"]["run-name"], started_name)
+                self.assertEqual((await runner.get_status())["total_rounds"], 7)
+                self.assertEqual(runner.get_log_context(started_name)[0], 1)
+                await runner.wait()
                 await runner.start("new_name", backup_config=False)
                 self.assertEqual((await runner.get_status())["total_rounds"], 7)
-                self.assertEqual(runner.get_log_context("new_name")[0], 1)
+                self.assertEqual(runner.get_log_context("new_name")[0], 2)
                 await runner.wait()
 
 

@@ -45,13 +45,13 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
     chartInstance.current?.setOption({
       xAxis: { data: rounds },
       series: [
-        { name: 'ACC', data: history.map(point => point.accuracy) },
-        { name: 'ASR', data: history.map(point => point.asr) },
+        { name: '准确率 (ACC)', data: history.map(point => point.accuracy) },
+        { name: '攻击成功率 (ASR)', data: history.map(point => point.asr) },
       ],
     });
     lossChartInstance.current?.setOption({
       xAxis: { data: rounds },
-      series: [{ name: 'Loss', data: history.map(point => point.loss) }],
+      series: [{ name: '损失 (Loss)', data: history.map(point => point.loss) }],
     });
   }, []);
 
@@ -77,14 +77,15 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       if (chartRef.current && !chartInstance.current) {
         chartInstance.current = echarts.init(chartRef.current);
         chartInstance.current.setOption({
-          xAxis: { type: 'category', data: [] },
+          color: ['#2563b8', '#c17a37'],
+          xAxis: { type: 'category', name: '轮次', nameLocation: 'middle', nameGap: 30, data: [] },
           yAxis: { type: 'value' },
           tooltip: { trigger: 'axis' },
-          legend: { data: ['ACC', 'ASR'], bottom: 4, left: 'center' },
+          legend: { data: ['准确率 (ACC)', '攻击成功率 (ASR)'], bottom: 4, left: 'center' },
           grid: { left: 50, right: 24, top: 24, bottom: 86 },
           series: [
-            { name: 'ACC', type: 'line', data: [] },
-            { name: 'ASR', type: 'line', data: [] },
+            { name: '准确率 (ACC)', type: 'line', data: [] },
+            { name: '攻击成功率 (ASR)', type: 'line', data: [] },
           ],
         });
       }
@@ -92,13 +93,14 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       if (lossChartRef.current && !lossChartInstance.current) {
         lossChartInstance.current = echarts.init(lossChartRef.current);
         lossChartInstance.current.setOption({
-          xAxis: { type: 'category', data: [] },
+          color: ['#398673'],
+          xAxis: { type: 'category', name: '轮次', nameLocation: 'middle', nameGap: 30, data: [] },
           yAxis: { type: 'value' },
           tooltip: { trigger: 'axis' },
-          legend: { data: ['Loss'], bottom: 4, left: 'center' },
+          legend: { data: ['损失 (Loss)'], bottom: 4, left: 'center' },
           grid: { left: 50, right: 24, top: 24, bottom: 86 },
           series: [
-            { name: 'Loss', type: 'line', data: [] },
+            { name: '损失 (Loss)', type: 'line', data: [] },
           ],
         });
       }
@@ -201,14 +203,20 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
       const config = await getConfig();
       const total = parseTotalRounds(config.data['num-server-rounds']);
       const name = expName.trim();
-      // Start first: a name conflict must not erase the previous display.
+      // Start first: a conflict must not erase the previous display.
       const started = await startExperiment(name);
+      // A repeated name is accepted; the backend appends the run UUID to the
+      // result directory and returns that unique name for logs and metrics.
+      const startedName = typeof started.data?.name === 'string' && started.data.name ? started.data.name : name;
       setError(null);
       setStatus('running');
-      connectWS(name, started.data.run_id);
+      if (startedName !== name) setExpName(startedName);
+      connectWS(startedName, started.data.run_id);
       setCurrentRound(0);
       setTotalRound(total);
-      message.success(`实验 "${name}" 已启动`);
+      message.success(startedName === name
+        ? `实验 "${name}" 已启动`
+        : `实验 "${name}" 已启动，结果名称为 "${startedName}"`);
     } catch (e: unknown) {
       message.error('启动失败：' + getUserErrorMessage(e));
     } finally {
@@ -283,10 +291,10 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
 
   return (
     <Card title="实验控制" style={{ marginTop: 24 }}>
-      <Space direction="vertical" style={{ width: '100%' }}>
-        <Space>
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <Space wrap size={[12, 12]}>
           <Input value={expName} onChange={e => setExpName(e.target.value)}
-                 style={{ width: 200 }} disabled={busy} />
+                 className="experiment-control__name" aria-label="实验名称" placeholder="输入实验名称" disabled={busy} />
           <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStart}
                   loading={loading && !busy} disabled={busy}>
             启动实验
@@ -311,12 +319,21 @@ const ExperimentControl: React.FC<ExperimentControlProps> = ({ onBeforeStart }) 
         )}
 
         {/* 主图：ACC + ASR */}
-        <div ref={chartRef} style={{ width: '100%', height: 250, marginBottom: 10 }} />
+        <div className="experiment-chart">
+          <div className="experiment-chart__title">准确率与攻击成功率 · ACC / ASR</div>
+          <div ref={chartRef} style={{ width: '100%', height: 250 }} />
+        </div>
 
         {/* 副图：Loss */}
-        <div ref={lossChartRef} style={{ width: '100%', height: 250 }} />
+        <div className="experiment-chart">
+          <div className="experiment-chart__title">训练损失 · Loss</div>
+          <div ref={lossChartRef} style={{ width: '100%', height: 250 }} />
+        </div>
 
-        <LogViewer logs={logs} height={300} />
+        <div>
+          <div className="experiment-log__title">运行日志</div>
+          <LogViewer logs={logs} height={300} />
+        </div>
       </Space>
     </Card>
   );

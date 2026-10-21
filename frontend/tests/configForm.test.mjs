@@ -11,15 +11,16 @@ const code = compile('../src/components/ConfigForm/index.tsx');
 const requestCode = compile('../src/api/checkedFetch.ts');
 
 // Execute the real component with deterministic hooks/Form/Modal and requests.
-const harness = async () => {
+const harness = async ({ extraFields = {}, extraConfig = {} } = {}) => {
   const slots = [], effects = [], dialogs = [], successes = [], errors = [], calls = [];
   let cursor = 0, dirty = false, tree, apiFailure = null, formFailure = null;
   let fetchResponse = () => new Response('{}', { status: 200 });
   const schema = {
     'batch-size': { type: 'integer', default: 32, group: 'federated' },
     defense: { type: 'string', default: 'none', group: 'defense' },
+    ...extraFields,
   };
-  let saved = { 'batch-size': 32, defense: 'none' };
+  let saved = { 'batch-size': 32, defense: 'none', ...extraConfig };
   let values = { ...saved };
   const ref = {};
   const react = {
@@ -80,7 +81,7 @@ const harness = async () => {
     calls.push({ type: 'fetch', url, method: options?.method, body: options?.body });
     return fetchResponse(url, options);
   };
-  runInNewContext(requestCode, { exports: requestExports, fetch, Error });
+  runInNewContext(requestCode, { exports: requestExports, fetch, Error, Headers });
   runInNewContext(code, {
     exports,
     require: name => {
@@ -131,6 +132,15 @@ const harness = async () => {
     setRaw: text => { find(node => node.type === 'TextArea' && node.props.placeholder === '加载中...').props.onChange({ target: { value: text } }); render(); },
     defenseKey: () => find(node => node.type === 'Card' && node.key === 'defense')?.key,
     section: group => find(node => node.type === 'Card' && node.key === group),
+    sectionTag: group => {
+      let tag;
+      walk(find(node => node.type === 'Card' && node.key === group)?.props.title, node => {
+        if (node.type === 'Tag') tag = node;
+      });
+      return tag;
+    },
+    field: name => find(node => node.type === 'FormItem' && node.props.name === name),
+    formClass: () => find(node => node.type === Form).props.className,
     toggleSection: group => {
       let toggle;
       walk(find(node => node.type === 'Card' && node.key === group)?.props.extra, node => {
@@ -233,6 +243,106 @@ test('高级保存备份旧配置与应用新配置只用一个请求', async ()
 test('防御配置组有稳定 key', async () => {
   const h = await harness();
   assert.equal(h.defenseKey(), 'defense');
+});
+
+test('脏字段使用独立样式与红色分组提示，还原原值后清除且不冒充校验错误', async () => {
+  const h = await harness();
+  assert.equal(h.formClass(), 'configuration-form');
+  assert.equal(h.field('batch-size').props.className, undefined);
+  assert.equal(h.field('batch-size').props.validateStatus, undefined);
+  assert.equal(h.sectionTag('federated').props.color, 'default');
+  h.edit({ 'batch-size': 64 });
+  assert.equal(h.field('batch-size').props.className, 'is-unsaved');
+  assert.equal(h.field('batch-size').props.validateStatus, undefined);
+  assert.equal(h.sectionTag('federated').props.color, 'error');
+  assert.equal(h.sectionTag('federated').props.children, '有未保存的更改');
+  h.edit({ 'batch-size': 32 });
+  assert.equal(h.field('batch-size').props.className, undefined);
+  assert.equal(h.field('batch-size').props.validateStatus, undefined);
+  assert.equal(h.sectionTag('federated').props.color, 'default');
+  assert.equal(h.sectionTag('federated').props.children, '所有更改已保存');
+  assert.equal(h.calls.filter(call => call.type === 'save').length, 0);
+});
+
+test('防御字段与普通字段均显示红色提示，保存成功后清除', async () => {
+  const h = await harness();
+  h.edit({ 'batch-size': 64, defense: 'krum' });
+  for (const field of ['batch-size', 'defense']) {
+    assert.equal(h.field(field).props.className, 'is-unsaved');
+    assert.equal(h.field(field).props.validateStatus, undefined);
+  }
+  for (const group of ['federated', 'defense']) {
+    assert.equal(h.sectionTag(group).props.color, 'error');
+  }
+  await h.submit();
+  for (const field of ['batch-size', 'defense']) {
+    assert.equal(h.field(field).props.className, undefined);
+    assert.equal(h.field(field).props.validateStatus, undefined);
+  }
+  for (const group of ['federated', 'defense']) {
+    assert.equal(h.sectionTag(group).props.color, 'default');
+  }
+});
+
+test('保存失败保留脏字段红色边框与未保存红色标签', async () => {
+  const h = await harness();
+  h.edit({ 'batch-size': 64 });
+  h.failSave(new Error('save failed'));
+  await h.submit();
+  assert.equal(h.field('batch-size').props.validateStatus, undefined);
+  assert.equal(h.field('batch-size').props.className, 'is-unsaved');
+  assert.equal(h.sectionTag('federated').props.color, 'error');
+});
+
+test('自定义字段的未保存红色提示与标准字段一致，还原后清除', async () => {
+  const h = await harness({ extraConfig: { 'custom-setting': 'original' } });
+  assert.equal(h.sectionTag('other').props.color, 'default');
+  h.edit({ 'custom-setting': 'updated' });
+  assert.equal(h.field('custom-setting').props.className, 'is-unsaved');
+  assert.equal(h.field('custom-setting').props.validateStatus, undefined);
+  assert.equal(h.sectionTag('other').props.color, 'error');
+  assert.equal(h.sectionTag('other').props.children, '有未保存的更改');
+  h.edit({ 'custom-setting': 'original' });
+  assert.equal(h.field('custom-setting').props.className, undefined);
+  assert.equal(h.sectionTag('other').props.color, 'default');
+});
+
+test('防御组各子区域均使用独立未保存样式，保存后清除', async () => {
+  const fields = [
+    'client-defense-filter-ratio',
+    'detection-z-threshold',
+    'defense-krum-f',
+  ];
+  const h = await harness({
+    extraFields: Object.fromEntries(fields.map(key => [key, { type: 'float', group: 'defense' }])),
+    extraConfig: Object.fromEntries(fields.map(key => [key, 1])),
+  });
+  h.edit(Object.fromEntries(fields.map(key => [key, 2])));
+  for (const key of fields) {
+    assert.equal(h.field(key).props.className, 'is-unsaved');
+    assert.equal(h.field(key).props.validateStatus, undefined);
+  }
+  assert.equal(h.sectionTag('defense').props.color, 'error');
+  await h.submit();
+  for (const key of fields) assert.equal(h.field(key).props.className, undefined);
+  assert.equal(h.sectionTag('defense').props.color, 'default');
+});
+
+test('未保存样式覆盖输入框、数字框与选择框的红色边框及聚焦状态', () => {
+  const css = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8');
+  assert.match(css, /\.configuration-form \.is-unsaved \.ant-form-item-control-input-content > :is\(\.ant-input, \.ant-input-affix-wrapper, \.ant-input-number, \.ant-select\)\s*\{\s*border-color: var\(--ant-color-error, #c74949\);/);
+  assert.match(css, /:is\(\.ant-input:focus, \.ant-input-affix-wrapper:focus-within, \.ant-input-number:focus-within, \.ant-select:focus-within\)\s*\{[^}]*box-shadow: 0 0 0 2px var\(--ant-color-error-outline,/);
+  assert.match(css, /\.is-unsaved \.ant-form-item-label > label::after\s*\{[^}]*background: var\(--ant-color-error, #c74949\);/);
+});
+
+test('配置组使用随容器宽度调整的字段网格，而不是固定三列', async () => {
+  const h = await harness();
+  for (const group of ['federated', 'defense']) {
+    const children = h.section(group).props.children;
+    const grids = Array.isArray(children) ? children : [children];
+    const grid = grids.find(node => node?.type === 'Row');
+    assert.equal(grid.props.className, 'config-field-grid');
+  }
 });
 
 test('配置区域收起与展开保留表单内容和未保存值，不发送保存请求', async () => {

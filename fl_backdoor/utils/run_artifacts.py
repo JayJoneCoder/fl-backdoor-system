@@ -74,14 +74,41 @@ def read_run_metadata(directory: Path) -> dict:
     return data
 
 
-def reserve_experiment(root: Path, name: str) -> tuple[Path, dict]:
+NAME_LENGTH_LIMIT = 120  # Matches validate_name's default experiment-name limit.
+
+
+def _reserve_directory(root: Path, name: str, run_id: str) -> tuple[Path, str]:
+    """Create a new directory, adding this run's UUID when the name is already used.
+
+    The UUID suffix keeps every run distinct without rejecting a repeated name:
+    an existing (even empty or legacy) directory is never reused or modified.
+    """
     directory = experiment_path(root, name)
-    directory.parent.mkdir(parents=True, exist_ok=True)
     try:
-        directory.mkdir()  # Atomic reservation; never reuse even an empty directory.
-    except FileExistsError as exc:
-        raise FileExistsError(f'Experiment "{name}" already exists. Choose a new name; old results were not changed.') from exc
-    metadata = {"name": name, "run_id": uuid.uuid4().hex,
+        directory.mkdir()
+    except FileExistsError:
+        pass
+    else:
+        return directory, name
+    for length in (8, 12, len(run_id)):
+        suffix = f"-{run_id[:length]}"
+        stem = name[: NAME_LENGTH_LIMIT - len(suffix)].rstrip(" .-") or "experiment"
+        candidate = f"{stem}{suffix}"
+        directory = experiment_path(root, candidate)
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            continue
+        return directory, candidate
+    raise FileExistsError(f'Experiment "{name}" could not be given a unique result directory. Choose a new name.')
+
+
+def reserve_experiment(root: Path, name: str) -> tuple[Path, dict]:
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex
+    directory, effective_name = _reserve_directory(root, name, run_id)
+    metadata = {"name": effective_name, "requested_name": name, "run_id": run_id,
                 "created_at": datetime.now(timezone.utc).isoformat(), "status": "starting"}
     try:
         write_run_metadata(directory, metadata)
@@ -93,12 +120,13 @@ def reserve_experiment(root: Path, name: str) -> tuple[Path, dict]:
 
 def ensure_experiment(root: Path, name: str, *, run_id: str | None = None) -> tuple[Path, dict]:
     directory = experiment_path(root, name)
-    if not directory.exists():
-        if run_id:
-            raise ValueError("The managed experiment directory is missing; refusing to create a different run.")
+    if not run_id:
+        # Unmanaged runs may repeat a name; reservation adds the UUID suffix.
         return reserve_experiment(root, name)
+    if not directory.exists():
+        raise ValueError("The managed experiment directory is missing; refusing to create a different run.")
     metadata = read_run_metadata(directory)
-    if not run_id or metadata.get("run_id") != run_id or metadata.get("status") not in {"starting", "running"}:
+    if metadata.get("run_id") != run_id or metadata.get("status") not in {"starting", "running"}:
         raise FileExistsError(f'Experiment "{name}" already exists and cannot be overwritten.')
     return directory, metadata
 

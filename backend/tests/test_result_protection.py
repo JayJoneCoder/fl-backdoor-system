@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import tomli
 import tomli_w
 from fastapi.testclient import TestClient
+from backend.tests.auth_support import authenticated_client
 
 from backend import config_manager as cm, experiment_runner as er, main
 from backend.batch_manager import BatchManager
@@ -139,7 +140,7 @@ class ResultApiTests(TemporaryResultFiles, unittest.TestCase):
         replacement = patch.multiple(main, runner=self.runner, batch_manager=self.manager, execution_lock=asyncio.Lock())
         replacement.start()
         self.addCleanup(replacement.stop)
-        self.client = TestClient(main.app, raise_server_exceptions=False)
+        self.client = authenticated_client(self, main.app, raise_server_exceptions=False)
         self.addCleanup(self.client.close)
 
     def test_new_result_directory_lists_as_empty_without_creating_it(self):
@@ -170,20 +171,20 @@ class ResultApiTests(TemporaryResultFiles, unittest.TestCase):
         self.experiment("one")
         from starlette.websockets import WebSocketDisconnect
         with self.assertRaises(WebSocketDisconnect) as rejected:
-            with self.client.websocket_connect("/ws/logs/one?run_id=not-this-run") as socket:
+            with self.client.websocket_connect("/ws/logs/one?run_id=not-this-run", headers={"Origin": "http://testserver"}) as socket:
                 socket.receive_json()
         self.assertEqual(rejected.exception.code, 1008)
 
-    def test_existing_experiment_returns_409_before_any_config_or_process_change(self):
-        directory, _ = self.experiment()
-        (directory / "run.log").write_bytes(b"old logs")
-        before = {p.name: p.read_bytes() for p in directory.iterdir()}
-        with patch.object(er, "OwnedProcessTree") as owner:
-            response = self.client.post("/api/experiment/start", json={"name": "one"})
-            self.assertEqual(response.status_code, 409, response.text)
-            owner.assert_not_called()
-        self.assertEqual(self.config.read_bytes(), self.original)
-        self.assertEqual(before, {p.name: p.read_bytes() for p in directory.iterdir()})
+    def test_repeated_name_returns_the_effective_uuid_name(self):
+        async def start(name, config, **kwargs):
+            self.runner.exp_name = f"{name}-12345678"
+            self.runner.run_id = uuid.uuid4().hex
+
+        self.runner.start = AsyncMock(side_effect=start)
+        response = self.client.post("/api/experiment/start", json={"name": "one"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["name"], "one-12345678")
+        self.assertEqual(response.json()["run_id"], self.runner.run_id)
 
     def test_invalid_start_name_returns_400_without_creating_directory(self):
         for name in ("../outside", "..\\outside", "C:\\outside", "NUL", "batches", "name.", "--option", ["not", "text"]):
@@ -192,12 +193,24 @@ class ResultApiTests(TemporaryResultFiles, unittest.TestCase):
         self.assertEqual(list(self.results.iterdir()), [self.results / "batches"])
         self.assertEqual(self.config.read_bytes(), self.original)
 
-    def test_batch_existing_or_duplicate_names_rejected_before_task_creation(self):
+    def test_batch_repeated_or_existing_names_are_allowed(self):
         self.experiment("one")
-        for experiments in ([{"name": "one"}], [{"name": "new"}, {"name": "NEW"}]):
+        experiments = [{"name": "one"}, {"name": "NEW"}]
+        with patch.object(main, "_run_batch_sequence", new=AsyncMock()):
             response = self.client.post("/api/batch/run", json={"experiments": experiments})
-            self.assertEqual(response.status_code, 409, response.text)
-        self.assertIsNone(self.manager.get_latest_task())
+            self.assertEqual(response.status_code, 200, response.text)
+        task = self.manager.get_latest_task()
+        self.assertIsNotNone(task)
+        self.assertEqual([item["name"] for item in task.experiments], ["one", "NEW"])
+
+    def test_delete_blocks_active_batch_effective_name(self):
+        directory, _ = self.experiment("one-12345678")
+        task = self.manager.create_task([{"name": "one"}], configuration())
+        task.results[0].update(name="one-12345678", status="running")
+        self.manager.update_task(task)
+        response = self.client.delete("/api/experiments/one-12345678")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertTrue(directory.is_dir())
 
     def test_model_manifest_csv_and_snapshot_in_experiment_download(self):
         directory, metadata = self.experiment("中文实验")
@@ -294,7 +307,7 @@ class RunIdentityTests(TemporaryResultFiles, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["tool"]["flwr"]["app"]["config"]["results-dir"], str(self.results.resolve()))
         self.assertEqual(self.config.read_bytes(), self.original)
 
-    async def test_failed_start_records_failure_and_cannot_reuse_old_directory(self):
+    async def test_failed_start_records_failure_and_keeps_old_directory(self):
         with patch.object(self.runner, "_prepare_runtime", side_effect=RuntimeError("startup failed")):
             with self.assertRaises(RuntimeError):
                 await self.runner.start("one")
@@ -302,8 +315,11 @@ class RunIdentityTests(TemporaryResultFiles, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["status"], "failed")
         self.assertIn("startup failed", metadata["error"])
         self.assertFalse(self.runner.is_busy())
-        with self.assertRaises(FileExistsError):
-            await self.runner.start("one")
+        # A retry must reserve a new UUID directory instead of reusing the failed one.
+        new_dir, new_metadata = reserve_experiment(self.results, "one")
+        self.assertNotEqual(new_dir, self.results / "one")
+        self.assertEqual(new_metadata["requested_name"], "one")
+        self.assertEqual(read_run_metadata(self.results / "one")["run_id"], metadata["run_id"])
         self.assertEqual(self.config.read_bytes(), self.original)
 
     async def test_api_returns_run_id_after_successful_reservation(self):

@@ -249,8 +249,11 @@ const BatchPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ textAlign: 'left' }}>
-      <h2 className="page-title">批量实验</h2>
+    <div className="workspace-page">
+      <div className="page-heading">
+        <h2 className="page-title">批量实验</h2>
+        <p className="page-description">导入实验配置，按队列执行任务并持续跟踪每项实验的进度。</p>
+      </div>
       {restoreError && <Alert type="warning" showIcon title={`无法确认活动批次：${restoreError}`}
         action={<Button size="small" onClick={() => setRestoreAttempt(restoreAttempt + 1)}>重试检查</Button>} style={{ marginBottom: 16 }} />}
       <Card title="批量配置">
@@ -279,7 +282,7 @@ const BatchPage: React.FC = () => {
                 </Button>
               </Space>
             </Col>
-            <Col xs={24} lg={8} style={{ textAlign: 'right' }}>
+            <Col xs={24} lg={8} className="batch-upload-actions">
               <Button
                 icon={editMode ? <EyeOutlined /> : <EditOutlined />}
                 onClick={async () => { if (editMode && jsonDirty) await handleParseContent(); else setEditMode(!editMode); }}
@@ -299,7 +302,7 @@ const BatchPage: React.FC = () => {
                 rows={12}
                 style={{ fontFamily: 'monospace' }}
               />
-              <Space style={{ marginTop: 12 }}>
+              <Space wrap style={{ marginTop: 12 }}>
                 <Button type="primary" onClick={handleParseContent} loading={loading} disabled={batchRunning}>
                   重新解析
                 </Button>
@@ -310,7 +313,7 @@ const BatchPage: React.FC = () => {
           )}
 
           {experiments.length > 0 && !batchRunning && (
-            <div style={{ textAlign: 'center', marginTop: 16 }}>
+            <div style={{ marginTop: 16 }}>
               <Button
                 type="primary"
                 icon={<PlayCircleOutlined />}

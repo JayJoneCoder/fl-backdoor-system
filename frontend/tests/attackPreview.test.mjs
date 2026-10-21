@@ -158,7 +158,7 @@ test('FCBA 组合子块数量和两种变化像素数分别展示', async () => 
   assert.deepEqual(changes.map(n => n.props.children[1]), [8, 16]);
 });
 
-test('未保存攻击参数更新触发新预览，修改实验名和防御不触发请求', async () => {
+test('未保存对抗性安全测试参数更新触发新预览，修改实验名和防御不触发请求', async () => {
   const h = harness(); await h.flush();
   h.edit({ 'trigger-size': 6 }); await h.flush();
   assert.equal(h.requests.at(-1).body.config['trigger-size'], 6);

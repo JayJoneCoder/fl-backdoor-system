@@ -4,7 +4,7 @@ dataset: [MNIST, CIFAR-10]
 framework: [pytorch, flwr]
 ---
 
-# 面向联邦学习的后门攻击与防御系统
+# 联安智盾——面向联邦学习的多层协同安全防护与可视化验证平台
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg?logo=gnu)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg?logo=python)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.8.0-red.svg?logo=pytorch)](https://pytorch.org/)
@@ -15,17 +15,19 @@ framework: [pytorch, flwr]
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs)](https://nodejs.org/)
 ## 项目简介
 
-本项目实现了一个**面向联邦学习的后门攻击与防御系统**，目前支持：
+本项目（联安智盾）是一个**面向联邦学习的多层协同安全防护与可视化验证平台**，目前支持：
 
 - **5 种后门攻击**：BadNets、WaNet、Frequency Attack（频域，dct / fft）、Distributed Backdoor Attack（DBA）、Full Combination Backdoor Attack（FCBA）
 - **3 层防御机制**：
   - 客户端防御（数据层）：Feature Filter
   - 服务端检测（更新层）：Anomaly、Cosine、Score、Clustering Detection
   - 服务端聚合（模型层）：Norm Clipping、Trimmed Mean、Krum
+    - Krum 与检测同时启用时，若检测过滤后剩余客户端数不足 `n > 2f+2`，会自动把 `f`/`k` 收敛到可行范围（日志输出 WARNING；`agg_krum_f_configured`、`agg_krum_k_configured`、`agg_krum_adapted` 指标保留原配置与调整标记），避免实验中途失败
 - **完整的评估体系**：ACC、ASR、Precision、Recall、FPR、混淆矩阵、客户端级异常分数
 - **Ground Truth 追踪**：支持 random / random_once / fixed 恶意客户端选择，实现检测性能的精确评估
-- **Web 可视化平台**：基于 FastAPI + React + Ant Design，支持在线配置实验、实时日志监控、历史结果浏览
+- **Web 可视化平台**：基于 FastAPI + React + Ant Design，支持在线配置实验、实时日志监控、历史结果浏览；历史实验支持按实验名称或 UUID 搜索，默认每页 100 条并可调整每页数量；实验比较总结支持按总结名称或包含的实验名称筛选，默认每页 50 条，新建总结时可搜索实验名称或 UUID；总结详情可直接下载 CSV、LaTeX 表格和 ZIP 压缩包，并支持二次确认后删除整个总结目录
 - **实验数据库（目录索引）**：用本地 SQLite 保存实验元数据、配置快照、运行状态、逐轮指标和文件索引，支持搜索/筛选/分页、附件缺失提示、配置快照查看和数据库备份恢复；详细说明见 [docs/experiment-catalog.md](docs/experiment-catalog.md)
+- **中文图表**：`scripts/plot.py` 生成的图片统一使用中文标题、坐标轴和图例，并自动选用系统中文字体（如微软雅黑）
 - **可复现的数据划分**：默认保持 IID 随机划分，也支持 `partition-mode = "dirichlet"` 的标签偏斜 Non-IID 划分；可用 `partition-alpha` 控制偏斜程度、`partition-seed` 独立控制划分随机性。
 
 > 适用于联邦学习安全研究、后门攻击防御对比实验、鲁棒聚合算法验证。
@@ -90,6 +92,16 @@ npm run dev
 ```
 前端启动后，访问 http://localhost:5173 即可使用 Web 界面。确保后端服务已启动，否则配置加载会失败。
 
+## 身份认证与账户管理
+
+平台内置本地身份认证（用户名 / 密码，SQLite 存储，密码经 scrypt 加盐哈希），用户分为**管理员**与**普通用户**：
+
+- **首次部署**：后端启动时会自动创建管理员账户 `admin`（默认头像），初始密码为 `admin123`；首次登录会进入“设置新密码”流程，完成修改后才能进入系统。
+- **角色权限**：管理员可查看全部实验结果，并可通过“用户与任务总览”查看当前有哪些用户在跑哪些实验、停用/启用普通用户、重置普通用户密码；普通用户仅能访问自己创建的实验与结果，无法查看他人数据。忘记密码时，管理员可在登录页自助重置为默认密码 `admin123`，普通用户请联系管理员重置。
+- **历史数据归属**：升级前已有的全部实验会自动归属到 `admin` 名下；之后新创建的实验（单个与批量）归属到创建者本人。历史实验卡片与详情会显示实验者用户名，鼠标悬停可查看其 UID，点击用户名即可复制 UID。
+- **账户操作**：右上角头像菜单支持更换头像（PNG / JPEG / WebP，≤ 256 KB）、修改密码与安全退出；用户名全局唯一（唯一 UID）。
+- **安全机制**：会话采用 HttpOnly Cookie + CSRF 令牌 + Origin 校验，登录与注册带频率限制；`platform_state/` 已被 Git 忽略，不会入库。
+
 ## 命令行界面使用说明
 
 下文绝大多数功能已经在前端图形界面实现。
@@ -100,6 +112,8 @@ npm run dev
 # 运行单次实验（日志输出到终端）
 flwr run . --stream
 ```
+
+> 实验名称允许重复，不会覆盖旧结果。若 `results/<名称>` 已存在，系统会自动追加本次运行的 UUID 前缀（例如 `test_exp-1a2b3c4d`）作为新的结果目录名；`run.json` 中的 `name` 使用该实际目录名，并保留 `requested_name` 记录最初填写的名称。网页与 API 会返回并使用实际名称，日志、CSV 与历史记录都与该次运行的 UUID 对应。
 
 > 下面的批量脚本复用后端调度器（与网页批量实验同一个后端），需要先启动后端。
 
@@ -206,6 +220,8 @@ python scripts/catalog.py restore platform_state/catalog-backup.sqlite3 platform
 
 ## 画图结果
 
+生成的图表使用中文标题、坐标轴和图例（如「轮次」「准确率」「攻击成功率（ASR）」）。中文依赖系统字体，脚本会依次尝试微软雅黑、黑体、Noto Sans CJK 等常见字体；若服务器缺少中文字体，请先安装任一候选字体再重新生成图表。
+
 ### 主日志
 
 ```
@@ -266,6 +282,8 @@ summary_detection_metrics.png         # 检测器性能柱状图（仅对有检�
 fl-backdoor-system/
 ├── backend/                               # FastAPI 后端服务
 │   ├── main.py                            # API 入口，WebSocket 日志推送，历史/目录索引查询
+│   ├── auth.py                            # 认证路由与访问边界（登录态 / CSRF / Origin / 文件与 WS 访问控制）
+│   ├── identity.py                        # 本地身份、可撤销会话与实验归属（SQLite）
 │   ├── batch_manager.py                   # GUI 界面的批量实验管理
 │   ├── config_manager.py                  # 读写 pyproject.toml，提供前端表单 schema
 │   ├── config_validation.py               # 写入配置前的严格校验
@@ -284,7 +302,7 @@ fl-backdoor-system/
 │   │   │   ├── ConfigForm/                # 动态配置表单
 │   │   │   ├── ExperimentControl/         # 启动/停止 + 实时日志
 │   │   │   └── ExperimentHistory/         # 历史实验卡片、详情、配置快照与附件状态
-│   │   ├── pages/                         # 配置 / 历史 / 汇总 / 批量四个页面
+│   │   ├── pages/                         # 首页 / 登录 / 配置 / 历史 / 汇总 / 批量 / 管理员总览
 │   │   └── App.tsx
 │   ├── package.json
 │   └── vite.config.ts

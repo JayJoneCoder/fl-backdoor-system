@@ -295,6 +295,18 @@ class BatchLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.to_dict()["success_count"], 2)
         self.assertEqual(self.runner.start.await_args_list[1].kwargs["base_config"], configuration())
 
+    async def test_repeated_batch_name_records_effective_uuid_name(self):
+        task = self.manager.create_task([{"name": "one"}, {"name": "one"}], configuration())
+        names = iter(["one-aaaaaaaa", "one-bbbbbbbb"])
+
+        async def start(name, config, **kwargs):
+            self.runner.exp_name = next(names)
+
+        self.runner.start = AsyncMock(side_effect=start)
+        await main._run_batch_sequence(task)
+        self.assertEqual([item["name"] for item in task.results], ["one-aaaaaaaa", "one-bbbbbbbb"])
+        self.assertIn("[Batch] Name one is already used; this run writes to one-aaaaaaaa.", task.logs)
+
     async def test_nonzero_failure_continues_but_batch_is_failed(self):
         task = self.task()
         self.runner.wait.side_effect = [{"status": "failed", "exit_code": 3, "error": "bad run"}, {"status": "finished", "exit_code": 0}]

@@ -1,3 +1,9 @@
+// Shared by Axios and fetch; the HttpOnly session cookie is never read by JS.
+let csrfToken = '';
+export const setCsrfToken = (value: string) => { csrfToken = value; };
+export const getCsrfToken = () => csrfToken;
+export const notifySessionExpired = () => window.dispatchEvent(new Event('lianan:session-expired'));
+
 export class HttpRequestError extends Error {
   readonly status: number;
 
@@ -15,7 +21,11 @@ export const checkedFetch = async (
   init?: RequestInit,
   allowedStatuses: number[] = [],
 ): Promise<Response> => {
-  const response = await fetch(input, init);
+  const headers = new Headers(init?.headers);
+  headers.set('X-Lianan-Request', '1');
+  if (getCsrfToken()) headers.set('X-CSRF-Token', getCsrfToken());
+  const response = await fetch(input, { ...init, credentials: 'include', headers });
+  if (response.status === 401) notifySessionExpired();
   if (!response.ok && !allowedStatuses.includes(response.status)) {
     let message = `请求失败（HTTP ${response.status}）`;
     try {
@@ -54,7 +64,6 @@ const ERROR_TEXT: Record<string, string> = {
   'A batch task is already running or stopping': '已有批量任务正在运行或清理中，请稍后重试。',
   'Experiment name is required': '请输入实验名称。',
   'Experiment config must be an object': '实验配置必须为键值对象。',
-  'Experiment already exists. Choose a new name.': '实验名称已存在，请使用新名称；旧结果未被修改。',
   'Experiment not found or no valid data': '找不到该实验，或实验尚未生成有效数据。',
   'CSV file not found yet': '实验尚未生成 CSV，请稍后重试。',
   'Only .toml files are accepted': '仅支持上传 .toml 配置文件。',
@@ -108,12 +117,17 @@ const FIELD_LABELS: Record<string, string> = {
 const translateMessage = (raw: string): string | null => {
   const text = raw.trim();
   if (Object.hasOwn(ERROR_TEXT, text)) return ERROR_TEXT[text];
-  const conflict = text.match(/^Experiment "(.*)" already exists(?:\. Choose a new name; old results were not changed\.| and cannot be overwritten\.)$/);
-  if (conflict) return `实验“${conflict[1]}”已存在，请使用新名称；旧结果未被修改。`;
+  const workerReason = text.match(/^Experiment worker exited with code ([\w.-]+): (.+) See run\.log for details\.$/);
+  if (workerReason) {
+    const reason = translateMessage(workerReason[2]);
+    return `实验运行失败（退出码 ${workerReason[1]}）：${reason ?? workerReason[2]}请查看运行日志 run.log。`;
+  }
   const worker = text.match(/^Experiment worker exited with code (.+)\. See run\.log for details\.$/);
   if (worker) return `实验运行失败（退出码 ${worker[1]}），请查看运行日志 run.log。`;
-  const krum = text.match(/^Krum requires n > 2\*f \+ 2 after detection, got n=(\d+), f=(\d+)\.$/);
+  const krum = text.match(/^Krum requires n > 2\*f \+ 2 after detection, got n=(\d+), f=(\d+)\./);
   if (krum) return `检测后仅剩 ${krum[1]} 个客户端更新，不满足 Krum 的 n > 2f+2 条件（预估恶意数 f=${krum[2]}）。`;
+  const krumMin = text.match(/^Krum requires at least 3 client updates after detection, got n=(\d+)\./);
+  if (krumMin) return `检测后仅剩 ${krumMin[1]} 个客户端更新，Krum 至少需要 3 个。`;
   const backup = text.match(/^Backup file ['"](.*)['"] not found$/);
   if (backup) return `找不到备份文件“${backup[1]}”。`;
   const missingExperiment = text.match(/^Experiment (.+) not found$/);
@@ -211,7 +225,7 @@ export const getUserErrorMessage = (error: unknown, fallback = '操作失败，�
   if (value.code === 'ERR_NETWORK' || /NetworkError|Network Error|Failed to fetch|Load failed|network unavailable/i.test(message)) return '无法连接后端，请确认后端服务已启动，并检查网络连接。';
   const status = value.response?.status ?? value.status;
   if (status === 404) return '请求的资源不存在，请刷新列表后重试。';
-  if (status === 409) return '名称已存在或当前有任务占用，请更换名称或等待清理完成。';
+  if (status === 409) return '当前有任务占用或请求冲突，请稍后重试。';
   if (status === 422 || status === 400) return '请求参数不合法，请检查名称和配置。';
   if (status && status >= 500) return `后端处理失败（HTTP ${status}），请查看运行日志。`;
   return fallback;

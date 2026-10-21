@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 from fastapi.testclient import TestClient
+from backend.tests.auth_support import authenticated_client
 from PIL import Image
 
 from backend import attack_preview as preview
@@ -193,14 +194,14 @@ class AttackPreviewTests(unittest.TestCase):
 
     def test_api_returns_images_without_writing_configuration_or_starting_experiment(self):
         with patch("backend.main.runner.start") as start, patch("backend.config_manager.update_config") as save:
-            response = TestClient(app).post("/api/attack/preview", json=self.request())
+            response = authenticated_client(self, app).post("/api/attack/preview", json=self.request())
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["poisoned_image"].startswith("data:image/png;base64,"))
         start.assert_not_called()
         save.assert_not_called()
 
     def test_api_localizes_bad_input_and_missing_dataset(self):
-        client = TestClient(app)
+        client = authenticated_client(self, app)
         response = client.post("/api/attack/preview", json={**self.request(), "index": -1})
         self.assertEqual(response.status_code, 400)
         self.assertIn("非负整数", response.json()["detail"])

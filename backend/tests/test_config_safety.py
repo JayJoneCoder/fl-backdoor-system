@@ -10,6 +10,7 @@ from unittest.mock import patch
 import tomli
 import tomli_w
 from fastapi.testclient import TestClient
+from backend.tests.auth_support import authenticated_client
 
 from backend import config_manager as cm, main, experiment_runner
 
@@ -295,7 +296,7 @@ class ConfigurationSafetyTests(TemporaryConfiguration):
 class ConfigurationApiTests(TemporaryConfiguration):
     def setUp(self):
         super().setUp()
-        self.client = TestClient(main.app, raise_server_exceptions=False)
+        self.client = authenticated_client(self, main.app, raise_server_exceptions=False)
         self.addCleanup(self.client.close)
 
     def test_invalid_result_directory_returns_400_on_form_raw_and_upload(self):

@@ -14,7 +14,7 @@ const summary = (name, runId) => ({ name, run_id: runId, accuracy: 0.95, asr: 0.
 const detail = (name, runId) => ({ name, run_id: runId, metrics: summary(name), images: [], csv_files: [] });
 
 const createHarness = (experiments, details = {}, overrides = {}) => {
-  const slots = [], effects = [], errors = [], requests = [], downloads = [], confirms = [], opened = [], notices = [];
+  const slots = [], effects = [], errors = [], requests = [], downloads = [], confirms = [], opened = [], notices = [], copies = [];
   let cursor = 0, dirty = false, tree;
   const react = {
     useState: initial => {
@@ -39,6 +39,7 @@ const createHarness = (experiments, details = {}, overrides = {}) => {
     callback(node);
     visit(node.props?.children, callback);
     visit(node.props?.actions, callback);
+    visit(node.props?.extra, callback);
   };
   const findAll = (root, type) => {
     const nodes = [];
@@ -54,7 +55,8 @@ const createHarness = (experiments, details = {}, overrides = {}) => {
   const load = (source, imports) => {
     const exports = {};
     runInNewContext(source, { exports, Blob,
-      window: { URL: { createObjectURL: () => 'blob:download', revokeObjectURL() {} }, open: url => opened.push(url) },
+      window: { URL: { createObjectURL: () => 'blob:download', revokeObjectURL() {} }, open: url => opened.push(url),
+        navigator: { clipboard: { writeText: async value => { copies.push(value); } } } },
       document: { createElement: () => ({ click() { downloads.push(this.download); } }),
         body: { appendChild() {}, removeChild() {} } }, require: name => {
       assert.ok(name in imports, `Unexpected import: ${name}`);
@@ -63,7 +65,9 @@ const createHarness = (experiments, details = {}, overrides = {}) => {
     return exports;
   };
   const antd = Object.fromEntries(['Card', 'Row', 'Col', 'Spin', 'Button', 'Modal', 'Table',
-    'Space', 'Divider', 'Image', 'Statistic', 'Descriptions', 'Tooltip', 'Dropdown', 'Tag', 'Alert'].map(name => [name, name]));
+    'Space', 'Divider', 'Image', 'Statistic', 'Descriptions', 'Tooltip', 'Dropdown', 'Tag', 'Alert',
+    'Input', 'Pagination'].map(name => [name, name]));
+  antd.Input = Object.assign('Input', { Search: 'Input.Search' });
   antd.Modal = Object.assign(() => {}, { confirm: value => confirms.push(value) });
   antd.Typography = { Text: 'Typography.Text' };
   antd.message = {
@@ -79,8 +83,12 @@ const createHarness = (experiments, details = {}, overrides = {}) => {
     if (value instanceof Error || value?.response) throw value;
     return { data: value };
   };
+  const listRequests = [];
   const api = {
-    listExperiments: async () => failOrReturn(experiments),
+    listExperiments: async params => {
+      listRequests.push(params);
+      return failOrReturn(typeof experiments === 'function' ? experiments(params) : experiments);
+    },
     getExperimentDetail: async name => { requests.push(name); return failOrReturn(details[name]); },
     generatePlots: async () => {}, downloadExperimentImages: async () => {}, downloadExperimentAllFiles: async () => {},
     deleteExperiment: async () => {}, downloadExperimentFile: async () => ({ data: new Blob(['file']) }),
@@ -103,10 +111,13 @@ const createHarness = (experiments, details = {}, overrides = {}) => {
     for (let i = 0; i < 4; i++) { await Promise.resolve(); render(); }
   };
   render();
-  return { settle, errors, requests, text, downloads, confirms, opened, notices,
+  return { settle, errors, requests, text, downloads, confirms, opened, notices, copies, listRequests,
+    tree: () => tree,
     cards: () => findAll(tree, 'Card').filter(node => node.props.hoverable),
     modal: () => findAll(tree, antd.Modal)[0],
     dropdowns: () => findAll(tree, 'Dropdown'),
+    pagination: () => findAll(tree, 'Pagination')[0],
+    searchInput: () => findAll(tree, 'Input.Search')[0],
     nodes: (root, type) => findAll(root, type),
     texts: root => findAll(root, 'Typography.Text'),
     codes: root => findAll(root, 'code'),
@@ -123,6 +134,49 @@ test('历史卡片显示实验 UUID，省略长文本且悬停可查看完整值
   assert.equal(label.props.ellipsis, true);
   assert.equal(label.props.type, 'secondary');
   assert.ok(h.tooltips(card).some(node => node.props.title === uuid));
+});
+
+test('历史卡片显示实验者用户名，悬停显示 UID，点击复制 UID 且不打开详情', async () => {
+  const h = createHarness([{ ...summary('新实验', uuid), owner: { uid: uuid, username: 'admin' } }]);
+  await h.settle();
+  const card = h.cards()[0];
+  const label = h.texts(card).find(node => h.text(node) === '实验者：admin');
+  assert.ok(label, '卡片显示实验者用户名');
+  assert.ok(h.tooltips(card).some(node => node.props.title === `UID：${uuid}（点击复制）`));
+  await label.props.onClick({ stopPropagation() {} });
+  await h.settle();
+  assert.deepEqual(h.copies, [uuid]);
+  assert.match(h.notices.at(-1).value, /已复制实验者 UID/);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.modal().props.open, false);
+});
+
+test('详情显示实验者，点击用户名同样复制 UID', async () => {
+  const h = createHarness([summary('新实验', uuid)],
+    { 新实验: { ...detail('新实验', uuid), owner: { uid: uuid, username: 'admin' } } });
+  await h.settle();
+  await h.cards()[0].props.onClick();
+  await h.settle();
+  assert.ok(h.text(h.modal()).includes('admin'), '详情显示实验者用户名');
+  const label = h.texts(h.modal()).find(node => h.text(node) === 'admin');
+  assert.ok(label, '详情显示实验者用户名');
+  await label.props.onClick();
+  await h.settle();
+  assert.deepEqual(h.copies, [uuid]);
+  assert.match(h.notices.at(-1).value, /已复制实验者 UID/);
+});
+
+test('长实验名保留完整提示，卡片与指标布局使用统一样式', async () => {
+  const name = 'very_long_federated_experiment_name_with_multiple_defenses_and_dataset_parameters';
+  const h = createHarness([summary(name, uuid)]);
+  await h.settle();
+  const card = h.cards()[0];
+  assert.equal(card.props.className, 'history-experiment-card');
+  const title = h.nodes(card, 'div').find(node => node.props.className === 'history-experiment-card__name');
+  assert.equal(title.props.title, name);
+  assert.equal(h.text(title), name);
+  assert.equal(h.nodes(card, 'Statistic').length, 2);
+  assert.ok(h.nodes(card, 'Statistic').every(node => node.props.prefix === undefined));
 });
 
 test('打开详情后以黑色和浅色背景显示完整 UUID，复制使用完整原值和中文提示', async () => {
@@ -335,4 +389,37 @@ test('单文件下载失败给出中文错误，不打开空页面或伪造下�
   assert.match(h.errors[0], /不存在/);
   assert.equal(h.downloads.length, 0);
   assert.equal(h.opened.length, 0);
+});
+
+test('历史记录默认每页 100 个，可调整每页数量并按偏移量查询', async () => {
+  const h = createHarness(() => ({ items: [summary('one', uuid)], total: 141 }));
+  await h.settle();
+  assert.deepEqual({ ...h.listRequests[0] }, { search: '', limit: 100, offset: 0, paginated: true });
+  assert.equal(h.pagination().props.pageSize, 100);
+  assert.deepEqual([...h.pagination().props.pageSizeOptions], [20, 50, 100, 200]);
+  h.pagination().props.onChange(2, 100);
+  await h.settle();
+  assert.deepEqual({ ...h.listRequests.at(-1) }, { search: '', limit: 100, offset: 100, paginated: true });
+  assert.equal(h.pagination().props.current, 2);
+  h.pagination().props.onChange(3, 50);
+  await h.settle();
+  assert.deepEqual({ ...h.listRequests.at(-1) }, { search: '', limit: 50, offset: 0, paginated: true });
+  assert.equal(h.pagination().props.current, 1);
+});
+
+test('历史记录可按实验名称或 UUID 搜索，清空后恢复全部', async () => {
+  const h = createHarness(() => ({ items: [], total: 0 }));
+  await h.settle();
+  const input = h.searchInput();
+  assert.equal(input.props.placeholder, '搜索实验名称或 UUID');
+  input.props.onChange({ target: { value: `  ${uuid}  ` } });
+  input.props.onSearch(`  ${uuid}  `);
+  await h.settle();
+  assert.equal(h.listRequests.at(-1).search, uuid);
+  assert.equal(h.listRequests.at(-1).offset, 0);
+  assert.match(h.text(h.tree()), /没有匹配的实验/);
+  input.props.onChange({ target: { value: '' } });
+  await h.settle();
+  assert.equal(h.listRequests.at(-1).search, '');
+  assert.match(h.text(h.tree()), /暂无实验记录/);
 });

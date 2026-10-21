@@ -76,29 +76,35 @@ class RunArtifactTests(unittest.TestCase):
         (self.root / "subdirectory").mkdir()
         self.assertEqual([p.name for p in direct_files(self.root)], ["normal.csv"])
 
-    def test_reservation_is_exclusive_even_for_empty_or_legacy_directories(self):
+    def test_existing_directories_are_never_reused_and_get_a_run_id_suffix(self):
         for name in ("empty", "legacy"):
-            directory = self.root / name
-            directory.mkdir()
-            if name == "legacy":
-                (directory / "old.csv").write_bytes(b"old result")
-            before = {p.name: p.read_bytes() for p in directory.iterdir()}
-            with self.assertRaises(FileExistsError):
-                reserve_experiment(self.root, name)
-            self.assertEqual({p.name: p.read_bytes() for p in directory.iterdir()}, before)
+            with self.subTest(name=name):
+                directory = self.root / name
+                directory.mkdir()
+                if name == "legacy":
+                    (directory / "old.csv").write_bytes(b"old result")
+                before = {p.name: p.read_bytes() for p in directory.iterdir()}
+                new_dir, metadata = reserve_experiment(self.root, name)
+                self.assertNotEqual(new_dir, directory)
+                self.assertTrue(new_dir.is_dir())
+                self.assertEqual(metadata["name"], new_dir.name)
+                self.assertEqual(metadata["requested_name"], name)
+                self.assertTrue(new_dir.name.startswith(f"{name}-"))
+                self.assertIn(metadata["run_id"][:8], new_dir.name)
+                self.assertEqual(read_run_metadata(new_dir), metadata)
+                self.assertEqual({p.name: p.read_bytes() for p in directory.iterdir()}, before)
 
-    def test_concurrent_reservation_has_exactly_one_winner(self):
+    def test_concurrent_reservation_creates_distinct_runs(self):
         def reserve(_):
-            try:
-                return reserve_experiment(self.root, "same")[1]["run_id"]
-            except FileExistsError:
-                return None
+            return reserve_experiment(self.root, "same")[1]
 
         with ThreadPoolExecutor(max_workers=8) as pool:
-            outcomes = list(pool.map(reserve, range(8)))
-        winners = [value for value in outcomes if value]
-        self.assertEqual(len(winners), 1)
-        self.assertEqual(read_run_metadata(self.root / "same")["run_id"], winners[0])
+            metadata = list(pool.map(reserve, range(8)))
+        self.assertEqual(len({item["run_id"] for item in metadata}), 8)
+        self.assertEqual(len({item["name"] for item in metadata}), 8)
+        self.assertEqual(sum(item["name"] == "same" for item in metadata), 1)
+        for item in metadata:
+            self.assertEqual(read_run_metadata(self.root / item["name"])["run_id"], item["run_id"])
 
     def test_run_id_is_persistent_and_independent_of_name_and_flower_id(self):
         first, before = reserve_experiment(self.root, "one")
@@ -111,9 +117,13 @@ class RunArtifactTests(unittest.TestCase):
 
     def test_managed_server_must_present_matching_active_run_id(self):
         directory, metadata = reserve_experiment(self.root, "one")
-        for run_id in (None, "different"):
-            with self.subTest(run_id=run_id), self.assertRaises(FileExistsError):
-                ensure_experiment(self.root, "one", run_id=run_id)
+        # Without a managed UUID the call reserves a new run instead of reusing.
+        new_dir, new_metadata = ensure_experiment(self.root, "one")
+        self.assertNotEqual(new_dir, directory)
+        self.assertEqual(new_metadata["requested_name"], "one")
+        self.assertEqual(read_run_metadata(directory), metadata)
+        with self.assertRaises(FileExistsError):
+            ensure_experiment(self.root, "one", run_id="different")
         self.assertEqual(ensure_experiment(self.root, "one", run_id=metadata["run_id"])[0], directory)
         write_run_metadata(directory, {**metadata, "status": "finished"})
         with self.assertRaises(FileExistsError):

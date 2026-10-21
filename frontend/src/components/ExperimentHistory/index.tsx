@@ -18,6 +18,8 @@ import {
   Typography,
   Tag,
   Alert,
+  Input,
+  Pagination,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -67,6 +69,7 @@ const METRIC_LABELS: Record<string, string> = {
 interface ExperimentSummary {
   name: string;
   run_id?: string | null;
+  owner?: { uid: string; username: string } | null;
   accuracy: number | null;
   asr: number | null;
   loss: number | null;
@@ -98,6 +101,11 @@ const ACTIVE_STATUSES = new Set(['starting', 'running', 'stopping', 'cleaning', 
 const ExperimentHistory: React.FC = () => {
   const [experiments, setExperiments] = useState<ExperimentSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const [total, setTotal] = useState(0);
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [selectedExp, setSelectedExp] = useState<string | null>(null);
   const [detailData, setDetailData] = useState<any>(null);
@@ -107,22 +115,65 @@ const ExperimentHistory: React.FC = () => {
   const [deleting, setDeleting] = useState<string[]>([]);
   const removing = useRef(new Set<string>());
   const selected = useRef<string | null>(null);
+  const loadSequence = useRef(0);
 
-  const loadExperiments = async () => {
+  const loadExperiments = async (query = searchTerm, nextPage = page, nextSize = pageSize) => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
     try {
-      const res = await listExperiments();
-      setExperiments(res.data);
+      const res = await listExperiments({
+        search: query,
+        limit: nextSize,
+        offset: (nextPage - 1) * nextSize,
+        paginated: true,
+      });
+      if (sequence !== loadSequence.current) return;
+      const payload = res.data;
+      if (Array.isArray(payload)) {
+        // 兼容旧版后端：未分页时直接在本地展示全部记录。
+        setExperiments(payload);
+        setTotal(payload.length);
+      } else {
+        setExperiments(Array.isArray(payload?.items) ? payload.items : []);
+        setTotal(Number(payload?.total) || 0);
+      }
     } catch (error) {
+      if (sequence !== loadSequence.current) return;
       message.error(getUserErrorMessage(error, '加载实验列表失败，请稍后重试。'));
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
+  };
+
+  const applySearch = (value: string) => {
+    const next = value.trim();
+    setSearchTerm(next);
+    setPage(1);
+    loadExperiments(next, 1, pageSize);
+  };
+
+  const handlePageChange = (nextPage: number, nextSize: number) => {
+    const targetPage = nextSize === pageSize ? nextPage : 1;
+    setPage(targetPage);
+    setPageSize(nextSize);
+    loadExperiments(searchTerm, targetPage, nextSize);
   };
 
   useEffect(() => {
     loadExperiments();
+    // 只在首次加载时读取第一页；后续查询由搜索和翻页显式触发。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const copyOwnerUid = async (uid: string) => {
+    try {
+      if (!window.navigator?.clipboard) throw new Error('clipboard unavailable');
+      await window.navigator.clipboard.writeText(uid);
+      message.success('已复制实验者 UID');
+    } catch {
+      message.error('复制失败，请手动选择 UID。');
+    }
+  };
 
   const handleViewDetail = async (name: string) => {
     selected.current = name;
@@ -177,6 +228,7 @@ const ExperimentHistory: React.FC = () => {
         try {
           await deleteExperiment(exp.name, exp.run_id);
           setExperiments(current => current.filter(item => item.name !== exp.name));
+          setTotal(current => Math.max(0, current - 1));
           if (selected.current === exp.name) {
             selected.current = null;
             setSelectedExp(null);
@@ -346,12 +398,34 @@ const ExperimentHistory: React.FC = () => {
 
   return (
     <>
-      <Card title="历史实验" extra={<Button onClick={loadExperiments}>刷新</Button>}>
+      <Card
+        title="历史实验"
+        extra={
+          <Space wrap>
+            <Input.Search
+              allowClear
+              enterButton="搜索"
+              aria-label="搜索历史实验"
+              placeholder="搜索实验名称或 UUID"
+              value={searchInput}
+              onChange={(event) => {
+                const value = event.target.value;
+                setSearchInput(value);
+                if (!value) applySearch('');
+              }}
+              onSearch={applySearch}
+              style={{ width: 280 }}
+            />
+            <Button onClick={() => loadExperiments(searchTerm, page, pageSize)}>刷新</Button>
+          </Space>
+        }
+      >
         <Spin spinning={loading}>
-          <Row gutter={[16, 16]}>
+          <Row className="history-grid">
             {experiments.map((exp) => (
-              <Col key={exp.name} xs={24} sm={12} md={8} lg={6}>
+              <Col key={exp.name}>
                 <Card
+                  className="history-experiment-card"
                   hoverable
                   style={{ cursor: 'pointer' }}
                   onClick={() => handleViewDetail(exp.name)}
@@ -384,23 +458,29 @@ const ExperimentHistory: React.FC = () => {
                     </Tooltip>,
                   ]}
                 >
-                  <div
-                    style={{
-                      fontSize: 16,
-                      fontWeight: 500,
-                      marginBottom: 8,
-                      wordBreak: 'break-word',
-                    }}
-                  >
+                  <div className="history-experiment-card__name" title={exp.name}>
                     {exp.name}
                   </div>
                   <Tooltip title={exp.run_id || '旧实验未记录 UUID'}>
                     <Typography.Text
                       type="secondary"
                       ellipsis
-                      style={{ display: 'block', fontSize: 11, fontFamily: 'monospace', marginBottom: 12 }}
+                      style={{ display: 'block', fontSize: 11, fontFamily: 'monospace', marginBottom: 4 }}
                     >
                       UUID：{exp.run_id || '未记录'}
+                    </Typography.Text>
+                  </Tooltip>
+                  <Tooltip title={exp.owner ? `UID：${exp.owner.uid}（点击复制）` : '未记录实验者 UID'}>
+                    <Typography.Text
+                      type="secondary"
+                      ellipsis
+                      style={{ display: 'block', fontSize: 11, marginBottom: 12, cursor: exp.owner ? 'pointer' : 'default' }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (exp.owner) copyOwnerUid(exp.owner.uid);
+                      }}
+                    >
+                      实验者：{exp.owner?.username || '未记录'}
                     </Typography.Text>
                   </Tooltip>
                   {exp.status && <Tag color={exp.status === 'failed' || exp.status === 'cleanup_failed' ? 'error' : 'default'}>
@@ -416,7 +496,6 @@ const ExperimentHistory: React.FC = () => {
                             ? `${(exp.accuracy * 100).toFixed(2)}%`
                             : '未记录'
                         }
-                        prefix={<ExperimentOutlined />}
                         valueStyle={{ fontSize: 20 }}
                       />
                     </Col>
@@ -428,23 +507,40 @@ const ExperimentHistory: React.FC = () => {
                             ? `${(exp.asr * 100).toFixed(2)}%`
                             : '未记录'
                         }
-                        prefix={<AimOutlined />}
                         valueStyle={{ fontSize: 20 }}
                       />
                     </Col>
                   </Row>
-                  <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                  <div className="history-experiment-card__meta">
                     <div>Loss: {exp.loss?.toFixed(4) ?? '未记录'}</div>
                     <div>数据集: {exp.dataset || 'N/A'}</div>
                     <div>
                       AUC: {exp.auc?.toFixed(3) ?? '未记录'} | 轮次: {exp.last_round ?? '未记录'}
                     </div>
-                    {exp.created && <div>创建: {exp.created.replace('T', ' ').substring(0, 22)}</div>}
+                    {exp.created && <div className="history-experiment-card__date">创建: {exp.created.replace('T', ' ').substring(0, 19)}</div>}
                   </div>
                 </Card>
               </Col>
             ))}
           </Row>
+          {!loading && experiments.length === 0 && (
+            <div style={{ padding: '40px 0', color: '#7b8798', textAlign: 'center' }}>
+              {searchTerm ? '没有匹配的实验，请尝试其他名称或 UUID。' : '暂无实验记录。'}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
+            <Pagination
+              current={page}
+              pageSize={pageSize}
+              total={total}
+              showSizeChanger
+              showQuickJumper
+              totalBoundaryShowSizeChanger={0}
+              pageSizeOptions={[20, 50, 100, 200]}
+              showTotal={(count) => `共 ${count} 个实验`}
+              onChange={handlePageChange}
+            />
+          </div>
         </Spin>
       </Card>
 
@@ -477,8 +573,8 @@ const ExperimentHistory: React.FC = () => {
                 style={{ marginBottom: 12 }} />}
               {detailData.warnings?.map((warning: string) => <Alert key={warning} type="warning" showIcon
                 title={warning} style={{ marginBottom: 8 }} />)}
-              <Row gutter={16} style={{ marginBottom: 24 }}>
-                <Col span={12}>
+              <Row gutter={[0, 16]} style={{ marginBottom: 24 }}>
+                <Col xs={24} sm={12}>
                   <Statistic
                     title="准确率 (ACC)"
                     value={
@@ -490,7 +586,7 @@ const ExperimentHistory: React.FC = () => {
                     valueStyle={{ fontSize: 32 }}
                   />
                 </Col>
-                <Col span={12}>
+                <Col xs={24} sm={12}>
                   <Statistic
                     title="攻击成功率 (ASR)"
                     value={
@@ -503,7 +599,17 @@ const ExperimentHistory: React.FC = () => {
                   />
                 </Col>
               </Row>
-              <Descriptions size="small" column={4} style={{ marginBottom: 16 }}>
+              <Descriptions size="small" column={{ xs: 1, sm: 2, md: 4 }} style={{ marginBottom: 16 }}>
+                <Descriptions.Item label="实验者">
+                  {detailData.owner ? (
+                    <Tooltip title={`UID：${detailData.owner.uid}（点击复制）`}>
+                      <Typography.Text style={{ cursor: 'pointer' }}
+                        onClick={() => copyOwnerUid(detailData.owner.uid)}>
+                        {detailData.owner.username}
+                      </Typography.Text>
+                    </Tooltip>
+                  ) : '未记录'}
+                </Descriptions.Item>
                 <Descriptions.Item label="Loss">
                   {detailData.metrics.loss?.toFixed(4) ?? '未记录'}
                 </Descriptions.Item>
@@ -520,7 +626,7 @@ const ExperimentHistory: React.FC = () => {
 
               {!!detailData.metrics?.curve_data?.round?.length && (
                 <div style={{ marginBottom: 24 }}>
-                  <h4>ACC / ASR 曲线</h4>
+                  <h4>准确率 / 攻击成功率曲线</h4>
                   <ResponsiveContainer width="100%" height={300}>
                     <LineChart
                       data={detailData.metrics.curve_data.round.map(
@@ -532,7 +638,7 @@ const ExperimentHistory: React.FC = () => {
                       )}
                     >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="round" />
+                      <XAxis dataKey="round" label={{ value: '轮次', position: 'insideBottom', offset: -4 }} />
                       <YAxis />
                       <RechartsTooltip />
                       <Legend />
@@ -540,13 +646,13 @@ const ExperimentHistory: React.FC = () => {
                         type="monotone"
                         dataKey="accuracy"
                         stroke="#8884d8"
-                        name="ACC"
+                        name="准确率 (ACC)"
                       />
                       <Line
                         type="monotone"
                         dataKey="asr"
                         stroke="#82ca9d"
-                        name="ASR"
+                        name="攻击成功率 (ASR)"
                       />
                     </LineChart>
                   </ResponsiveContainer>
@@ -556,6 +662,8 @@ const ExperimentHistory: React.FC = () => {
               <h4>指标汇总</h4>
               <Table
                 columns={columns}
+                rowKey="metric"
+                scroll={{ x: 480 }}
                 dataSource={metricTableData}
                 pagination={false}
                 size="small"
@@ -596,9 +704,9 @@ const ExperimentHistory: React.FC = () => {
                   <Divider />
                   <h4>生成图表</h4>
                   <Image.PreviewGroup>
-                    <Row gutter={[16, 16]}>
+                    <Row className="detail-image-grid">
                       {detailData.images.map((img: string) => (
-                        <Col span={12} key={img}>
+                        <Col key={img}>
                           <Card
                             size="small"
                             title={img}

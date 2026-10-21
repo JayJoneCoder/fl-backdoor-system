@@ -194,7 +194,9 @@ const createHarness = (initialStatus = { status: 'running', exp_name: 'same_name
     stopResponse: response => { api.stopExperiment = async () => response; },
     stopFailure: error => { api.stopExperiment = async () => { throw error; }; },
     startFailure: error => { api.startExperiment = async (...args) => { starts.push(args); throw error; }; },
+    startResponse: response => { api.startExperiment = async (...args) => { starts.push(args); return response; }; },
     setName: value => { find('Input').props.onChange({ target: { value } }); render(); },
+    inputValue: () => find('Input').props.value,
     setStatus: status => { currentStatus = status; },
     logs: () => copy(find('LogViewer').props.logs),
     progress: () => find('Progress')?.props.percent,
@@ -220,6 +222,8 @@ const assertCharts = (harness, rounds) => {
     assert.equal(chart.options.legend.bottom, 4);
     assert.ok(chart.options.grid.bottom >= 80);
   }
+  assert.equal(harness.charts[0].options.series[0].name, '准确率 (ACC)');
+  assert.equal(harness.charts[1].options.series[0].name, '损失 (Loss)');
 };
 
 test('刷新时历史数据早于图表初始化也能完整绘制，无需等待下一轮', async () => {
@@ -388,7 +392,7 @@ test('配置检查返回取消时，实际启动按钮不发起实验请求或�
   } finally { h.unmount(); }
 });
 
-test('同名启动冲突保留旧曲线、日志、进度及连接，并显示后端原因', async () => {
+test('启动失败保留旧曲线、日志、进度及连接，并显示后端原因', async () => {
   const h = createHarness({ status: 'finished', exp_name: 'same_name', total_rounds: 10 });
   try {
     await h.settle();
@@ -399,7 +403,7 @@ test('同名启动冲突保留旧曲线、日志、进度及连接，并显示�
     await h.tick(200);
     h.runFrames();
     h.setName('same_name');
-    h.startFailure({ response: { status: 409, data: { detail: 'Experiment "same_name" already exists. Choose a new name; old results were not changed.' } } });
+    h.startFailure({ response: { status: 409, data: { detail: 'An experiment is running or cleanup is not finished' } } });
     await h.start();
     h.runFrames();
     assert.equal(h.starts.length, 1);
@@ -408,8 +412,22 @@ test('同名启动冲突保留旧曲线、日志、进度及连接，并显示�
     assert.equal(h.progress(), 100);
     assertCharts(h, [0, 1, 10]);
     assert.deepEqual(h.logs(), ['old experiment retained']);
-    assert.match(h.errors.at(-1), /实验“same_name”已存在.*旧结果未被修改/);
+    assert.match(h.errors.at(-1), /已有实验正在运行或尚未完成清理/);
     assert.equal(h.startDisabled(), false);
+  } finally { h.unmount(); }
+});
+
+test('同名实验启动后使用后端返回的 UUID 结果名称', async () => {
+  const h = createHarness({ status: 'idle', exp_name: null, total_rounds: 10 });
+  try {
+    await h.settle();
+    h.setName('same_name');
+    h.startResponse({ data: { status: 'started', name: 'same_name-12345678', run_id: 'run-1' } });
+    await h.start();
+    assert.deepEqual(h.starts[0], ['same_name']);
+    assert.equal(h.sockets.length, 1);
+    assert.equal(h.sockets[0].url, 'ws://test/ws/logs/same_name-12345678?run_id=run-1');
+    assert.equal(h.inputValue(), 'same_name-12345678');
   } finally { h.unmount(); }
 });
 

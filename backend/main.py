@@ -30,6 +30,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend import config_manager
+from backend.auth import AccessBoundary, get_identity, router as auth_router
+from backend.identity import CURRENT_USER, CURRENT_STORE, claim_resource, require_resource
 from backend.catalog import get_catalog
 from backend.config_validation import parse_boolean
 from backend.experiment_runner import ExperimentRunner
@@ -48,6 +50,7 @@ from fl_backdoor.utils.run_artifacts import read_run_metadata
 # ------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    get_identity().initialize()
     try:
         await _sync_catalog(_results_root())
     except HTTPException:
@@ -75,6 +78,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="FL Backdoor Platform API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(AccessBoundary)
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -83,6 +88,9 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+        *[origin.strip() for origin in os.environ.get("FL_ALLOWED_ORIGINS", "").split(",") if origin.strip()],
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -90,10 +98,6 @@ app.add_middleware(
 )
 
 from starlette.requests import Request
-from starlette.websockets import WebSocket as StarletteWebSocket
-
-from starlette.requests import Request
-from starlette.websockets import WebSocket as StarletteWebSocket
 
 @app.middleware("http")
 async def log_all_requests(request: Request, call_next):
@@ -118,6 +122,10 @@ async def _sync_catalog(root: Path, *, force: bool = False) -> dict:
         catalog = get_catalog()
         report = await asyncio.to_thread(catalog.sync_root, root, force=force)
         catalog.record_sync(root, report)
+        store = CURRENT_STORE.get()
+        if store:
+            for item in catalog.query(root)["items"]:
+                store.claim("experiment", root / item["name"])
         return report
     except Exception as exc:
         print(f"[Catalog] Synchronization failed: {exc}", flush=True)
@@ -166,10 +174,20 @@ runner = ExperimentRunner()
 execution_lock = asyncio.Lock()
 
 
+def _require_batch(batch_id: str):
+    task = batch_manager.get_task(batch_id)
+    if task is None:
+        raise HTTPException(404, "Batch task not found")
+    require_resource("batch", batch_manager._save_dir / batch_id)
+    return task
+
+
 def _experiment_directory(name: str) -> Path:
     try:
         # History and its assets always belong to the currently selected root.
-        return experiment_path(_results_root(), name)
+        directory = experiment_path(_results_root(), name)
+        require_resource("experiment", directory)
+        return directory
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -179,6 +197,7 @@ def _monitor_directory(name: str, run_id: str | None) -> Path:
         directory = experiment_path(runner._experiment_dir.parent, name)
     else:
         directory = _experiment_directory(name)
+    require_resource("experiment", directory)
     if run_id and read_run_metadata(directory).get("run_id") != run_id:
         raise ValueError("实验运行标识与结果目录不一致，请刷新后重新连接。")
     return directory
@@ -195,9 +214,17 @@ def _runner_owns_directory(directory: Path) -> bool:
     return True
 
 
+def _started_experiment_name(requested: str) -> str:
+    """A repeated name becomes the run's UUID-suffixed result directory name."""
+    value = getattr(runner, "exp_name", None)
+    return value if isinstance(value, str) and value else requested
+
+
 def _summary_directory(name: str) -> Path:
     try:
-        return summary_path(_results_root(), name)
+        directory = summary_path(_results_root(), name)
+        require_resource("summary", directory)
+        return directory
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -211,6 +238,11 @@ def _download_header(filename: str) -> dict[str, str]:
 # ------------------------------
 @app.websocket("/ws/logs/{exp_name}")
 async def websocket_logs(websocket: WebSocket, exp_name: str):
+    try:
+        _monitor_directory(exp_name, None)
+    except HTTPException:
+        await websocket.close(code=4403)
+        return
     await websocket.accept()
 
     try:
@@ -246,6 +278,11 @@ async def websocket_logs(websocket: WebSocket, exp_name: str):
 
 @app.websocket("/ws/batch/{batch_id}")
 async def websocket_batch_logs(websocket: WebSocket, batch_id: str):
+    try:
+        _require_batch(batch_id)
+    except HTTPException:
+        await websocket.close(code=4403)
+        return
     try:
         await websocket.accept()
 
@@ -439,7 +476,9 @@ async def start_experiment(request: dict[str, Any]):
             if batch_manager.get_active_task():
                 raise HTTPException(409, "A batch task is running or stopping")
             await runner.start(exp_name, config_overrides, backup_config=True)
-        return {"status": "started", "name": exp_name, "run_id": runner.run_id}
+            if runner._experiment_dir:
+                claim_resource("experiment", runner._experiment_dir)
+        return {"status": "started", "name": _started_experiment_name(exp_name), "run_id": runner.run_id}
     except HTTPException:
         raise
     except FileExistsError as e:
@@ -457,7 +496,10 @@ async def stop_experiment():
     """Await owned cleanup; a timeout never releases the execution slot."""
     batch = batch_manager.get_active_task()
     if batch:
+        _require_batch(batch.batch_id)
         return await cancel_batch_task(batch.batch_id)
+    if runner.exp_name and runner._experiment_dir:
+        require_resource("experiment", runner._experiment_dir)
     try:
         result = await asyncio.wait_for(asyncio.shield(runner.stop()), timeout=15)
     except asyncio.TimeoutError:
@@ -472,6 +514,9 @@ async def stop_experiment():
 @app.get("/api/experiment/status")
 async def get_experiment_status():
     """Get current experiment runner status."""
+    user, store = CURRENT_USER.get(), CURRENT_STORE.get()
+    if user and runner._experiment_dir and not store.allowed(user, "experiment", runner._experiment_dir):
+        return {"status": "idle", "exp_name": None, "run_id": None}
     return await runner.get_status()
 
 
@@ -485,9 +530,20 @@ async def list_all_experiments(
     try:
         root = _results_root()
         await _sync_catalog(root)
-        page = await asyncio.to_thread(get_catalog().query, root, search=search, status=status,
-                                       dataset=dataset, limit=limit, offset=offset)
-        return page if paginated else page["items"]
+        user, store = CURRENT_USER.get(), CURRENT_STORE.get()
+        if user and user["role"] != "admin":
+            page = await asyncio.to_thread(get_catalog().query, root, search=search, status=status, dataset=dataset)
+            items = [item for item in page["items"] if store.allowed(user, "experiment", root / item["name"])]
+            page = {**page, "total": len(items), "items": items[offset:offset + limit if limit else None]}
+        else:
+            page = await asyncio.to_thread(get_catalog().query, root, search=search, status=status,
+                                           dataset=dataset, limit=limit, offset=offset)
+        items = page["items"]
+        if store:
+            owners = store.owner_infos("experiment", [root / item["name"] for item in items])
+            items = [{**item, "owner": owner} for item, owner in zip(items, owners)]
+        page = {**page, "items": items}
+        return page if paginated else items
     except HTTPException:
         raise
     except Exception as e:
@@ -504,6 +560,9 @@ async def get_experiment_details(exp_name: str):
         detail = await asyncio.to_thread(get_catalog().detail, directory.parent, exp_name)
         if detail is None:
             raise HTTPException(404, "实验不存在或未找到运行记录。")
+        store = CURRENT_STORE.get()
+        if store:
+            detail = {**detail, "owner": store.owner_info("experiment", directory)}
         return detail
     except HTTPException:
         raise
@@ -558,8 +617,7 @@ async def run_batch_experiments(request: dict[str, Any]):
                 raise HTTPException(409, "An experiment is running or cleanup is not finished")
             if batch_manager.get_active_task():
                 raise HTTPException(409, "A batch task is already running or stopping")
-            baseline = config_manager.TOML_PATH.read_bytes()
-            names = set()
+            baseline = config_manager.config_path().read_bytes()
             for idx, exp in enumerate(experiments):
                 if not isinstance(exp, dict) or not isinstance(exp.get("name"), str) or not exp["name"].strip():
                     raise ValueError(f"Experiment {idx + 1}: name is required")
@@ -567,12 +625,11 @@ async def run_batch_experiments(request: dict[str, Any]):
                 config["run-name"] = exp["name"]
                 content = config_manager.build_run_config(baseline, config)
                 section = tomli.loads(content.decode("utf-8"))["tool"]["flwr"]["app"]["config"]
-                directory = experiment_path(config_manager.get_results_dir(section, default=RESULTS_DIR), exp["name"])
-                key = exp["name"].casefold()
-                if key in names or directory.exists():
-                    raise FileExistsError(f'Experiment "{exp["name"]}" already exists or is repeated in this batch. Choose a new name.')
-                names.add(key)
+                # Validate every name before creating the task. Repeated or
+                # already-used names are allowed; reservation appends the run UUID.
+                experiment_path(config_manager.get_results_dir(section, default=RESULTS_DIR), exp["name"])
             task = batch_manager.create_task(experiments, baseline)
+            claim_resource("batch", batch_manager._save_dir / task.batch_id)
             task.job = asyncio.create_task(_run_batch_sequence(task))
         return {"status": "batch_started", "batch_id": task.batch_id, "total": len(experiments)}
     except HTTPException:
@@ -604,7 +661,7 @@ async def _run_batch_sequence(task: BatchTask) -> None:
             original_callback = runner._on_log_line
 
             async def forward_log(line: str):
-                task.add_log(f"[{exp_name}] {line}")
+                task.add_log(f"[{_started_experiment_name(exp_name)}] {line}")
                 if original_callback:
                     await original_callback(line)
 
@@ -624,7 +681,16 @@ async def _run_batch_sequence(task: BatchTask) -> None:
                             batch_manager.update_task(task)
                             task.add_log(f"[Batch] Starting {idx + 1}/{len(task.experiments)}: {exp_name}")
                             await runner.start(exp_name, config, backup_config=False, base_config=task.base_config)
+                            started_name = _started_experiment_name(exp_name)
+                            if started_name != exp_name:
+                                task.add_log(f"[Batch] Name {exp_name} is already used; this run writes to {started_name}.")
+                                exp_name = started_name
+                                item["name"] = started_name
+                                task.current_exp_name = started_name
+                                batch_manager.update_task(task)
                             item["run_id"] = runner.run_id
+                            if runner._experiment_dir:
+                                claim_resource("experiment", runner._experiment_dir)
                             break
                         task.status = "paused"
                         task.current_exp_name = None
@@ -702,6 +768,7 @@ def _finish_batch(task: BatchTask, *, failed: bool = False) -> None:
 
 @app.post("/api/batch/{batch_id}/cancel")
 async def cancel_batch_task(batch_id: str):
+    _require_batch(batch_id)
     task = batch_manager.get_task(batch_id)
     if task is None:
         raise HTTPException(404, "Batch task not found")
@@ -729,6 +796,7 @@ async def cancel_batch_task(batch_id: str):
 
 @app.post("/api/batch/{batch_id}/pause")
 async def pause_batch_task(batch_id: str):
+    _require_batch(batch_id)
     task = batch_manager.get_task(batch_id)
     if task is None:
         raise HTTPException(404, "Batch task not found")
@@ -746,6 +814,7 @@ async def pause_batch_task(batch_id: str):
 
 @app.post("/api/batch/{batch_id}/resume")
 async def resume_batch_task(batch_id: str):
+    _require_batch(batch_id)
     task = batch_manager.get_task(batch_id)
     if task is None:
         raise HTTPException(404, "Batch task not found")
@@ -762,6 +831,7 @@ async def resume_batch_task(batch_id: str):
 
 @app.post("/api/batch/{batch_id}/stop-current")
 async def stop_current_batch_experiment(batch_id: str, request: dict[str, Any]):
+    _require_batch(batch_id)
     """Bind the stop to an observed run, never accidentally stop the next item."""
     task = batch_manager.get_task(batch_id)
     if task is None:
@@ -793,13 +863,16 @@ async def get_batch_status():
     task = batch_manager.get_active_task()
     if task is None:
         return {"status": "idle"}
+    store, user = CURRENT_STORE.get(), CURRENT_USER.get()
+    if store and not store.allowed(user, "batch", batch_manager._save_dir / task.batch_id):
+        return {"status": "idle"}
     return task.to_dict()
 
 
 @app.get("/api/batch/{batch_id}/status")
 async def get_batch_task_status(batch_id: str):
     """Get status of a specific batch task."""
-    task = batch_manager.get_task(batch_id)
+    task = _require_batch(batch_id)
     if task is None:
         raise HTTPException(404, "Batch task not found")
     return task.to_dict()
@@ -839,7 +912,7 @@ async def delete_experiment(exp_name: str, run_id: str | None = None):
         if runner.is_busy() and owned is not None and owned.resolve() == directory.resolve():
             raise HTTPException(409, "该实验仍在运行或清理中，请等待结束后再删除。")
         batch = batch_manager.get_active_task()
-        if batch and any(item.get("name") == exp_name for item in batch.experiments):
+        if batch and any(item.get("name") == exp_name for item in (*batch.experiments, *batch.results)):
             raise HTTPException(409, "活动批量任务仍引用该实验，请等待批次结束后再删除。")
         if directory.resolve() in _report_inputs:
             raise HTTPException(409, "该实验正在用于生成总结，请等待完成后再删除。")
@@ -923,6 +996,9 @@ async def generate_plots_for_experiment(exp_name: str):
 async def generate_summary_report():
     """运行 summarize_results.py 生成总结报告"""
     experiments = await asyncio.to_thread(list_experiments, _results_root())
+    store, user = CURRENT_STORE.get(), CURRENT_USER.get()
+    if store:
+        experiments = [item for item in experiments if store.allowed(user, "experiment", _results_root() / item["name"])]
     names = [item["name"] for item in experiments if item["has_metrics"]]
     if not names:
         raise HTTPException(422, "没有可用于总结的实验指标。")
@@ -942,7 +1018,10 @@ async def create_summary(request: dict[str, Any]):
     sources = [_experiment_directory(name) for name in experiments]
     if output_name is None:
         output_name = datetime.now().strftime("summary_%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
-    output_dir = _summary_directory(output_name)
+    try:
+        output_dir = summary_path(root, output_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if output_dir.exists():
         raise HTTPException(409, "总结名称已存在，请换一个名称。")
     
@@ -958,6 +1037,7 @@ async def create_summary(request: dict[str, Any]):
     async with _report_slot(output_dir, sources=sources):
         if output_dir.exists():
             raise HTTPException(409, "总结名称已存在，请换一个名称。")
+        claim_resource("summary", output_dir)
         for directory in sources:
             if not directory.is_dir():
                 raise HTTPException(404, f"实验 {directory.name} 不存在。")
@@ -984,6 +1064,9 @@ async def list_summaries():
         except ValueError:
             continue
         if d.is_dir():
+            store, user = CURRENT_STORE.get(), CURRENT_USER.get()
+            if store and not store.allowed(user, "summary", d):
+                continue
             # 读取 summary.csv 获取基本信息
             try:
                 csv_path = child_path(d, "summary.csv")
@@ -1108,11 +1191,35 @@ async def get_summary_detail_endpoint(summary_name: str):
         raise HTTPException(404, "Invalid summary data")
     return detail
 
+
+@app.delete("/api/summaries/{summary_name}")
+async def delete_summary(summary_name: str):
+    """Delete one summary directory after report/plot jobs have finished."""
+    summary_dir = _summary_directory(summary_name)
+    if not summary_dir.is_dir():
+        raise HTTPException(404, "总结不存在，请刷新列表后重试。")
+    async with _report_slot(summary_dir):
+        def remove():
+            shutil.rmtree(summary_dir)
+
+        job = asyncio.create_task(asyncio.to_thread(remove))
+        try:
+            await asyncio.shield(job)
+        except asyncio.CancelledError:
+            try:
+                await job
+            except OSError as exc:
+                print(f"[Summary] Cancelled deletion failed: {exc}")
+            raise
+        except OSError as exc:
+            raise HTTPException(500, "删除总结失败，文件可能正在被占用，请刷新列表后重试。") from exc
+    return {"status": "success", "name": summary_name}
+
 @app.get("/api/config/raw")
 async def get_raw_config():
     """返回 pyproject.toml 的原始文本内容"""
     try:
-        with open(config_manager.TOML_PATH, "r", encoding="utf-8") as f:
+        with open(config_manager.config_path(), "r", encoding="utf-8") as f:
             content = f.read()
         return {"content": content}
     except Exception as e:
@@ -1250,6 +1357,45 @@ async def create_backup_from_content(data: dict[str, Any]):
 # ------------------------------
 # Main entry point
 # ------------------------------
+@app.get("/api/admin/overview")
+async def admin_overview():
+    store = get_identity()
+    users = store.users()
+    root = _results_root()
+    await _sync_catalog(root)
+    experiments = get_catalog().query(root)["items"]
+    counts = {}
+    for item in experiments:
+        uid = store.owner("experiment", root / item["name"])
+        counts[uid] = counts.get(uid, 0) + 1
+    tasks = []
+    active_batch = batch_manager.get_active_task()
+    if active_batch:
+        tasks.append({"kind": "批量实验", "name": active_batch.batch_id, "status": active_batch.status,
+                      "current_experiment": active_batch.current_exp_name,
+                      "uid": store.owner("batch", batch_manager._save_dir / active_batch.batch_id)})
+    if runner.is_busy() and runner._experiment_dir:
+        tasks.append({"kind": "单个实验", "name": runner.exp_name, "status": (await runner.get_status())["status"],
+                      "uid": store.owner("experiment", runner._experiment_dir)})
+    return {"users": [{**u, "experiment_count": counts.get(u["uid"], 0)} for u in users], "tasks": tasks}
+
+
+@app.put("/api/admin/users/{uid}/disabled")
+async def disable_user(uid: str, data: dict[str, Any]):
+    if not isinstance(data.get("disabled"), bool):
+        raise HTTPException(422, "disabled 必须为布尔值。")
+    get_identity().set_disabled(uid, data["disabled"])
+    return {"status": "success"}
+
+
+@app.put("/api/admin/users/{uid}/password")
+async def reset_user_password(uid: str, data: dict[str, Any]):
+    if not isinstance(data.get("new_password"), str):
+        raise HTTPException(422, "new_password 必须为字符串。")
+    get_identity().reset_user_password(uid, data["new_password"])
+    return {"status": "success"}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)

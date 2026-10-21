@@ -14,6 +14,7 @@ from unittest.mock import patch
 import httpx
 import pandas as pd
 from fastapi.testclient import TestClient
+from backend.tests.auth_support import authenticated_client, authenticated_session
 
 from backend import main, results_scanner as scanner
 from backend.batch_manager import BatchTask
@@ -150,7 +151,7 @@ class HistoryApiTests(TemporaryHistory, unittest.TestCase):
         replacement = patch.object(main, "_results_root", return_value=self.root)
         replacement.start()
         self.addCleanup(replacement.stop)
-        self.client = TestClient(main.app, raise_server_exceptions=False)
+        self.client = authenticated_client(self, main.app, raise_server_exceptions=False)
         self.addCleanup(self.client.close)
 
     def test_history_and_failed_detail_and_log_download(self):
@@ -272,9 +273,53 @@ class HistoryApiTests(TemporaryHistory, unittest.TestCase):
         self.assertTrue(directory.exists())
 
 
+    def test_delete_summary_removes_only_selected_summary(self):
+        summaries = self.root / "summaries"
+        keep = summaries / "keep"
+        keep.mkdir(parents=True)
+        (keep / "summary.csv").write_bytes(b"experiment\none\n")
+        removed = summaries / "remove"
+        removed.mkdir()
+        (removed / "summary.csv").write_bytes(b"experiment\none\n")
+        (removed / "chart.png").write_bytes(b"image")
+        response = self.client.delete("/api/summaries/remove")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"status": "success", "name": "remove"})
+        self.assertFalse(removed.exists())
+        self.assertEqual((keep / "summary.csv").read_bytes(), b"experiment\none\n")
+        self.assertEqual(self.client.delete("/api/summaries/remove").status_code, 404)
+        for name in ("NUL", "..%5Coutside"):
+            self.assertEqual(self.client.delete(f"/api/summaries/{name}").status_code, 400)
+
+    def test_delete_summary_rejects_active_report_without_removing_files(self):
+        summary = self.root / "summaries" / "busy"
+        summary.mkdir(parents=True)
+        (summary / "summary.csv").write_bytes(b"experiment\none\n")
+        main._report_directories.add(summary.resolve())
+        try:
+            response = self.client.delete("/api/summaries/busy")
+        finally:
+            main._report_directories.discard(summary.resolve())
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertTrue(summary.exists())
+
+    def test_delete_summary_io_failure_keeps_error_chinese_and_releases_reservation(self):
+        summary = self.root / "summaries" / "report"
+        summary.mkdir(parents=True)
+        (summary / "summary.csv").write_bytes(b"experiment\none\n")
+        with patch.object(main.shutil, "rmtree", side_effect=PermissionError("private diagnostic")):
+            response = self.client.delete("/api/summaries/report")
+        self.assertEqual(response.status_code, 500, response.text)
+        self.assertIn("删除总结失败", response.json()["detail"])
+        self.assertNotIn("private", response.text)
+        self.assertNotIn(summary.resolve(), main._report_directories)
+        self.assertTrue(summary.exists())
+
+
 class ReportWorkerTests(TemporaryHistory, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.prepare()
+        self.token, self.csrf = authenticated_session(self)
 
     async def test_slow_report_does_not_block_status_and_duplicate_is_409(self):
         self.experiment()
@@ -287,7 +332,9 @@ class ReportWorkerTests(TemporaryHistory, unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "_results_root", return_value=self.root), patch.object(
                 main.subprocess, "run", side_effect=execute):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+                                         headers={"X-CSRF-Token": self.csrf, "X-Lianan-Request": "1"},
+                                         cookies={"lianan_session": self.token}) as client:
                 job = asyncio.create_task(client.post("/api/experiments/one/plot"))
                 try:
                     self.assertTrue(await asyncio.to_thread(entered.wait, 3))
@@ -353,7 +400,9 @@ class ReportWorkerTests(TemporaryHistory, unittest.IsolatedAsyncioTestCase):
             if not release.wait(5):
                 raise RuntimeError("test did not release deletion")
         with patch.object(main, "_results_root", return_value=self.root), patch.object(main.shutil, "rmtree", side_effect=remove):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+                                         headers={"X-CSRF-Token": self.csrf, "X-Lianan-Request": "1"},
+                                         cookies={"lianan_session": self.token}) as client:
                 job = asyncio.create_task(client.delete("/api/experiments/one"))
                 try:
                     self.assertTrue(await asyncio.to_thread(entered.wait, 3))

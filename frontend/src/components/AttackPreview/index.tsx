@@ -75,7 +75,7 @@ export default function AttackPreview({ config, ready }: Props) {
             && /^(Not Found|请求失败（HTTP 404）)$/i.test(cause.message.trim());
           setError(missingEndpoint
             ? '当前后端未提供后门样本预览接口，请在没有实验运行时重启后端，再点击“刷新预览”；若仍失败，请检查后端地址配置。'
-            : getUserErrorMessage(cause, '加载图片预览失败，请检查数据集和攻击参数后重试。'));
+            : getUserErrorMessage(cause, '加载图片预览失败，请检查数据集和对抗性安全测试参数后重试。'));
         }
       } finally {
         if (active) setLoading(false);
@@ -119,7 +119,7 @@ export default function AttackPreview({ config, ready }: Props) {
         title="仅展示植入效果，不代表该图片在实际训练中被选中投毒。"
         description={distributed
           ? '同时对比原图、客户端训练投毒效果和完整触发器（ASR 评估用）。中间图复用训练时的局部触发器，FCBA 可能包含多个子块；假设所选客户端为恶意客户端且该图已被选中投毒，忽略投毒比例和目标类别排除规则，不代表实际投毒抽样结果。不会修改数据集或启动实验。'
-          : '默认展示所选数据集训练集的第一张图片，可按编号选择。使用当前未保存的攻击参数，忽略投毒抽样比例和目标类别排除规则；不会修改数据集或启动实验。'} />
+          : '默认展示所选数据集训练集的第一张图片，可按编号选择。使用当前未保存的对抗性安全测试参数，忽略投毒抽样比例和目标类别排除规则；不会修改数据集或启动实验。'} />
       {error && <Alert type="warning" showIcon title={error} style={{ marginBottom: 16 }} />}
       <Spin spinning={loading}>
         <Row gutter={[24, 16]} style={{ minHeight: 250 }}>

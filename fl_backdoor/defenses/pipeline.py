@@ -22,7 +22,7 @@ from flwr.serverapp.strategy.strategy_utils import aggregate_arrayrecords
 
 from .base import DefenseBase, DefenseConfig, IdentityDefense
 from .client import build_client_defense
-from .server.aggregation.krum import KrumDefense, _krum_select
+from .server.aggregation.krum import KrumDefense, _krum_select, resolve_krum_params
 from .server.aggregation.norm_clipping import NormClippingDefense
 from .server.aggregation.trimmed_mean import TrimmedMeanDefense
 from .server.detection import build_detection
@@ -1044,8 +1044,19 @@ class DefensePipelineFedAvg(FedAvg):
                 flat_updates.append(flat)
 
             n = len(flat_updates)
-            f = num_malicious
-            k = krum_k
+            f_configured = num_malicious
+            k_configured = krum_k
+            f, k = resolve_krum_params(n, f_configured, k_configured)
+            if (f, k) != (f_configured, k_configured):
+                from logging import WARNING
+                from flwr.common.logger import log
+
+                log(
+                    WARNING,
+                    "Krum parameters adjusted after detection: n=%d, "
+                    "configured=(f=%d, k=%d), effective=(f=%d, k=%d)",
+                    n, f_configured, k_configured, f, k,
+                )
 
             selected_indices = _krum_select(flat_updates, f=f, k=k)
             selected_updates = [client_ndarrays_list[i] for i in selected_indices]
@@ -1085,6 +1096,9 @@ class DefensePipelineFedAvg(FedAvg):
             metrics["agg_selected_clients"] = int(len(selected_indices))
             metrics["agg_krum_f"] = int(f)
             metrics["agg_krum_k"] = int(k)
+            metrics["agg_krum_f_configured"] = int(f_configured)
+            metrics["agg_krum_k_configured"] = int(k_configured)
+            metrics["agg_krum_adapted"] = int((f, k) != (f_configured, k_configured))
 
             gt_labels = [self._extract_client_meta(msg, i)[1] for i, msg in enumerate(replies)]
             total_mal = sum(1 for l in gt_labels if l == 1)

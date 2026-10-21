@@ -16,12 +16,48 @@ import tomli
 import tomli_w
 
 from backend import config_manager
+from backend.identity import claim_resource
 from backend.owned_processes import OwnedProcessTree
 from fl_backdoor.utils.run_artifacts import build_config_snapshot, reserve_experiment, write_run_metadata
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
 BUSY_STATUSES = {"starting", "running", "stopping", "cleaning", "cleanup_failed"}
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+_ERROR_LINE = re.compile(r"^(?:[A-Za-z_][\w.]*Error|Exception):\s*(.+)$")
+_FATAL_PREFIX = "!!! FATAL ERROR in server main:"
+_MAX_FAILURE_REASON_CHARS = 300
+
+
+def _extract_failure_reason(log_file: Optional[Path], max_lines: int = 500) -> Optional[str]:
+    """Return the server-side root cause recorded in a failed worker log."""
+    if log_file is None or not log_file.exists():
+        return None
+    try:
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:]
+    except OSError:
+        return None
+
+    cleaned_lines = [_ANSI_ESCAPE.sub("", line).strip() for line in lines]
+    for line in cleaned_lines:
+        if line.startswith(_FATAL_PREFIX):
+            reason = line[len(_FATAL_PREFIX):].strip()
+            if reason:
+                return reason[:_MAX_FAILURE_REASON_CHARS]
+    for line in reversed(cleaned_lines):
+        match = _ERROR_LINE.match(line)
+        if match:
+            return match.group(1).strip()[:_MAX_FAILURE_REASON_CHARS]
+    return None
+
+
+def _worker_failure_message(code: int, log_file: Optional[Path]) -> str:
+    reason = _extract_failure_reason(log_file)
+    if not reason:
+        return f"Experiment worker exited with code {code}. See run.log for details."
+    separator = "" if reason.endswith((".", "!", "?")) else "."
+    return f"Experiment worker exited with code {code}: {reason}{separator} See run.log for details."
 
 
 class ExperimentRunner:
@@ -39,6 +75,7 @@ class ExperimentRunner:
         self._cancel_requested = False
         self._original_config: Optional[bytes] = None
         self._applied_config: Optional[bytes] = None
+        self._config_path: Optional[Path] = None
         self._exit_code: Optional[int] = None
         self._error: Optional[str] = None
         self._run_error: Optional[str] = None
@@ -77,14 +114,22 @@ class ExperimentRunner:
                 raise RuntimeError("An experiment is running or cleanup is not finished")
             overrides = dict(config_overrides or {})
             overrides["run-name"] = exp_name
-            baseline = base_config if base_config is not None else config_manager.TOML_PATH.read_bytes()
+            baseline = base_config if base_config is not None else config_manager.config_path().read_bytes()
             # No status/file/backup mutation until input validation succeeds.
             content = config_manager.build_run_config(baseline, overrides)
             section = tomli.loads(content.decode("utf-8"))["tool"]["flwr"]["app"]["config"]
             results_root = config_manager.get_results_dir(section, default=RESULTS_DIR)
-            # Reserve atomically BEFORE touching config/backup/logs. Even empty
-            # or legacy directories belong to the user and are never reused.
+            # Reserve atomically BEFORE touching config/backup/logs. A repeated
+            # name gets a run-ID suffix instead of rejecting the launch.
             exp_dir, metadata = reserve_experiment(results_root, exp_name)
+            claim_resource("experiment", exp_dir)
+            requested_name = exp_name
+            exp_name = metadata["name"]
+            if exp_name != requested_name:
+                # The directory name is this run's identity: the worker writes
+                # <run-name>.csv there, so the snapshot must use the same name.
+                overrides["run-name"] = exp_name
+                content = config_manager.build_run_config(baseline, overrides)
             self._status = "starting"
             self.exp_name = exp_name
             self._cancel_requested = False
@@ -99,6 +144,7 @@ class ExperimentRunner:
             self.flower_run_id = None
             self._run_metadata = metadata
             self._experiment_dir = exp_dir
+            self._config_path = config_manager.config_path()
             self._monitor_task = None
             self._stdout_task = None
             try:
@@ -106,9 +152,9 @@ class ExperimentRunner:
                     # Keep the single-run backup behavior, but never restore a
                     # shared backup during cleanup. The FAB isolates training.
                     with config_manager._CONFIG_LOCK:
-                        self._original_config = config_manager.TOML_PATH.read_bytes()
+                        self._original_config = config_manager.config_path().read_bytes()
                         config_manager.update_config(overrides, backup_current=backup_config)
-                        self._applied_config = config_manager.TOML_PATH.read_bytes()
+                        self._applied_config = config_manager.config_path().read_bytes()
                         content = self._applied_config
                 document = tomli.loads(content.decode("utf-8"))
                 section = document["tool"]["flwr"]["app"]["config"]
@@ -218,7 +264,7 @@ class ExperimentRunner:
             self._exit_code = code
             self._terminal_status = "cancelled" if self._cancel_requested else ("finished" if code == 0 else "failed")
             if self._terminal_status == "failed":
-                self._error = f"Experiment worker exited with code {code}. See run.log for details."
+                self._error = _worker_failure_message(code, self.log_file)
         except Exception as exc:
             self._terminal_status = "failed"
             self._error = f"Experiment monitor failed: {exc}"
@@ -235,8 +281,15 @@ class ExperimentRunner:
                 self._exit_code = self.process.poll()
             if self._stdout_task:
                 await asyncio.wait_for(asyncio.shield(self._stdout_task), timeout=5)
+            if (
+                self._terminal_status == "failed"
+                and self._exit_code not in (None, 0)
+                and (self._run_error or "").startswith("Experiment worker exited with code")
+            ):
+                # The monitor may have read the log before buffered lines landed.
+                self._run_error = _worker_failure_message(self._exit_code, self.log_file)
             if self._original_config is not None and self._applied_config is not None:
-                await asyncio.to_thread(config_manager.restore_run_config, self._original_config, self._applied_config)
+                await asyncio.to_thread(config_manager.restore_run_config, self._original_config, self._applied_config, path=self._config_path)
                 self._original_config = self._applied_config = None
             if self._temp_home:
                 await asyncio.to_thread(shutil.rmtree, self._temp_home)

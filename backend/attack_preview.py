@@ -63,7 +63,7 @@ def preview_attack(request: dict) -> dict:
         normalized = normalize_values(selected, CONFIG_SCHEMA)
         cfg = ExperimentConfig.from_run_config(normalized)
     except (ValueError, TypeError, SyntaxError) as exc:
-        raise ValueError("预览参数不合法，请检查数据集、种子及攻击参数的类型和范围。") from exc
+        raise ValueError("预览参数不合法，请检查数据集、种子及对抗性安全测试参数的类型和范围。") from exc
 
     if cfg.dataset not in {"mnist", "cifar10"}:
         raise ValueError("预览仅支持 MNIST 和 CIFAR-10 数据集。")
@@ -129,7 +129,7 @@ def preview_attack(request: dict) -> dict:
             local_image = local_dataset[0]["img"] if local_dataset is not None else None
             poisoned = local_image if scope == "local" and local_image is not None else global_image
     except (ValueError, TypeError, RuntimeError, IndexError) as exc:
-        raise ValueError("无法生成后门预览，请检查触发器尺寸、位置、子块划分及攻击参数。") from exc
+        raise ValueError("无法生成后门预览，请检查触发器尺寸、位置、子块划分及对抗性安全测试参数。") from exc
 
     def label_text(value):
         return str(value) if cfg.dataset == "mnist" else f"{value}（{_CIFAR_LABELS[value]}）"

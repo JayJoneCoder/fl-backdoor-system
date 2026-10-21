@@ -138,6 +138,8 @@ test('图例显式下移且为横轴名称、刻度和图例预留分离的底�
       assert.ok(chart.options.grid.bottom >= 80);
       assert.equal(chart.options.xAxis.nameLocation, 'middle');
     }
+    assert.equal(h.charts[0].options.legend.data[0], '准确率 (ACC)');
+    assert.equal(h.charts[1].options.legend.data[0], '损失 (Loss)');
   } finally { h.unmount(); }
 });
 
