@@ -95,7 +95,21 @@ fl_env\Scripts\python.exe -B packaging\acceptance.py --reuse-runtime
 ```
 
 验收内容：`install_runtime`（下载 + 实际卷积/反向传播/Numpy/torchvision 自检 + 原子激活）→ 启动 `desktop/api_entry.py` → `/api/health`、`/` 前端 → 默认管理员登录 → 1 轮 / 2 客户端 MNIST → 校验 `run.log`、`run.json`、`device_runtime.json`、CSV 数据行 → 结束进程树。
-2026-10-22 实跑结果：`round 0 accuracy 0.1009 → round 1 accuracy 0.8887, loss 0.979`，`torch=2.8.0+cpu`，设备日志 `actual=cpu`。
+2026-10-22 实跑结果：`round 0 accuracy 0.1009 → round 1 accuracy 0.8887, loss 0.979`，`torch=2.8.0+cpu`，设备日志 `actual=cpu`；另用 10 客户端 + BadNets + clustering + Krum 单轮跑通。Ray 自检耗时约 3 秒，临时目录为 `C:\Users\Public\LianAnZhiDun\ray`；把该目录设为不可写可复现“自检失败”提示。
+
+## Ray 与 Windows 排障
+
+Flower 1.29 的仿真后端只有 Ray，且 Ray 官方标注 Windows 为实验性支持。`Exit Code: 700` 是 Flower 的 `SIMULATION_EXCEPTION`；随后常见 `finished:failed No heartbeat received from the run`，两者是同一事件：raylet/GCS 未启动或中途退出。
+
+已内置的加固：
+
+- Ray 临时目录固定为 `C:\Users\Public\LianAnZhiDun\ray`（ASCII），必要时同时改写 `TEMP/TMP`；
+- `RAY_health_check_timeout_ms=120000`、`RAY_health_check_failure_threshold=10` 等，适配慢机器与杀毒扫描；
+- 实验启动前执行 `fl_backdoor/utils/ray_probe.py` 自检（成功缓存 12 小时、失败 5 分钟）；
+- 失败时把 `superlink.log` 与 `ray-logs/`（raylet/gcs/dashboard）复制到实验目录，并在 `ray_runtime.json` 记录原因；
+- `Exit Code: 700` / 心跳丢失会被翻译成中文排查提示，而不是只显示退出码。
+
+现场排查顺序：杀毒软件白名单（安装目录、`%LOCALAPPDATA%\LianAnZhiDun`、`C:\Users\Public\LianAnZhiDun`）→ VC++ 2015-2022 x64 → 磁盘空间 → 端口占用 → 换机器/WSL2。
 
 ## 干净机验收清单（尚未执行）
 

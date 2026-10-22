@@ -69,10 +69,27 @@ def main() -> int:
     report.update(requested_device=mode, selected_device=device)
     # Separate artifact avoids racing the runner's lifecycle run.json writes.
     directory = Path(section["results-dir"]) / section["run-name"]
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "device_runtime.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[Device] Preflight: requested={mode}, actual={device}", flush=True)
     for warning in report["warnings"]:
         print(f"[Device Warning] {warning}", flush=True)
+
+    from fl_backdoor.utils.ray_runtime import configure_ray_environment, probe_ray
+
+    configure_ray_environment(os.environ)
+    if os.environ.get("FL_BACKDOOR_SKIP_RAY_PROBE") != "1":
+        # Flower's simulation backend is Ray. On Windows raylet/GCS frequently
+        # fails behind antivirus or with a non-ASCII temp path; failing here
+        # with a real reason is far better than "No heartbeat received".
+        ray_report = probe_ray()
+        (directory / "ray_runtime.json").write_text(
+            json.dumps(ray_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not ray_report.get("ok"):
+            raise RuntimeError("Ray 仿真后端自检失败：" + str(ray_report.get("error") or "未知错误"))
+        print(f"[Ray] 自检通过：Ray {ray_report.get('ray')}，耗时 {ray_report.get('seconds')}s，"
+              f"临时目录 {ray_report.get('ray_temp_dir')}", flush=True)
+
     entries = {entry.name: entry.value for entry in distribution("flwr").entry_points}
     superlink_entry = entries["flower-superlink"]
     module, function = superlink_entry.split(":", 1)

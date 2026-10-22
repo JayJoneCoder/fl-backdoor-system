@@ -37,10 +37,11 @@ framework: [pytorch, flwr]
 已提供 Inno Setup 安装器构建，产物为 `dist\LianAnZhiDun-<版本>-win64-setup.exe`（约 300 MB，内置 CPython 3.11、95 个依赖、前端与 MNIST/CIFAR-10 数据集）。
 
 - **安装**：双击安装器，按用户安装到 `%LOCALAPPDATA%\Programs\LianAnZhiDun`，无需管理员权限；未签名安装器出现 SmartScreen 时选择「更多信息 → 仍要运行」。
-- **首次启动**：开始菜单「联安智盾」会打开浏览器配置页，选择下载源（上海交大镜像 / PyTorch 官方）与 CPU / CUDA 12.6 / CUDA 12.8，点击下载即可；只下载 `torch==2.8.0` 与 `torchvision==0.23.0`，其余依赖已随包。
+- **首次启动**：开始菜单「联安智盾」会打开浏览器配置页，选择下载源（上海交大 / 思源 / 阿里云 / PyTorch 官方 / 官方 CDN）与 CPU / CUDA 12.6 / CUDA 12.8，可先点“测试各源速度”看延迟和带宽；只下载 `torch==2.8.0` 与 `torchvision==0.23.0`，其余依赖已随包。
 - **安装后占用**：约 0.9 GB；CPU 版 PyTorch 约 +1.5 GB，CUDA 12.8 约 +7 GB，均装在用户目录。
 - **用户数据**：`%LOCALAPPDATA%\LianAnZhiDun`（账号、配置、结果、日志、已下载运行环境），卸载时询问是否保留。
 - **重新配置/自检**：`{安装目录}\python\python.exe -B -m desktop.launcher --setup` / `--diagnose`，或开始菜单「运行环境自检」。
+- **Ray 报错排查**：Flower 仿真只支持 Ray，Windows 为实验性支持。实验启动前会自动做 Ray 自检；若出现 `Exit Code: 700` 或 `No heartbeat received`，请查看实验目录的 `ray_runtime.json`、`superlink.log`、`ray-logs/`，并把安装目录加入杀毒软件白名单；详见 [desktop/README.md](desktop/README.md#windows-ray-故障排查)。
 - **构建方法**：见 [packaging/README.md](packaging/README.md)。
 
 ## 安装依赖和运行项目

@@ -9,7 +9,7 @@ import threading
 import time
 import webbrowser
 
-from desktop.runtime import BUILDS, SOURCES, active_runtime, install_runtime, probe
+from desktop.runtime import BUILDS, SOURCES, active_runtime, install_runtime, probe, speed_test
 from fl_backdoor.utils.device import select_device
 
 
@@ -28,6 +28,8 @@ class SetupState:
         self.ready = threading.Event()
         self.lock = threading.Lock()
         self.last_activity = time.monotonic()
+        self.speed = None
+        self.speed_running = False
 
     def touch(self) -> None:
         """The page polls /status every 1.5 s while it is still open."""
@@ -37,6 +39,8 @@ class SetupState:
         with self.lock:
             if self.installing:
                 raise ValueError("已有安装或检测正在进行，请等待。")
+            if self.speed_running:
+                raise ValueError("正在测速，请等待完成后再安装。")
             if source not in SOURCES or build not in BUILDS:
                 raise ValueError("无效的下载源或构建版本。")
             self.installing, self.error, self.logs = True, "", []
@@ -49,6 +53,25 @@ class SetupState:
                 self.logs.append(self.error)
             finally:
                 self.installing = False
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def speedtest(self, build: str) -> None:
+        with self.lock:
+            if self.installing or self.speed_running:
+                raise ValueError("正在安装或已有测速任务，请等待完成。")
+            if build not in BUILDS:
+                raise ValueError("无效的构建版本。")
+            self.speed_running = True
+            self.speed = None
+
+        def run():
+            try:
+                self.speed = speed_test(build)
+            except Exception as exc:  # noqa: BLE001 - surfaced in the setup page
+                self.speed = {"build": build, "results": {}, "fastest": "", "error": str(exc)}
+            finally:
+                self.speed_running = False
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -97,7 +120,9 @@ def setup_window(report: dict) -> str:
             elif self.path == "/status" and self.authorized():
                 state.touch()
                 self.reply(200, {"sources": SOURCES, "builds": BUILDS, "report": state.report,
-                                 "logs": state.logs[-300:], "installing": state.installing, "error": state.error})
+                                 "logs": state.logs[-300:], "installing": state.installing,
+                                 "error": state.error, "speed": state.speed,
+                                 "speed_running": state.speed_running})
             else:
                 self.reply(403, {"detail": "无效的本地配置会话。"})
 
@@ -113,6 +138,8 @@ def setup_window(report: dict) -> str:
                     raise ValueError("请求必须是对象。")
                 if self.path == "/install":
                     state.install(data.get("source"), data.get("build"))
+                elif self.path == "/speedtest":
+                    state.speedtest(data.get("build"))
                 elif self.path == "/continue":
                     state.confirm(data.get("mode"), data.get("acknowledge") is True)
                 elif self.path == "/cancel":

@@ -30,6 +30,10 @@ BUSY_STATUSES = {"starting", "running", "stopping", "cleaning", "cleanup_failed"
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 _ERROR_LINE = re.compile(r"^(?:[A-Za-z_][\w.]*Error|Exception):\s*(.+)$")
 _FATAL_PREFIX = "!!! FATAL ERROR in server main:"
+_WORKER_FAILED_PREFIX = "[Runner] Worker failed:"
+_HEARTBEAT_FAILURE = "No heartbeat received from the run"
+_SIMULATION_EXIT_CODE = "Exit Code: 700"
+_SIMULATION_EXCEPTION = "An unhandled exception occurred when running the simulation"
 _MAX_FAILURE_REASON_CHARS = 300
 
 
@@ -49,9 +53,19 @@ def _extract_failure_reason(log_file: Optional[Path], max_lines: int = 500) -> O
             if reason:
                 return reason[:_MAX_FAILURE_REASON_CHARS]
     for line in reversed(cleaned_lines):
+        if line.startswith(_WORKER_FAILED_PREFIX):
+            reason = line[len(_WORKER_FAILED_PREFIX):].strip()
+            if reason:
+                return reason[:_MAX_FAILURE_REASON_CHARS]
+    for line in reversed(cleaned_lines):
         match = _ERROR_LINE.match(line)
         if match:
             return match.group(1).strip()[:_MAX_FAILURE_REASON_CHARS]
+    joined = "\n".join(cleaned_lines)
+    if (_HEARTBEAT_FAILURE in joined or _SIMULATION_EXIT_CODE in joined
+            or _SIMULATION_EXCEPTION in joined):
+        return ("Flower 模拟引擎（Ray）启动失败或崩溃，运行进程已退出。"
+                "请查看实验目录中的 superlink.log / ray_runtime.json，并把安装目录加入杀毒软件白名单。")
     return None
 
 
@@ -309,6 +323,8 @@ class ExperimentRunner:
                 await asyncio.to_thread(config_manager.restore_run_config, self._original_config, self._applied_config, path=self._config_path)
                 self._original_config = self._applied_config = None
             if self._temp_home:
+                if self._terminal_status == "failed" or self._exit_code not in (None, 0):
+                    await asyncio.to_thread(self._preserve_diagnostics)
                 await asyncio.to_thread(shutil.rmtree, self._temp_home)
                 self._temp_home = None
             self._status = self._terminal_status
@@ -321,6 +337,34 @@ class ExperimentRunner:
                 self._save_metadata()
             except Exception:
                 pass  # Keep the original cleanup error; retry remains available.
+
+    def _preserve_diagnostics(self) -> None:
+        """Keep SuperLink/Ray logs after a failure; the temp tree is deleted."""
+        if not self._experiment_dir or not self._temp_home:
+            return
+        try:
+            superlink = self._temp_home / "flower" / "superlink.log"
+            if superlink.is_file() and superlink.stat().st_size:
+                shutil.copy2(superlink, self._experiment_dir / "superlink.log")
+        except OSError:
+            pass
+        try:
+            from fl_backdoor.utils.ray_runtime import ray_temp_root
+
+            root = Path(os.environ.get("RAY_TEMP_DIR") or ray_temp_root()) / "ray"
+            sessions = sorted(root.glob("session_*"), key=lambda path: path.stat().st_mtime, reverse=True)
+            if not sessions:
+                return
+            logs = sessions[0] / "logs"
+            target = self._experiment_dir / "ray-logs"
+            for pattern in ("raylet.err", "raylet.out", "gcs_server.err", "gcs_server.out",
+                            "dashboard.err", "dashboard.log", "python-core-driver-*.log"):
+                for path in logs.glob(pattern):
+                    if path.is_file() and path.stat().st_size <= 4 * 1024 * 1024:
+                        target.mkdir(exist_ok=True)
+                        shutil.copy2(path, target / path.name)
+        except OSError:
+            pass
 
     def _save_metadata(self) -> None:
         if self._run_metadata is not None and self._experiment_dir is not None:

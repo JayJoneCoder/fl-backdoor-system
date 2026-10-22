@@ -1,10 +1,12 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>联安智盾 · 运行环境配置</title>
-<style>body{font:16px/1.6 system-ui,sans-serif;background:#eef3f9;color:#172a44;margin:0}main{max-width:860px;margin:5vh auto;padding:32px;background:white;border-radius:16px;box-shadow:0 10px 40px #1232}label{display:block;margin:16px 0}select,button{font:inherit;padding:8px 16px;margin:4px}button{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;background:#111e32;color:#e3f3ff;padding:16px}#warning{color:#a34000;white-space:pre-wrap}small{color:#52647b}</style></head>
+<style>body{font:16px/1.6 system-ui,sans-serif;background:#eef3f9;color:#172a44;margin:0}main{max-width:860px;margin:5vh auto;padding:32px;background:white;border-radius:16px;box-shadow:0 10px 40px #1232}label{display:block;margin:16px 0}select,button{font:inherit;padding:8px 16px;margin:4px}button{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;background:#111e32;color:#e3f3ff;padding:16px}#warning{color:#a34000;white-space:pre-wrap}small{color:#52647b}table{border-collapse:collapse;width:100%;font-size:14px;margin:8px 0}td,th{border:1px solid #cdd8e6;padding:6px 8px;text-align:left}th{background:#f3f7fc}</style></head>
 <body><main><h1>联安智盾 · 运行环境配置</h1><p>其他依赖、数据集和前端由发行包提供。首次使用仅需下载匹配的 <b>PyTorch 2.8.0 + torchvision 0.23.0</b>。</p>
 <p>CPU 版体积较小，但不能调用 CUDA。GPU 版需兼容的 NVIDIA 显卡和驱动，安装后必须通过实际运算自检；不以是否装有 CUDA Toolkit 作为依据。</p>
-<label>下载源 <select id="source"></select></label><small>国内镜像为第三方服务，可能同步延迟；无法下载请主动切换官方源。不会自动换源或关闭 HTTPS 校验。</small>
-<label>PyTorch 版本 <select id="build"></select></label><p>请预留 CPU 至少 5 GiB / GPU 至少 16 GiB 可用空间（含缓存；实际大小取决于所选 wheel）。安装到当前用户的私有目录，不修改系统 Python。</p>
+<label>下载源 <select id="source"></select></label><small>国内镜像为第三方服务，可能同步延迟；可用下方“测试各源速度”选择最快的源。不会自动换源或关闭 HTTPS 校验。</small>
+<label>PyTorch 版本 <select id="build"></select></label><button id="speed">测试各源速度</button><small>测速会从每个源下载 512 KB 样本，仅用于比较延迟与带宽。</small>
+<table><thead><tr><th>下载源</th><th>延迟</th><th>速度</th><th>状态</th></tr></thead><tbody id="speedbody"><tr><td colspan="4">尚未测速</td></tr></tbody></table>
+<p>请预留 CPU 至少 5 GiB / GPU 至少 16 GiB 可用空间（含缓存；实际大小取决于所选 wheel）。安装到当前用户的私有目录，不修改系统 Python。</p>
 <button id="install">下载并安装 / 换源重试</button><button id="refresh">重新检测</button>
 <pre id="report">正在检测显卡和运行环境…</pre><div id="warning" role="alert"></div><pre id="logs" aria-live="polite">安装日志将在这里显示</pre>
 <label>训练设备 <select id="mode"><option value="auto">自动（启动实验前确定）</option><option value="cpu">CPU</option><option value="cuda">强制 NVIDIA GPU（不可用则阻止）</option></select></label>
@@ -18,6 +20,35 @@ async function request(path, body) {
   const response = await fetch(path, {method: body ? 'POST' : 'GET', headers: {'X-Setup-Token': token, 'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined});
   const data = await response.json(); if (!response.ok) throw new Error(data.detail || '请求失败'); return data;
 }
+function renderSpeed(state) {
+  const body = $('speedbody');
+  if (state.speed_running) {
+    $('speed').disabled = true; $('speed').textContent = '测速中…';
+    body.innerHTML = '<tr><td colspan="4">正在测速，请稍候…</td></tr>';
+    return;
+  }
+  $('speed').disabled = state.installing; $('speed').textContent = '测试各源速度';
+  const speed = state.speed;
+  if (!speed || speed.build !== $('build').value || !Object.keys(speed.results || {}).length) {
+    body.innerHTML = '<tr><td colspan="4">' + (speed?.error || '尚未测速') + '</td></tr>';
+    return;
+  }
+  body.innerHTML = '';
+  for (const [key, item] of Object.entries(speed.results)) {
+    const tr = document.createElement('tr');
+    if (key === speed.fastest) tr.style.fontWeight = 'bold';
+    const values = [
+      (state.sources[key]?.label || key),
+      item.ok ? `${item.latency_ms} ms` : '—',
+      item.ok ? `${item.mbps} Mbps` : '—',
+      item.ok ? (key === speed.fastest ? '推荐' : '可用') : (item.error || '失败'),
+    ];
+    for (const text of values) {
+      const td = document.createElement('td'); td.textContent = text; tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+}
 async function refresh() {
   try {
     const state = await request('/status');
@@ -30,11 +61,15 @@ async function refresh() {
     $('report').textContent = JSON.stringify(state.report, null, 2);
     $('warning').textContent = [...(state.report.warnings || []), ...(state.report.guidance || [])].join('\n');
     $('logs').textContent = state.logs.join('\n') || '尚未开始下载';
-    $('install').disabled = state.installing; $('continue').disabled = state.installing; $('cancel').disabled = state.installing;
+    renderSpeed(state);
+    $('install').disabled = state.installing || state.speed_running;
+    $('continue').disabled = state.installing || state.speed_running;
+    $('cancel').disabled = state.installing;
     if (state.error) $('error').textContent = state.error;
   } catch (error) { $('error').textContent = error.message; }
 }
 $('install').onclick = async () => { try { $('error').textContent=''; await request('/install', {source:$('source').value,build:$('build').value}); await refresh(); } catch(error) { $('error').textContent=error.message; } };
+$('speed').onclick = async () => { try { $('error').textContent=''; await request('/speedtest', {build:$('build').value}); await refresh(); } catch(error) { $('error').textContent=error.message; } };
 $('refresh').onclick = async () => { try { await request('/probe', {}); await refresh(); } catch(error) { $('error').textContent=error.message; } };
 $('continue').onclick = async () => { try { await request('/continue', {mode:$('mode').value, acknowledge:$('ack').checked}); $('error').textContent='正在启动平台，请等待浏览器打开…'; clearInterval(timer); } catch(error) { $('error').textContent=error.message; } };
 $('cancel').onclick = async () => { try { await request('/cancel', {}); clearInterval(timer); $('error').textContent='已退出启动器，可以关闭本窗口。'; } catch(error) { $('error').textContent=error.message; } };

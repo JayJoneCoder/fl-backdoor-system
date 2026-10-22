@@ -197,16 +197,78 @@ class RuntimeInstallationTests(unittest.TestCase):
 
     def test_source_probe_checks_exact_windows_wheels_without_downloading_them(self):
         class Response(io.BytesIO):
-            pass
+            status = 206
 
-        responses = [Response(f'<a href="{name}-{version}%2Bcpu-cp311-cp311-win_amd64.whl">wheel</a>'.encode())
-                     for name, version in runtime.VERSIONS.items()]
+        responses = [Response(b"\x00") for _ in runtime.VERSIONS]
         with patch.object(runtime.urllib.request, "urlopen", side_effect=responses) as request:
             runtime.check_source("official", "cpu")
         self.assertEqual(request.call_count, 2)
-        with patch.object(runtime.urllib.request, "urlopen", return_value=Response(b"<html>captcha</html>")):
-            with self.assertRaisesRegex(RuntimeError, "未列出"):
+        requested = [call.args[0].full_url for call in request.call_args_list]
+        for name, version in runtime.VERSIONS.items():
+            self.assertTrue(any(f"{name}-{version}%2Bcpu-cp311-cp311-win_amd64.whl" in url for url in requested))
+        missing = urllib.error.HTTPError("https://example.invalid", 404, "Not Found", {}, None)
+        with patch.object(runtime.urllib.request, "urlopen", side_effect=missing):
+            with self.assertRaisesRegex(RuntimeError, "未提供"):
                 runtime.check_source("sjtu", "cpu")
+
+    def test_flat_mirror_uses_find_links_instead_of_an_index(self):
+        command = runtime.install_command("aliyun", "cpu", self.root / "torch")
+        self.assertIn("--no-index", command)
+        self.assertIn("--find-links", command)
+        self.assertIn("https://mirrors.aliyun.com/pytorch-wheels/cpu/", command)
+        self.assertNotIn("--index-url", command)
+        indexed = runtime.install_command("sjtu", "cpu", self.root / "torch")
+        self.assertIn("--index-url", indexed)
+        self.assertNotIn("--no-index", indexed)
+
+    def test_speed_test_ranks_sources_and_reports_failures(self):
+        class Response(io.BytesIO):
+            pass
+
+        def fake_urlopen(request, timeout=0):
+            if "download.pytorch.org" in request.full_url:
+                raise OSError("blocked")
+            return Response(b"x" * 1024)
+
+        with patch.object(runtime.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = runtime.speed_test("cpu")
+        self.assertTrue(result["fastest"])
+        self.assertTrue(result["results"][result["fastest"]]["ok"])
+        self.assertFalse(result["results"]["official"]["ok"])
+        self.assertIn("blocked", result["results"]["official"]["error"])
+        self.assertIn("latency_ms", result["results"][result["fastest"]])
+
+    def test_runtime_environment_never_writes_bytecode_into_install_dir(self):
+        env = runtime.runtime_environment()
+        self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertEqual(env["PYTHONNOUSERSITE"], "1")
+        self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[-1], str(app_paths.resource_root()))
+
+
+class RayRuntimeTests(unittest.TestCase):
+    def test_ray_environment_uses_ascii_temp_and_relaxed_health_checks(self):
+        from fl_backdoor.utils import ray_runtime
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"PUBLIC": temp}, clear=False):
+            env = {"TEMP": "C:\\Users\\张三\\AppData\\Local\\Temp",
+                   "TMP": "C:\\Users\\张三\\AppData\\Local\\Temp"}
+            path = ray_runtime.configure_ray_environment(env)
+        self.assertTrue(str(path).isascii())
+        self.assertEqual(env["TEMP"], str(path))
+        self.assertEqual(env["RAY_TEMP_DIR"], str(path))
+        self.assertEqual(env["RAY_health_check_timeout_ms"], "120000")
+        self.assertIn("LianAnZhiDun", str(path))
+
+    def test_probe_report_round_trips_through_the_user_directory(self):
+        from fl_backdoor.utils import ray_runtime
+
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.dict(os.environ, {"FL_BACKDOOR_USER_DIR": temp}, clear=False):
+            ray_runtime._write_probe_report({"ok": False, "checked_at": time.time(),
+                                             "error": "timeout", "ray": "2.51.1"})
+            report = ray_runtime.read_probe_report()
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["error"], "timeout")
 
 
 class SetupAndResourceTests(unittest.TestCase):

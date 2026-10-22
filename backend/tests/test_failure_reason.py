@@ -44,8 +44,22 @@ class ExtractFailureReasonTest(unittest.TestCase):
         self.assertIsNone(_extract_failure_reason(None))
 
     def test_log_without_recognizable_error_returns_none(self):
-        log = self._write_log("INFO: everything looked fine\nERROR : Exit Code: 700\n")
+        log = self._write_log("INFO: everything looked fine\nDEBUG: still fine\n")
         self.assertIsNone(_extract_failure_reason(log))
+
+    def test_heartbeat_and_simulation_exit_map_to_ray_guidance(self):
+        for line in ("[Runner] Flower result: finished:failed No heartbeat received from the run.",
+                     "ERROR : Exit Code: 700",
+                     "ERROR : An unhandled exception occurred when running the simulation."):
+            with self.subTest(line=line):
+                log = self._write_log(line + "\n")
+                reason = _extract_failure_reason(log)
+                self.assertIsNotNone(reason)
+                self.assertIn("Ray", reason)
+
+    def test_worker_preflight_reason_is_surfaced(self):
+        log = self._write_log("[Runner] Worker failed: Ray 仿真后端自检失败：ConnectionError: GCS timeout\n")
+        self.assertIn("Ray 仿真后端自检失败", _extract_failure_reason(log) or "")
 
 
 class WorkerFailureMessageTest(unittest.TestCase):

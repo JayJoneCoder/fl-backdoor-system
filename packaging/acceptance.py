@@ -156,12 +156,12 @@ def stop_process(process) -> None:
         stream.close()
 
 
-def run_experiment(client: Client, name: str, timeout: int) -> dict:
+def run_experiment(client: Client, name: str, timeout: int, config: dict) -> dict:
     session = client.request("POST", "/api/auth/login",
                              {"username": "admin", "password": "admin123", "remember": False})
     client.csrf = session["csrf_token"]
     log(f"登录成功：{session['user']['username']} ({session['user']['role']})")
-    started = client.request("POST", "/api/experiment/start", {"name": name, "config": CONFIG})
+    started = client.request("POST", "/api/experiment/start", {"name": name, "config": config})
     log(f"实验已启动：{started}")
     deadline = time.monotonic() + timeout
     previous = None
@@ -209,6 +209,15 @@ def main() -> int:
     parser.add_argument("--reuse-runtime", action="store_true")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--name", default="acceptance-smoke")
+    parser.add_argument("--clients", type=int, default=2)
+    parser.add_argument("--rounds", type=int, default=1)
+    parser.add_argument("--local-epochs", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--dataset", default="mnist", choices=("mnist", "cifar10"))
+    parser.add_argument("--attack", default="none")
+    parser.add_argument("--client-defense", default="none")
+    parser.add_argument("--detection", default="none")
+    parser.add_argument("--defense", default="none")
     args = parser.parse_args()
     app = args.app.resolve()
     user = args.user_dir.resolve()
@@ -237,7 +246,15 @@ def main() -> int:
             if b"<html" not in response.read().lower():
                 raise SystemExit("根路径没有返回前端页面。")
         log("前端静态页面可用")
-        status = run_experiment(client, args.name, args.timeout)
+        config = dict(CONFIG)
+        config.update({
+            "num-clients": args.clients, "num-server-rounds": args.rounds,
+            "local-epochs": args.local_epochs, "batch-size": args.batch_size,
+            "dataset": args.dataset, "attack": args.attack,
+            "client-defense": args.client_defense, "detection": args.detection,
+            "defense": args.defense,
+        })
+        status = run_experiment(client, args.name, args.timeout, config)
         summary = verify_results(user, args.name, status)
     finally:
         stop_process(process)

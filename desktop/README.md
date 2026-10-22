@@ -6,13 +6,29 @@
 
 1. 安装后从开始菜单启动 `pythonw.exe -B "{app}\desktop\start_gui.py"`（无控制台窗口，日志写入 `%LOCALAPPDATA%\LianAnZhiDun\logs\launcher.log`）。
 2. 首次自动打开本地浏览器配置窗口，不要求 Node.js、系统 Python 或 PyTorch 已存在。
-3. 选择下载源：上海交通大学 PyTorch 专用镜像（第三方）或 PyTorch 官方源。选择 CPU / CUDA 12.6 / CUDA 12.8。
+3. 选择下载源（上海交大 / 思源 / 阿里云 / PyTorch 官方 / 官方 CDN），可先点“测试各源速度”：页面会显示延迟、带宽并标出推荐源。
 4. 只下载 `torch==2.8.0+<build>`、`torchvision==0.23.0+<build>`。其他 95 个 Python 依赖随发行包提供；安装命令固定 `--no-deps`。
 5. 显示安装日志；失败可更换下载源重试。精确版本的 Windows wheel 不在索引中时直接解释失败，不用其他构建代替。
 6. CPU 和 GPU 的卷积、反向传播、NumPy 桥接、torchvision 运算通过后才激活新环境。
 7. GPU 不可用时显示警告及解决指引，CPU 运行需主动确认；强制 GPU 不可用则阻止。
 8. 使用内置前端，浏览器打开平台。启动器管理单实例、命名互斥量（供安装器检测）、健康检查及所属进程清理。关闭浏览器不会自动停止后台；关闭启动器会结束所属实验进程。
 9. 若配置窗口被直接关闭，180 秒无轮询后启动器自动取消并以原生弹窗提示，不会永久挂起。
+10. 每次实验启动前会做一次 Ray 自检（结果缓存 12 小时，失败缓存 5 分钟），通过后才拉起 Flower 模拟引擎；失败会直接给出 Ray 原因，而不是 Flower 的 `No heartbeat received`。
+
+## Windows Ray 故障排查
+
+Flower 1.29 的模拟引擎**只支持 Ray**，而 Ray 官方标注 Windows 为实验性支持。`Exit Code: 700` 是 Flower 的 `SIMULATION_EXCEPTION`，通常表示 raylet/GCS 没有起来或中途崩溃，随后表现为 `finished:failed No heartbeat received from the run`。
+
+本项目已做的加固：
+
+- `RAY_TEMP_DIR` 固定到 ASCII 路径 `C:\Users\Public\LianAnZhiDun\ray`（Ray 无法处理中文路径）；
+- 放宽 Ray 健康检查超时（`RAY_health_check_timeout_ms=120000` 等），适配慢机器/杀毒软件扫描；
+- 关闭 Ray 用量统计、调整加速器环境变量告警；
+- 启动前自检（`fl_backdoor/utils/ray_probe.py`），报告写入 `%LOCALAPPDATA%\LianAnZhiDun\platform_state\ray-probe.json` 与实验目录 `ray_runtime.json`；
+- 失败时保留 `superlink.log` 与 `ray-logs/`（raylet/gcs/dashboard 日志）到实验目录，供排查。
+
+仍失败时依次检查：杀毒软件白名单（安装目录 + `%LOCALAPPDATA%\LianAnZhiDun` + `C:\Users\Public\LianAnZhiDun`）、VC++ 2015-2022 x64 运行库、磁盘空间、端口占用；最后可换机器或在 WSL2 中运行。
+
 
 首次下载需联网；成功后训练默认离线，数据集随包只读。关闭平台后用 `--setup` 重新配置；`--diagnose` 为只读检查。
 

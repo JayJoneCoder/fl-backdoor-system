@@ -22,4 +22,25 @@ async def environment_status(*, refresh: bool = False) -> dict:
         _cached_probe.cache_clear()
     result = await asyncio.to_thread(_cached_probe, sys.executable, os.environ.get("FL_BACKDOOR_TORCH_DIR", ""),
                                     os.environ.get("CUDA_VISIBLE_DEVICES", ""), int(time.monotonic() // 60))
-    return deepcopy(result)
+    result = deepcopy(result)
+    result["ray"] = ray_status()
+    return result
+
+
+def ray_status() -> dict:
+    """Report the cached Ray self-check; the worker refreshes it before a run."""
+    from fl_backdoor.utils.ray_runtime import read_probe_report
+
+    report = read_probe_report()
+    if not report:
+        return {"checked": False, "ok": None, "error": "", "checked_at_text": "",
+                "ray": None, "seconds": None, "ray_temp_dir": ""}
+    return {
+        "checked": True,
+        "ok": bool(report.get("ok")),
+        "error": report.get("error", ""),
+        "checked_at_text": report.get("checked_at_text", ""),
+        "ray": report.get("ray"),
+        "seconds": report.get("seconds"),
+        "ray_temp_dir": report.get("ray_temp_dir", ""),
+    }
