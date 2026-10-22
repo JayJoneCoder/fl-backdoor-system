@@ -121,18 +121,25 @@ class RuntimeInstallationTests(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
-    def test_commands_are_version_pinned_binary_only_and_never_fetch_other_dependencies(self):
-        for source in runtime.SOURCES:
-            for build in runtime.BUILDS:
-                command = runtime.install_command(source, build, self.root / "torch")
-                self.assertIn("--no-deps", command)
-                self.assertIn("--isolated", command)
-                self.assertIn("--only-binary=:all:", command)
-                self.assertIn(f"torch==2.8.0+{build}", command)
-                self.assertIn(f"torchvision==0.23.0+{build}", command)
-                self.assertNotIn("--trusted-host", command)
+    def test_install_command_only_uses_local_wheels(self):
+        wheels = [self.root / runtime.wheel_filename("torch", "2.8.0", "cpu"),
+                  self.root / runtime.wheel_filename("torchvision", "0.23.0", "cpu")]
+        command = runtime.install_command(self.root / "torch", wheels)
+        self.assertIn("--isolated", command)
+        self.assertIn("--no-deps", command)
+        self.assertIn("--no-index", command)
+        self.assertIn("--only-binary=:all:", command)
+        self.assertNotIn("--trusted-host", command)
+        self.assertNotIn("--index-url", command)
+        for wheel in wheels:
+            self.assertIn(str(wheel), command)
         with self.assertRaises(ValueError):
-            runtime.install_command("https://arbitrary.invalid", "cpu", self.root)
+            runtime.install_command(self.root / "torch", [])
+
+    def test_all_sources_use_the_flat_wheel_layout(self):
+        for source in runtime.SOURCES:
+            url = runtime.wheel_url(source, "cpu", "torch", "2.8.0")
+            self.assertTrue(url.endswith("/cpu/torch-2.8.0+cpu-cp311-cp311-win_amd64.whl"))
 
     def test_runtime_environment_never_writes_bytecode_into_install_dir(self):
         env = runtime.runtime_environment()
@@ -149,11 +156,34 @@ class RuntimeInstallationTests(unittest.TestCase):
                 runtime.active_runtime()
 
     def fake_owner(self, returncode=0):
-        process = Mock(stdout=io.StringIO("download progress\n"))
+        process = Mock(stdout=io.StringIO("install progress\n"))
         process.wait.return_value = returncode
         owner = Mock()
         owner.spawn.return_value = process
         return owner
+
+    @staticmethod
+    def fake_download(url, destination, expected, progress, timeout=60):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"wheel")
+        progress(5)
+        return 5
+
+    @staticmethod
+    def successful_probe(target):
+        for name in runtime.VERSIONS:
+            (target / name).mkdir(parents=True)
+            (target / name / "__init__.py").touch()
+        return {"cpu_available": True, "gpu_available": False, "torch": "2.8.0+cpu", "torchvision": "0.23.0+cpu"}
+
+    def install_patches(self, owner, probe=None):
+        return (
+            patch.object(runtime, "check_source", return_value={name: 5 for name in runtime.VERSIONS}),
+            patch.object(runtime, "download_wheel", side_effect=self.fake_download),
+            patch("backend.owned_processes.OwnedProcessTree", return_value=owner),
+            patch.object(runtime, "probe", side_effect=probe or self.successful_probe),
+            patch.object(runtime.shutil, "disk_usage", return_value=SimpleNamespace(free=20 * 1024**3)),
+        )
 
     def test_failed_download_preserves_previous_activation(self):
         state = self.root / "platform_state"
@@ -161,30 +191,41 @@ class RuntimeInstallationTests(unittest.TestCase):
         marker = state / "runtime.json"
         marker.write_bytes(b"previous runtime")
         owner = self.fake_owner(1)
-        with patch.object(runtime, "check_source"), patch("backend.owned_processes.OwnedProcessTree", return_value=owner), \
+        with patch.object(runtime, "check_source", return_value={name: 5 for name in runtime.VERSIONS}), \
+                patch.object(runtime, "download_wheel", side_effect=self.fake_download), \
+                patch("backend.owned_processes.OwnedProcessTree", return_value=owner), \
                 patch.object(runtime.shutil, "disk_usage", return_value=SimpleNamespace(free=20 * 1024**3)):
-            with self.assertRaisesRegex(RuntimeError, "换源重试"):
+            with self.assertRaisesRegex(RuntimeError, "安装失败"):
                 runtime.install_runtime("official", "cpu", lambda line: None)
         self.assertEqual(marker.read_bytes(), b"previous runtime")
         owner.cleanup.assert_called_once()
 
     def test_success_is_activated_only_after_exact_version_and_compute_validation(self):
         owner = self.fake_owner()
-
-        def successful_probe(target):
-            for name in runtime.VERSIONS:
-                (target / name).mkdir(parents=True)
-                (target / name / "__init__.py").touch()
-            return {"cpu_available": True, "gpu_available": False, "torch": "2.8.0+cpu", "torchvision": "0.23.0+cpu"}
-
-        with patch.object(runtime, "check_source"), patch("backend.owned_processes.OwnedProcessTree", return_value=owner), \
-                patch.object(runtime, "probe", side_effect=successful_probe), \
-                patch.object(runtime.shutil, "disk_usage", return_value=SimpleNamespace(free=20 * 1024**3)):
+        check, download, tree, probe, disk = self.install_patches(owner)
+        with check, download, tree, probe, disk:
             runtime.install_runtime("official", "cpu", lambda line: None)
         self.assertTrue(runtime.active_runtime().is_dir())
         arguments = owner.spawn.call_args.args[1]
         self.assertEqual(arguments[0], "--isolated")
         self.assertIn("--no-deps", arguments)
+        self.assertIn("--no-index", arguments)
+        self.assertTrue(any("cache" in argument and "wheels" in argument for argument in arguments))
+
+    def test_install_reports_download_progress_and_done_phase(self):
+        events = []
+        owner = self.fake_owner()
+        check, download, tree, probe, disk = self.install_patches(owner)
+        with check, download, tree, probe, disk:
+            runtime.install_runtime("official", "cpu", lambda line: None,
+                                    progress=lambda phase, done, total: events.append((phase, done, total)))
+        phases = [event[0] for event in events]
+        self.assertIn("download", phases)
+        self.assertIn("install", phases)
+        self.assertEqual(phases[-1], "done")
+        last_download = [event for event in events if event[0] == "download"][-1]
+        self.assertEqual(last_download[1], 10)
+        self.assertEqual(last_download[2], 10)
 
     def test_cuda_wheel_that_cannot_compute_is_not_activated(self):
         with self.assertRaisesRegex(RuntimeError, "CUDA 安装未通过"):
@@ -195,31 +236,23 @@ class RuntimeInstallationTests(unittest.TestCase):
             runtime.validate_install({"cpu_available": True, "gpu_available": False, "torch": "2.8.0+cu128",
                                       "torchvision": "0.23.0+cu128", "warnings": ["no driver"]}, target, "cu128")
 
-    def test_source_probe_checks_exact_windows_wheels_without_downloading_them(self):
+    def test_source_probe_checks_exact_windows_wheels_and_reads_sizes(self):
         class Response(io.BytesIO):
             status = 206
+            headers = {"Content-Range": "bytes 0-0/5"}
 
         responses = [Response(b"\x00") for _ in runtime.VERSIONS]
         with patch.object(runtime.urllib.request, "urlopen", side_effect=responses) as request:
-            runtime.check_source("official", "cpu")
+            sizes = runtime.check_source("official", "cpu")
         self.assertEqual(request.call_count, 2)
         requested = [call.args[0].full_url for call in request.call_args_list]
         for name, version in runtime.VERSIONS.items():
-            self.assertTrue(any(f"{name}-{version}%2Bcpu-cp311-cp311-win_amd64.whl" in url for url in requested))
+            self.assertTrue(any(f"{name}-{version}+cpu-cp311-cp311-win_amd64.whl" in url for url in requested))
+            self.assertEqual(sizes[name], 5)
         missing = urllib.error.HTTPError("https://example.invalid", 404, "Not Found", {}, None)
         with patch.object(runtime.urllib.request, "urlopen", side_effect=missing):
             with self.assertRaisesRegex(RuntimeError, "未提供"):
                 runtime.check_source("sjtu", "cpu")
-
-    def test_flat_mirror_uses_find_links_instead_of_an_index(self):
-        command = runtime.install_command("aliyun", "cpu", self.root / "torch")
-        self.assertIn("--no-index", command)
-        self.assertIn("--find-links", command)
-        self.assertIn("https://mirrors.aliyun.com/pytorch-wheels/cpu/", command)
-        self.assertNotIn("--index-url", command)
-        indexed = runtime.install_command("sjtu", "cpu", self.root / "torch")
-        self.assertIn("--index-url", indexed)
-        self.assertNotIn("--no-index", indexed)
 
     def test_speed_test_ranks_sources_and_reports_failures(self):
         class Response(io.BytesIO):
@@ -411,6 +444,18 @@ class SetupAndResourceTests(unittest.TestCase):
             self.assertFalse({"torch", "torchvision"} & names)
             with self.assertRaisesRegex(RuntimeError, "发行依赖缺失"):
                 dependencies.bundled_requirements()
+
+    def test_setup_progress_reports_download_percentage(self):
+        from desktop.setup_server import SetupState
+
+        state = SetupState({})
+        state.report_progress("download", 50, 100)
+        self.assertEqual(state.progress["phase"], "download")
+        self.assertEqual(state.progress["done"], 50)
+        self.assertEqual(state.progress["total"], 100)
+        self.assertEqual(state.progress["percent"], 50)
+        state.report_progress("download", 50, None)
+        self.assertIsNone(state.progress["percent"])
 
     def test_gui_entry_writes_logs_into_the_user_directory(self):
         from desktop import start_gui

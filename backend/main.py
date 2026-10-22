@@ -9,6 +9,7 @@ import shutil
 from datetime import datetime
 import os
 import sys
+import threading
 from pathlib import Path
 from urllib.parse import quote
 from typing import Any
@@ -30,7 +31,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend import config_manager
-from backend.auth import AccessBoundary, get_identity, router as auth_router
+from backend.auth import AccessBoundary, admin_required, get_identity, router as auth_router
 from backend.identity import CURRENT_USER, CURRENT_STORE, claim_resource, require_resource
 from backend.catalog import get_catalog
 from backend.config_validation import parse_boolean
@@ -82,6 +83,25 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="FL Backdoor Platform API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(AccessBoundary)
 app.include_router(auth_router)
+
+
+_shutdown_scheduled = False
+
+
+def _exit_process() -> None:
+    """Leave immediately; owned job objects (KILL_ON_JOB_CLOSE) reap workers."""
+    os._exit(0)
+
+
+def schedule_shutdown(delay: float = 1.0) -> None:
+    """Let the HTTP response flush, then stop the API and its launcher parent."""
+    global _shutdown_scheduled
+    if _shutdown_scheduled:
+        return
+    _shutdown_scheduled = True
+    timer = threading.Timer(delay, _exit_process)
+    timer.daemon = True
+    timer.start()
 
 app.add_middleware(
     CORSMiddleware,
@@ -1396,6 +1416,30 @@ async def reset_user_password(uid: str, data: dict[str, Any]):
         raise HTTPException(422, "new_password 必须为字符串。")
     get_identity().reset_user_password(uid, data["new_password"])
     return {"status": "success"}
+
+
+@app.post("/api/admin/shutdown")
+async def shutdown_platform(data: dict[str, Any]):
+    """Admin-only: verify the current password, stop owned work, then exit."""
+    user = admin_required()
+    password = data.get("password")
+    if not isinstance(password, str) or not password:
+        raise HTTPException(422, "请输入管理员登录密码。")
+    store = CURRENT_STORE.get() or get_identity()
+    store.throttle("shutdown:" + user["uid"], maximum=5)
+    if not store.verify_user_password(user["uid"], password):
+        raise HTTPException(403, "管理员密码不正确，平台未停止。")
+    task = batch_manager.get_active_task()
+    if task:
+        task.cancel_requested = True
+        task.resume_event.set()
+    try:
+        await asyncio.wait_for(runner.stop(), timeout=20)
+    except Exception:
+        # The launcher's job object still terminates the owned worker tree.
+        pass
+    schedule_shutdown()
+    return {"status": "stopping", "message": "平台正在停止。"}
 
 
 @app.get("/api/health")

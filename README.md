@@ -40,6 +40,7 @@ framework: [pytorch, flwr]
 - **首次启动**：开始菜单「联安智盾」会打开浏览器配置页，选择下载源（上海交大 / 思源 / 阿里云 / PyTorch 官方 / 官方 CDN）与 CPU / CUDA 12.6 / CUDA 12.8，可先点“测试各源速度”看延迟和带宽；只下载 `torch==2.8.0` 与 `torchvision==0.23.0`，其余依赖已随包。
 - **安装后占用**：约 0.9 GB；CPU 版 PyTorch 约 +1.5 GB，CUDA 12.8 约 +7 GB，均装在用户目录。
 - **用户数据**：`%LOCALAPPDATA%\LianAnZhiDun`（账号、配置、结果、日志、已下载运行环境），卸载时询问是否保留。
+- **停止平台**：管理员登录后进入「用户与任务总览」，点击「停止平台」并输入当前管理员密码，即可终止实验/批量任务并关闭后台服务。
 - **重新配置/自检**：`{安装目录}\python\python.exe -B -m desktop.launcher --setup` / `--diagnose`，或开始菜单「运行环境自检」。
 - **Ray 报错排查**：平台默认使用**本地执行后端（不启动 Ray）**，客户端顺序运行、结果可复现；如需对比可设置 `FL_BACKDOOR_SIM_BACKEND=ray`。Ray 模式下若出现 `Exit Code: 700` 或 `No heartbeat received`，请查看实验目录的 `ray_runtime.json`、`superlink.log`、`ray-logs/`，并把安装目录加入杀毒软件白名单；详见 [desktop/README.md](desktop/README.md#仿真后端本地默认--ray可选)。
 - **构建方法**：见 [packaging/README.md](packaging/README.md)。

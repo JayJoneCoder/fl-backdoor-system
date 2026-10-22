@@ -30,10 +30,34 @@ class SetupState:
         self.last_activity = time.monotonic()
         self.speed = None
         self.speed_running = False
+        self.progress = None
+        self._progress_sample = (0, time.monotonic())
+        self._progress_speed = 0.0
 
     def touch(self) -> None:
         """The page polls /status every 1.5 s while it is still open."""
         self.last_activity = time.monotonic()
+
+    def report_progress(self, phase: str, done: int, total: int | None) -> None:
+        now = time.monotonic()
+        with self.lock:
+            last_done, last_time = self._progress_sample
+            elapsed = now - last_time
+            if elapsed >= 0.5:
+                speed = max(0.0, (done - last_done) / elapsed)
+                if speed > 0:
+                    self._progress_speed = speed
+                self._progress_sample = (done, now)
+            else:
+                speed = self._progress_speed
+            percent = None
+            if total:
+                percent = max(0, min(100, round(done * 100 / total)))
+            eta = None
+            if total and speed > 0 and done < total:
+                eta = int((total - done) / speed)
+            self.progress = {"phase": phase, "done": done, "total": total,
+                             "percent": percent, "speed_bps": int(speed), "eta_seconds": eta}
 
     def install(self, source: str, build: str) -> None:
         with self.lock:
@@ -44,13 +68,20 @@ class SetupState:
             if source not in SOURCES or build not in BUILDS:
                 raise ValueError("无效的下载源或构建版本。")
             self.installing, self.error, self.logs = True, "", []
+            self.progress = None
+            self._progress_sample = (0, time.monotonic())
+            self._progress_speed = 0.0
 
         def run():
             try:
-                self.report = install_runtime(source, build, lambda line: self.logs.append(line))
+                self.report = install_runtime(source, build, lambda line: self.logs.append(line),
+                                              progress=self.report_progress)
             except Exception as exc:
                 self.error = str(exc)
                 self.logs.append(self.error)
+                if not self.progress:
+                    self.progress = {"phase": "failed", "done": 0, "total": None,
+                                     "percent": None, "speed_bps": 0, "eta_seconds": None}
             finally:
                 self.installing = False
 
@@ -122,7 +153,7 @@ def setup_window(report: dict) -> str:
                 self.reply(200, {"sources": SOURCES, "builds": BUILDS, "report": state.report,
                                  "logs": state.logs[-300:], "installing": state.installing,
                                  "error": state.error, "speed": state.speed,
-                                 "speed_running": state.speed_running})
+                                 "speed_running": state.speed_running, "progress": state.progress})
             else:
                 self.reply(403, {"detail": "无效的本地配置会话。"})
 
@@ -149,6 +180,7 @@ def setup_window(report: dict) -> str:
                         if state.installing:
                             raise ValueError("请等待安装完成。")
                         state.installing = True
+                        state.progress = None
                     try:
                         state.report = probe(active_runtime())
                     finally:

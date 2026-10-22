@@ -178,6 +178,12 @@ class IdentityStore:
         with self.connection() as con:
             con.execute("DELETE FROM sessions WHERE token_hash=?", (digest(token),))
 
+    def verify_user_password(self, uid: str, password: str) -> bool:
+        """Check the current password without creating a session."""
+        with self.connection() as con:
+            row = con.execute("SELECT password_hash FROM users WHERE uid=?", (uid,)).fetchone()
+        return bool(row) and verify_password(password, row["password_hash"])
+
     def change_password(self, uid: str, old: str, new: str):
         encoded = password_hash(new)
         with self.connection() as con:
