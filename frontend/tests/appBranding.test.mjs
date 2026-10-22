@@ -22,6 +22,7 @@ function harness({ home = false, role = 'user', signedIn = true } = {}) {
     ].map(name => [name, name])),
     './App.css': {},
     './components/UserMenu': 'UserMenu',
+    './components/RuntimeStatus': 'RuntimeStatus',
     './api/auth': {}, './api/session': { setCsrfToken() {} },
     ...Object.fromEntries(['ConfigPage', 'HistoryPage', 'BatchPage', 'SummaryPage', 'LandingPage', 'LoginPage', 'AdminPage'].map(name => [
       `./pages/${name}`, name,

@@ -1,6 +1,7 @@
 """fl_backdoor: A Flower / PyTorch app."""
 
 from contextlib import contextmanager
+import os
 from typing import Iterator
 
 import torch
@@ -70,16 +71,20 @@ def load_data(
 ):
     """Load partition data for a specific client."""
     dataset = get_dataset(dataset_name)
+    offline = {"download": False} if os.environ.get("FL_BACKDOOR_OFFLINE") == "1" else {}
     return dataset.load_partition(
         partition_id, num_partitions, batch_size, seed=seed, shuffle_seed=shuffle_seed,
         partition_mode=partition_mode, partition_alpha=partition_alpha,
         partition_seed=partition_seed,
+        **offline,
     )
 
 
 def load_centralized_dataset(dataset_name: str = "cifar10", batch_size: int = 128):
     """Load centralized test set for global evaluation."""
     dataset = get_dataset(dataset_name)
+    if os.environ.get("FL_BACKDOOR_OFFLINE") == "1":
+        return dataset.load_centralized_test(batch_size, download=False)
     return dataset.load_centralized_test(batch_size)
 
 

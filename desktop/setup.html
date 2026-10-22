@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>联安智盾 · 运行环境配置</title>
+<style>body{font:16px/1.6 system-ui,sans-serif;background:#eef3f9;color:#172a44;margin:0}main{max-width:860px;margin:5vh auto;padding:32px;background:white;border-radius:16px;box-shadow:0 10px 40px #1232}label{display:block;margin:16px 0}select,button{font:inherit;padding:8px 16px;margin:4px}button{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;background:#111e32;color:#e3f3ff;padding:16px}#warning{color:#a34000;white-space:pre-wrap}small{color:#52647b}</style></head>
+<body><main><h1>联安智盾 · 运行环境配置</h1><p>其他依赖、数据集和前端由发行包提供。首次使用仅需下载匹配的 <b>PyTorch 2.8.0 + torchvision 0.23.0</b>。</p>
+<p>CPU 版体积较小，但不能调用 CUDA。GPU 版需兼容的 NVIDIA 显卡和驱动，安装后必须通过实际运算自检；不以是否装有 CUDA Toolkit 作为依据。</p>
+<label>下载源 <select id="source"></select></label><small>国内镜像为第三方服务，可能同步延迟；无法下载请主动切换官方源。不会自动换源或关闭 HTTPS 校验。</small>
+<label>PyTorch 版本 <select id="build"></select></label><p>请预留 CPU 至少 2 GiB / GPU 至少 12 GiB 可用空间（含缓存；实际大小取决于所选 wheel）。安装到当前用户的私有目录，不修改系统 Python。</p>
+<button id="install">下载并安装 / 换源重试</button><button id="refresh">重新检测</button>
+<pre id="report">正在检测显卡和运行环境…</pre><div id="warning" role="alert"></div><pre id="logs" aria-live="polite">安装日志将在这里显示</pre>
+<label>训练设备 <select id="mode"><option value="auto">自动（启动实验前确定）</option><option value="cpu">CPU</option><option value="cuda">强制 NVIDIA GPU（不可用则阻止）</option></select></label>
+<label><input type="checkbox" id="ack"> 我已阅读检测结果；若 GPU 不可用，允许本次使用 CPU 运行</label>
+<button id="continue">确认并启动平台</button><button id="cancel">暂不启动并退出</button><p id="error" role="alert"></p><small>启动器以 --setup 参数重新打开配置。仅关闭浏览器不会终止下载；需中断时关闭启动器。下载失败不会覆盖已可用的环境。</small>
+</main><script>
+const token = new URL(location.href).searchParams.get('token');
+const $ = id => document.getElementById(id);
+let initialized = false;
+async function request(path, body) {
+  const response = await fetch(path, {method: body ? 'POST' : 'GET', headers: {'X-Setup-Token': token, 'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined});
+  const data = await response.json(); if (!response.ok) throw new Error(data.detail || '请求失败'); return data;
+}
+async function refresh() {
+  try {
+    const state = await request('/status');
+    if (!initialized) {
+      for (const [value, item] of Object.entries(state.sources)) $('source').add(new Option(item.label, value));
+      for (const [value, text] of Object.entries(state.builds)) $('build').add(new Option(text, value));
+      $('build').value = state.report.nvidia?.detected ? 'cu128' : 'cpu';
+      initialized = true;
+    }
+    $('report').textContent = JSON.stringify(state.report, null, 2);
+    $('warning').textContent = [...(state.report.warnings || []), ...(state.report.guidance || [])].join('\n');
+    $('logs').textContent = state.logs.join('\n') || '尚未开始下载';
+    $('install').disabled = state.installing; $('continue').disabled = state.installing; $('cancel').disabled = state.installing;
+    if (state.error) $('error').textContent = state.error;
+  } catch (error) { $('error').textContent = error.message; }
+}
+$('install').onclick = async () => { try { $('error').textContent=''; await request('/install', {source:$('source').value,build:$('build').value}); await refresh(); } catch(error) { $('error').textContent=error.message; } };
+$('refresh').onclick = async () => { try { await request('/probe', {}); await refresh(); } catch(error) { $('error').textContent=error.message; } };
+$('continue').onclick = async () => { try { await request('/continue', {mode:$('mode').value, acknowledge:$('ack').checked}); $('error').textContent='正在启动平台，请等待浏览器打开…'; clearInterval(timer); } catch(error) { $('error').textContent=error.message; } };
+$('cancel').onclick = async () => { try { await request('/cancel', {}); clearInterval(timer); $('error').textContent='已退出启动器，可以关闭本窗口。'; } catch(error) { $('error').textContent=error.message; } };
+const timer = setInterval(refresh, 1500); refresh();
+</script></body></html>

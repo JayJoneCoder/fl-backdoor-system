@@ -11,9 +11,10 @@ from typing import Any, Optional
 import uuid
 
 from backend.config_manager import _atomic_write
+from fl_backdoor.utils.app_paths import results_root
 
 PROJECT_ROOT = Path(__file__).parent.parent
-RESULTS_DIR = PROJECT_ROOT / "results"
+RESULTS_DIR = results_root()
 RESTART_ERROR = "Backend restarted; task was interrupted and was not automatically resumed."
 UNRECORDED_ERROR = "Execution details were not recorded by this older version."
 

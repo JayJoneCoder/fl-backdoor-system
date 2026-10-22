@@ -1,0 +1,1 @@
+"""Standard-library-only desktop bootstrap; safe before PyTorch installation."""

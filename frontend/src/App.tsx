@@ -17,6 +17,7 @@ import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import AdminPage from './pages/AdminPage';
 import UserMenu from './components/UserMenu';
+import RuntimeStatus from './components/RuntimeStatus';
 import { getSession } from './api/auth';
 import type { PlatformUser, SessionResponse } from './api/auth';
 import { setCsrfToken } from './api/session';
@@ -85,6 +86,7 @@ const App: React.FC = () => {
         </div>
 
         <div className="platform-header__actions">
+          <RuntimeStatus />
           <Button type="text" icon={<HomeOutlined/>} onClick={() => navigate('home')} className="platform-home">返回首页</Button>
           <UserMenu user={user} onUpdate={setUser} onLogout={() => { setUser(null); setCsrfToken(''); setVisited(false); setCurrentPage('config'); navigate('login'); }}/>
         </div>

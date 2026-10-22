@@ -14,6 +14,7 @@ from fl_backdoor.utils.logger import CSVLogger
 from fl_backdoor.dataset import get_dataset
 from fl_backdoor.config import ExperimentConfig
 from fl_backdoor.utils.randomness import seed_everything
+from fl_backdoor.utils.device import training_device
 
 from pathlib import Path
 import os
@@ -51,7 +52,7 @@ def get_global_evaluate_fn(
         traceback.print_exc()
         raise
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = training_device("server evaluation")
     target_label = getattr(attack.config, "target_label", 0)
 
     def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:

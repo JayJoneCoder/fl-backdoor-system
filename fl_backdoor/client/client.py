@@ -13,6 +13,7 @@ from fl_backdoor.attacks.selection import normalize_fixed_malicious_clients
 from fl_backdoor.dataset import get_dataset
 from fl_backdoor.config import ExperimentConfig
 from fl_backdoor.utils.randomness import derived_seed, seed_everything
+from fl_backdoor.utils.device import training_device
 
 # Flower ClientApp
 app = ClientApp()
@@ -34,7 +35,7 @@ def train(msg: Message, context: Context):
         num_classes=dataset_meta.num_classes
     )
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = training_device(f"client {partition_id} train")
     model.to(device)
 
     partition_id = context.node_config["partition-id"]
@@ -111,7 +112,7 @@ def evaluate(msg: Message, context: Context):
         num_classes=dataset_meta.num_classes
     )
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = training_device(f"client {context.node_config['partition-id']} evaluate")
     model.to(device)
 
     # Load the data

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.requests import HTTPConnection
+from fl_backdoor.utils.app_paths import state_root
 
 from backend.identity import (CURRENT_STORE, CURRENT_USER, DEFAULT_ADMIN_PASSWORD, IdentityStore,
                               SESSION_COOKIE, SESSION_SECONDS, SESSION_SECONDS_LONG)
@@ -18,7 +19,7 @@ _stores = {}
 
 
 def get_identity() -> IdentityStore:
-    default = Path(__file__).resolve().parent.parent / "platform_state" / "identity.sqlite3"
+    default = state_root() / "identity.sqlite3"
     path = Path(os.environ.get("FL_IDENTITY_DATABASE", str(default))).resolve()
     if path not in _stores:
         _stores[path] = IdentityStore(path)

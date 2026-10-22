@@ -44,6 +44,8 @@ from backend.results_scanner import (
 from backend.batch_manager import batch_manager, BatchTask
 from fl_backdoor.utils.paths import child_path, direct_files, experiment_path, summary_path, summary_root
 from fl_backdoor.utils.run_artifacts import read_run_metadata
+from fl_backdoor.utils.app_paths import resource_root
+from backend.runtime_status import environment_status
 
 # ------------------------------
 # FastAPI app setup
@@ -1394,6 +1396,24 @@ async def reset_user_password(uid: str, data: dict[str, Any]):
         raise HTTPException(422, "new_password 必须为字符串。")
     get_identity().reset_user_password(uid, data["new_password"])
     return {"status": "success"}
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "application": "lianan-zhidun", "startup_id": os.environ.get("FL_BACKDOOR_STARTUP_ID")}
+
+
+@app.get("/api/runtime")
+async def runtime_status():
+    report = await environment_status(refresh=True)
+    report["selected_device"] = os.environ.get("FL_BACKDOOR_DEVICE", "auto")
+    return report
+
+
+# Register after all API routes so missing API/WS paths cannot become index.html.
+frontend_dist = resource_root() / "frontend" / "dist"
+if frontend_dist.is_dir():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 
 
 if __name__ == "__main__":

@@ -63,7 +63,7 @@ const FIELD_LABELS: Record<string, string> = {
   'attack-fixed-clients': '固定恶意客户端ID列表',
   'malicious-ratio': '恶意客户端比例',
   'malicious-count': '恶意客户端数量',
-  'attack': '攻击类型',
+  'attack': '对抗类型',
   'client-defense': '客户端防御',
   'detection': '服务端检测',
   'defense': '聚合防御',
@@ -121,6 +121,7 @@ const FIELD_LABELS: Record<string, string> = {
   'defense-num-malicious': '预估恶意数',
   'defense-krum-k': 'Krum 选择数',
   'results-dir': '结果目录',
+  'runtime-device': '训练计算设备',
   'run-name': '实验名称',
 };
 

@@ -18,10 +18,11 @@ from backend.config_validation import (
     OPTIONAL_FIELDS, normalize_values, parse_integer, validate_constraints,
 )
 from backend.identity import CURRENT_USER, CURRENT_STORE
+from fl_backdoor.utils.app_paths import user_root
 
 PROJECT_ROOT = Path(__file__).parent.parent
-TOML_PATH = PROJECT_ROOT / "pyproject.toml"
-BACKUP_PATH = PROJECT_ROOT / "pyproject.toml.bak"
+TOML_PATH = Path(os.environ.get("FL_BACKDOOR_CONFIG", PROJECT_ROOT / "pyproject.toml"))
+BACKUP_PATH = TOML_PATH.with_suffix(".toml.bak")
 _CONFIG_LOCK = RLock()
 
 
@@ -40,7 +41,7 @@ def config_path() -> Path:
 
 
 def _backup_project_root() -> Path:
-    return config_path().parent if CURRENT_USER.get() else PROJECT_ROOT
+    return config_path().parent if CURRENT_USER.get() else TOML_PATH.parent
 
 
 def _write_config_path() -> Path:
@@ -50,6 +51,11 @@ def _write_config_path() -> Path:
 # Configuration schema for frontend dynamic forms
 # ----------------------------------------------------------------------
 CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
+    "runtime-device": {
+        "type": "string", "default": "auto", "options": ["auto", "cpu", "cuda"],
+        "group": "management", "option_labels": {"auto": "自动（遵循启动器策略）", "cpu": "CPU", "cuda": "强制 NVIDIA GPU"},
+        "description": "计算设备：auto 在实验启动前选择；cuda 不可用则阻止训练。",
+    },
     # ---------- 实验核心开关 ----------
     "attack-malicious-mode": {
         "type": "string",
@@ -659,13 +665,20 @@ def get_results_dir(section: dict[str, Any] | None = None, *, default: Path | No
     if section is None:
         section = _get_config_section(_read_toml())
     from fl_backdoor.utils.paths import resolve_results_root
-    root = resolve_results_root(section.get("results-dir", str(default) if default is not None else "results"), TOML_PATH.parent)
+    base = user_root() if os.environ.get("FL_BACKDOOR_DESKTOP") == "1" else TOML_PATH.parent
+    value = section.get("results-dir", str(default) if default is not None else "results")
+    if value == "results":
+        value = os.environ.get("FL_BACKDOOR_RESULTS_DIR", value)
+    root = resolve_results_root(value, base)
     if CURRENT_USER.get():
         # Never allow a web account to point StaticFiles/runner at database,
         # source, backups or another filesystem directory.
         with TOML_PATH.open("rb") as stream:
             baseline = _get_config_section(tomli.load(stream))
-        allowed = resolve_results_root(baseline.get("results-dir", "results"), TOML_PATH.parent)
+        allowed_value = baseline.get("results-dir", "results")
+        if allowed_value == "results":
+            allowed_value = os.environ.get("FL_BACKDOOR_RESULTS_DIR", allowed_value)
+        allowed = resolve_results_root(allowed_value, base)
         if root != allowed:
             raise ValueError("多用户模式下结果根目录由部署配置统一管理，不能在网页中更改。")
     return root

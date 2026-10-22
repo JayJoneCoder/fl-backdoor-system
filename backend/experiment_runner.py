@@ -18,7 +18,10 @@ import tomli_w
 from backend import config_manager
 from backend.identity import claim_resource
 from backend.owned_processes import OwnedProcessTree
+from backend.runtime_status import environment_status
+from fl_backdoor.utils.device import select_device
 from fl_backdoor.utils.run_artifacts import build_config_snapshot, reserve_experiment, write_run_metadata
+from fl_backdoor.utils.app_paths import data_root, desktop_mode, user_root
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
@@ -118,10 +121,17 @@ class ExperimentRunner:
             # No status/file/backup mutation until input validation succeeds.
             content = config_manager.build_run_config(baseline, overrides)
             section = tomli.loads(content.decode("utf-8"))["tool"]["flwr"]["app"]["config"]
+            mode = section.get("runtime-device", "auto")
+            if mode == "auto":
+                mode = os.environ.get("FL_BACKDOOR_DEVICE", "auto")
+            device_report = await environment_status()
+            selected_device = select_device(mode, device_report)
             results_root = config_manager.get_results_dir(section, default=RESULTS_DIR)
             # Reserve atomically BEFORE touching config/backup/logs. A repeated
             # name gets a run-ID suffix instead of rejecting the launch.
             exp_dir, metadata = reserve_experiment(results_root, exp_name)
+            metadata["runtime_device"] = {"requested": mode, "selected": selected_device,
+                                           "warnings": device_report["warnings"]}
             claim_resource("experiment", exp_dir)
             requested_name = exp_name
             exp_name = metadata["name"]
@@ -172,7 +182,7 @@ class ExperimentRunner:
                     pass
                 with (exp_dir / "config_snapshot.toml").open("xb") as snapshot:
                     snapshot.write(snapshot_content)
-                self._temp_home = Path(tempfile.mkdtemp(prefix="fl-experiment-"))
+                self._temp_home = Path(tempfile.mkdtemp(prefix="fl-experiment-", dir=user_root() / "tmp" if desktop_mode() else None))
                 preparing = asyncio.create_task(asyncio.to_thread(self._prepare_runtime, content))
                 try:
                     app_dir, address = await asyncio.shield(preparing)
@@ -184,10 +194,11 @@ class ExperimentRunner:
                 self._owned = OwnedProcessTree()
                 env = os.environ.copy()
                 env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1",
+                           FL_BACKDOOR_DEVICE=selected_device,
                            FLWR_TELEMETRY_ENABLED="0", HF_DATASETS_OFFLINE="1",
                            FLWR_HOME=str(self._temp_home / "flower"), RAY_ADDRESS="local",
                            FL_BACKDOOR_RUN_ID=self.run_id,
-                           FL_BACKDOOR_DATA_DIR=str(PROJECT_ROOT / "data"))
+                           FL_BACKDOOR_DATA_DIR=str(data_root()))
                 # Ray deserializes ClientApp handlers by module name in fresh
                 # processes. Prefer this run's snapshot over an editable install
                 # pointing at the live workspace (including its RNG/data code).
@@ -197,6 +208,8 @@ class ExperimentRunner:
                 env["PYTHONHASHSEED"] = str(int(section.get("seed", 42)) % (2**32))
                 # Flower's own executors still use console entry points.
                 env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+                scripts = self._temp_home / "scripts"
+                env["PATH"] = str(scripts) + os.pathsep + env["PATH"]
                 self.process = self._owned.spawn(
                     PROJECT_ROOT / "backend" / "experiment_worker.py",
                     ["--project", str(app_dir), "--address", address],
@@ -222,6 +235,10 @@ class ExperimentRunner:
             if (PROJECT_ROOT / name).is_file():
                 shutil.copy2(PROJECT_ROOT / name, app_dir / name)
         shutil.copytree(PROJECT_ROOT / "fl_backdoor", app_dir / "fl_backdoor", ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
+        # This runs inside the same shielded preparation task as the snapshot:
+        # cancellation must not delete a directory while its launchers are built.
+        from fl_backdoor.utils.flower_runtime import create_entry_points
+        create_entry_points(self._temp_home / "scripts")
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             address = f"127.0.0.1:{sock.getsockname()[1]}"

@@ -3,11 +3,21 @@
 import sys
 
 
-def simulation_overrides(config: dict) -> str:
+def simulation_overrides(config: dict, device: str | None = None) -> str:
     clients = config["tool"]["flwr"]["app"]["config"].get("num-clients", 10)
     if isinstance(clients, bool) or not isinstance(clients, int) or clients < 1:
         raise ValueError("实际客户端数必须是正整数。")
-    return f"num-supernodes={clients}"
+    result = f"num-supernodes={clients}"
+    if device is not None:
+        import os
+
+        if device not in {"cpu", "cuda"}:
+            raise ValueError("仿真设备必须已完成预检。")
+        cpus = max(1, min(os.cpu_count() or 1, 2))
+        gpus = 1 if device == "cuda" else 0
+        result += (f" client-resources-num-cpus=1 client-resources-num-gpus={gpus}"
+                   f" init-args-num-cpus={cpus} init-args-num-gpus={gpus}")
+    return result
 
 
 def verified_exit_code(cli_exit: int, runs) -> int:
@@ -41,6 +51,28 @@ def main() -> int:
     parser.add_argument("--project", required=True)
     parser.add_argument("--address", required=True)
     args = parser.parse_args()
+    from fl_backdoor.utils.device import probe_environment, select_device
+
+    config = tomli.loads((Path(args.project) / "pyproject.toml").read_text(encoding="utf-8"))
+    section = config["tool"]["flwr"]["app"]["config"]
+    mode = section.get("runtime-device", "auto")
+    if mode == "auto":
+        mode = os.environ.get("FL_BACKDOOR_DEVICE", "auto")
+    report = probe_environment()
+    device = select_device(mode, report)
+    os.environ["FL_BACKDOOR_DEVICE"] = device
+    os.environ["FL_BACKDOOR_CPU_THREADS"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    import json
+
+    report.update(requested_device=mode, selected_device=device)
+    # Separate artifact avoids racing the runner's lifecycle run.json writes.
+    directory = Path(section["results-dir"]) / section["run-name"]
+    (directory / "device_runtime.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[Device] Preflight: requested={mode}, actual={device}", flush=True)
+    for warning in report["warnings"]:
+        print(f"[Device Warning] {warning}", flush=True)
     entries = {entry.name: entry.value for entry in distribution("flwr").entry_points}
     superlink_entry = entries["flower-superlink"]
     module, function = superlink_entry.split(":", 1)
@@ -69,8 +101,7 @@ def main() -> int:
                         raise RuntimeError("Isolated SuperLink startup timed out.")
                     time.sleep(0.1)
             cli = next(entry for entry in distribution("flwr").entry_points if entry.name == "flwr").load()
-            config = tomli.loads((Path(args.project) / "pyproject.toml").read_text(encoding="utf-8"))
-            overrides = simulation_overrides(config)
+            overrides = simulation_overrides(config, device)
             print(f"[Config] Flower 仿真配置：{overrides}", flush=True)
             sys.argv = ["flwr", "run", args.project, "project-runtime", "--stream",
                         "--federation-config", overrides]

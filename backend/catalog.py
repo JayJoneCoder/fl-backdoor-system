@@ -15,6 +15,7 @@ from pathlib import Path
 
 from backend.results_scanner import get_experiment_detail
 from fl_backdoor.utils.paths import child_path, direct_files, experiment_path
+from fl_backdoor.utils.app_paths import state_root
 
 SCHEMA_VERSION = 1
 APPLICATION_ID = 0x464C4253
@@ -48,7 +49,7 @@ SCHEMA = (
 def default_database_path() -> Path:
     """Keep mutable platform state outside the training project/config/results."""
     value = os.environ.get("FL_BACKDOOR_DATABASE")
-    return Path(value).expanduser().resolve() if value else PROJECT_ROOT / "platform_state" / "catalog.sqlite3"
+    return Path(value).expanduser().resolve() if value else state_root() / "catalog.sqlite3"
 
 
 def _json(value) -> str:
