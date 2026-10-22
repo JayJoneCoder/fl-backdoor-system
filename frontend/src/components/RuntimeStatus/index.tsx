@@ -12,6 +12,7 @@ interface Report {
   selected_device: string;
   warnings: string[];
   guidance: string[];
+  simulation_backend?: 'local' | 'ray';
   ray?: {
     checked: boolean;
     ok: boolean | null;
@@ -49,12 +50,15 @@ export default function RuntimeStatus() {
         {report && <>
           <Typography.Text>PyTorch {report.torch || '未安装'} / torchvision {report.torchvision || '未安装'} / CUDA 构建 {report.cuda_build || '无'}</Typography.Text>
           <Typography.Text>
-            Flower 仿真后端：Ray {report.ray?.ray || ''} · {report.ray?.checked
-              ? (report.ray.ok ? `自检通过（${report.ray.seconds ?? '?'} 秒）` : '自检失败')
-              : '尚未自检（首次实验前自动检测，约 10–20 秒）'}
-            {report.ray?.checked_at_text ? ` · ${report.ray.checked_at_text}` : ''}
+            Flower 仿真后端：{report.simulation_backend === 'ray'
+              ? `Ray ${report.ray?.ray || ''} · ${report.ray?.checked
+                ? (report.ray.ok ? `自检通过（${report.ray.seconds ?? '?'} 秒）` : '自检失败')
+                : '尚未自检（首次实验前自动检测，约 10–20 秒）'}`
+              : '本地执行（不依赖 Ray；客户端顺序运行，结果可复现）'}
+            {report.simulation_backend === 'ray' && report.ray?.checked_at_text
+              ? ` · ${report.ray.checked_at_text}` : ''}
           </Typography.Text>
-          {report.ray?.checked && report.ray.ok === false && (
+          {report.simulation_backend === 'ray' && report.ray?.checked && report.ray.ok === false && (
             <Alert type="error" showIcon title="Ray 自检失败（Windows 下为实验性支持）"
               description={`${report.ray.error} 排查：把安装目录加入杀毒软件白名单；确认 VC++ 2015-2022 运行库已安装；Ray 临时目录已切换到 ${report.ray.ray_temp_dir || 'ASCII 路径'}。仍失败可在 WSL2 中运行或换一台机器。`} />
           )}

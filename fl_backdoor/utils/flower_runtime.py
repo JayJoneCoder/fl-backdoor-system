@@ -17,6 +17,11 @@ def create_entry_points(directory: Path) -> None:
     for entry in distribution("flwr").entry_points:
         if entry.group == "console_scripts":
             maker.make(f"{entry.name} = {entry.value}")
+    # SuperLink spawns `flwr-simulation` through PATH. Replace Flower's entry
+    # point so the Ray-free backend is registered before the VCE starts.
+    from fl_backdoor.simulation.entry import ENTRY_POINT
+
+    maker.make(f"flwr-simulation = {ENTRY_POINT}")
     if os.name != "nt":
         for path in directory.iterdir():
             path.chmod(path.stat().st_mode | 0o111)

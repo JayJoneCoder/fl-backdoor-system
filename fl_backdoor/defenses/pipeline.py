@@ -1130,6 +1130,11 @@ class DefensePipelineFedAvg(FedAvg):
         valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
         if not valid_replies:
             return None, None
+        # VCE backends deliver replies in completion order (Ray actors finish out
+        # of order), while clustering and Krum are order-sensitive. Sorting by
+        # node id keeps one config bit-for-bit reproducible across runs and
+        # across the Ray and local backends.
+        valid_replies = sorted(valid_replies, key=lambda reply: reply.metadata.src_node_id)
 
         filtered_replies, detection_metrics = self._apply_detection(server_round, valid_replies)
         arrays, aggregation_metrics = self._apply_aggregation(filtered_replies)

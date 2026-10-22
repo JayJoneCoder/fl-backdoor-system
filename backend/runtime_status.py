@@ -23,6 +23,9 @@ async def environment_status(*, refresh: bool = False) -> dict:
     result = await asyncio.to_thread(_cached_probe, sys.executable, os.environ.get("FL_BACKDOOR_TORCH_DIR", ""),
                                     os.environ.get("CUDA_VISIBLE_DEVICES", ""), int(time.monotonic() // 60))
     result = deepcopy(result)
+    from fl_backdoor.utils.ray_runtime import simulation_backend
+
+    result["simulation_backend"] = simulation_backend()
     result["ray"] = ray_status()
     return result
 

@@ -283,6 +283,23 @@ class SetupAndResourceTests(unittest.TestCase):
             result = subprocess.run([str(entry), "--help"], capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
 
+    def test_generated_simulation_entry_registers_the_local_backend(self):
+        from fl_backdoor.utils.flower_runtime import create_entry_points
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            create_entry_points(directory)
+            entry = directory / ("flwr-simulation.exe" if os.name == "nt" else "flwr-simulation")
+            self.assertTrue(entry.is_file())
+            env = os.environ.copy()
+            env["FL_BACKDOOR_SIM_BACKEND"] = "local"
+            result = subprocess.run([str(entry), "--help"], capture_output=True, timeout=90, env=env,
+                                    text=True, encoding="utf-8", errors="replace")
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, output)
+            self.assertIn("registered backend 'local'", output)
+            self.assertIn("usage", output.lower())
+
     def test_setup_http_requires_token_and_rejects_foreign_origin(self):
         from desktop.setup_server import setup_window
 
@@ -440,10 +457,12 @@ class SetupAndResourceTests(unittest.TestCase):
 
         config = {"tool": {"flwr": {"app": {"config": {"num-clients": 16}}}}}
         for mode in ("cpu", "cuda"):
-            overrides = simulation_overrides(config, mode)
+            with patch.dict(os.environ, {"FL_BACKDOOR_SIM_BACKEND": "local"}):
+                overrides = simulation_overrides(config, mode)
             values = {k.replace("-", "_"): v for k, v in parse_config_args([overrides]).items()}
             parsed = simulation_config_from_json(values)
             self.assertEqual(parsed.num_supernodes, 16)
+            self.assertEqual(parsed.backend, "local")
             self.assertEqual(parsed.client_resources_num_cpus, 1)
             self.assertEqual(parsed.client_resources_num_gpus, 1 if mode == "cuda" else 0)
             self.assertLessEqual(parsed.init_args_num_cpus, 2)

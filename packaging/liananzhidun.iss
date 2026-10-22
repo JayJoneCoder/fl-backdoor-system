@@ -122,11 +122,18 @@ begin
   begin
     if FileExists(ExpandConstant('{tmp}\vc_redist.x64.exe')) then
     begin
-      Log('Installing Microsoft Visual C++ 2015-2022 Redistributable');
-      Exec(ExpandConstant('{tmp}\vc_redist.x64.exe'), '/install /quiet /norestart', '',
-           SW_HIDE, ewWaitUntilTerminated, ResultCode);
-      Log('VC++ redist exit code: ' + IntToStr(ResultCode));
+      Log('Installing Microsoft Visual C++ 2015-2022 Redistributable (requesting elevation)');
+      // Per-user installs run unelevated; vc_redist needs admin.
+      if ShellExec('runas', ExpandConstant('{tmp}\vc_redist.x64.exe'),
+                   '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        Log('VC++ redist exit code: ' + IntToStr(ResultCode))
+      else
+        Log('VC++ redist could not be started (UAC cancelled or blocked)');
     end;
+    if (not VCRedistInstalled) and (not WizardSilent) then
+      MsgBox('未能自动安装 Microsoft Visual C++ 2015-2022 运行库。' + #13#10 +
+             '若平台提示缺少 DLL，请向管理员申请安装该运行库后重试。',
+             mbInformation, MB_OK);
   end;
 end;
 

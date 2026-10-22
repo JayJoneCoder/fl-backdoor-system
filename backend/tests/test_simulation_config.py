@@ -24,11 +24,31 @@ class SimulationOverridesTests(unittest.TestCase):
         for clients in (1, 3, 10, 100):
             with self.subTest(clients=clients):
                 self.assertEqual(simulation_overrides(flower_config(**{"num-clients": clients})),
-                                 f"num-supernodes={clients}")
+                                 f'num-supernodes={clients} backend="local"')
 
     def test_defaults_to_ten_without_explicit_field(self):
         self.assertEqual(simulation_overrides({"tool": {"flwr": {"app": {"config": {}}}}}),
-                         "num-supernodes=10")
+                         'num-supernodes=10 backend="local"')
+
+    def test_backend_defaults_to_local_and_accepts_an_explicit_override(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIn('backend="local"', simulation_overrides(flower_config()))
+        with patch.dict(os.environ, {"FL_BACKDOOR_SIM_BACKEND": "ray"}):
+            self.assertIn('backend="ray"', simulation_overrides(flower_config()))
+        with patch.dict(os.environ, {"FL_BACKDOOR_SIM_BACKEND": "unknown"}):
+            self.assertIn('backend="local"', simulation_overrides(flower_config()))
+
+    def test_flower_parses_the_selected_backend(self):
+        from flwr.common.config import parse_config_args
+        from flwr.supercore.utils import simulation_config_from_json
+
+        with patch.dict(os.environ, {"FL_BACKDOOR_SIM_BACKEND": "local"}):
+            overrides = simulation_overrides(flower_config())
+        values = {key.replace("-", "_"): value
+                  for key, value in parse_config_args([overrides]).items()}
+        parsed = simulation_config_from_json(values)
+        self.assertEqual(parsed.backend, "local")
+        self.assertEqual(parsed.num_supernodes, 10)
 
     def test_rejects_non_positive_or_non_integer_clients(self):
         for clients in (0, -1, 1.5, True, "3", None):

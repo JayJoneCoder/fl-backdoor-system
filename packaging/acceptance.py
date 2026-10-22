@@ -176,6 +176,18 @@ def run_experiment(client: Client, name: str, timeout: int, config: dict) -> dic
     raise SystemExit("实验超时，未在限定时间内结束。")
 
 
+def verify_backend(user: Path, name: str, backend: str) -> None:
+    log_path = user / "results" / name / "run.log"
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    if backend == "local":
+        if "[Simulation] local backend active" not in text or "Ray disabled" not in text:
+            raise SystemExit("本地后端未生效，run.log 中没有 LocalBackend 启动记录。")
+        if "[Ray] 自检通过" in text:
+            raise SystemExit("本地后端运行期间仍然初始化了 Ray。")
+    elif "[Ray] 自检通过" not in text:
+        raise SystemExit("Ray 后端未通过自检，run.log 中没有对应记录。")
+
+
 def verify_results(user: Path, name: str, status: dict) -> dict:
     directory = user / "results" / name
     files = sorted(path.name for path in directory.glob("*")) if directory.is_dir() else []
@@ -218,7 +230,9 @@ def main() -> int:
     parser.add_argument("--client-defense", default="none")
     parser.add_argument("--detection", default="none")
     parser.add_argument("--defense", default="none")
+    parser.add_argument("--backend", choices=("local", "ray"), default="local")
     args = parser.parse_args()
+    os.environ["FL_BACKDOOR_SIM_BACKEND"] = args.backend
     app = args.app.resolve()
     user = args.user_dir.resolve()
     prepare_user_dir(app, user)
@@ -255,6 +269,7 @@ def main() -> int:
             "defense": args.defense,
         })
         status = run_experiment(client, args.name, args.timeout, config)
+        verify_backend(user, args.name, args.backend)
         summary = verify_results(user, args.name, status)
     finally:
         stop_process(process)

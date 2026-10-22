@@ -48,7 +48,7 @@ class KrumSelectWithAdjustedParamsTest(unittest.TestCase):
             _krum_select(updates, f=3, k=3)
 
 
-def _reply(index: int, *, malicious: bool = False) -> Message:
+def _reply(index: int, *, malicious: bool = False, src_node_id: int | None = None) -> Message:
     content = RecordDict({
         "arrays": ArrayRecord({"w": Array(np.arange(4, dtype=np.float32) + index)}),
         "metrics": MetricRecord({
@@ -57,7 +57,25 @@ def _reply(index: int, *, malicious: bool = False) -> Message:
             "num-examples": 10,
         }),
     })
-    return Message(dst_node_id=0, message_type="train", content=content)
+    message = Message(dst_node_id=0, message_type="train", content=content)
+    message.metadata.__dict__["_src_node_id"] = index if src_node_id is None else src_node_id
+    return message
+
+
+class PipelineReplyOrderingTest(unittest.TestCase):
+    def test_train_replies_are_sorted_by_node_id_before_detection(self):
+        strategy = DefensePipelineFedAvg(pipeline_config=DefensePipelineConfig())
+        captured = {}
+
+        def detect(round_number, replies):
+            captured["ids"] = [message.metadata.src_node_id for message in replies]
+            return list(replies), MetricRecord()
+
+        strategy._apply_detection = detect
+        strategy._apply_aggregation = lambda replies: (None, MetricRecord())
+        replies = [_reply(index, src_node_id=index) for index in (4, 0, 9, 2, 1)]
+        strategy.aggregate_train(1, replies)
+        self.assertEqual(captured["ids"], [0, 1, 2, 4, 9])
 
 
 class PipelineKrumAdaptationTest(unittest.TestCase):

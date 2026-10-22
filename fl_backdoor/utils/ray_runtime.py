@@ -43,6 +43,16 @@ RAY_ENVIRONMENT = {
 }
 
 
+def simulation_backend() -> str:
+    """Return the simulation backend used by the packaged desktop build.
+
+    ``local`` is the default: Flower's only built-in backend is Ray, which is
+    experimental on Windows. Set ``FL_BACKDOOR_SIM_BACKEND=ray`` to compare.
+    """
+    value = os.environ.get("FL_BACKDOOR_SIM_BACKEND", "local").strip().lower()
+    return value if value in {"local", "ray"} else "local"
+
+
 def _is_ascii(value: str | None) -> bool:
     if not value:
         return True

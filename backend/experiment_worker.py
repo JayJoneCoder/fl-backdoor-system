@@ -3,11 +3,14 @@
 import sys
 
 
-def simulation_overrides(config: dict, device: str | None = None) -> str:
+def simulation_overrides(config: dict, device: str | None = None, backend: str | None = None) -> str:
     clients = config["tool"]["flwr"]["app"]["config"].get("num-clients", 10)
     if isinstance(clients, bool) or not isinstance(clients, int) or clients < 1:
         raise ValueError("实际客户端数必须是正整数。")
-    result = f"num-supernodes={clients}"
+    from fl_backdoor.utils.ray_runtime import simulation_backend
+
+    selected = backend or simulation_backend()
+    result = f'num-supernodes={clients} backend="{selected}"'
     if device is not None:
         import os
 
@@ -75,11 +78,12 @@ def main() -> int:
     for warning in report["warnings"]:
         print(f"[Device Warning] {warning}", flush=True)
 
-    from fl_backdoor.utils.ray_runtime import configure_ray_environment, probe_ray
+    from fl_backdoor.utils.ray_runtime import configure_ray_environment, probe_ray, simulation_backend
 
+    backend = simulation_backend()
     configure_ray_environment(os.environ)
-    if os.environ.get("FL_BACKDOOR_SKIP_RAY_PROBE") != "1":
-        # Flower's simulation backend is Ray. On Windows raylet/GCS frequently
+    if backend == "ray" and os.environ.get("FL_BACKDOOR_SKIP_RAY_PROBE") != "1":
+        # Flower's built-in backend is Ray. On Windows raylet/GCS frequently
         # fails behind antivirus or with a non-ASCII temp path; failing here
         # with a real reason is far better than "No heartbeat received".
         ray_report = probe_ray()
@@ -89,6 +93,8 @@ def main() -> int:
             raise RuntimeError("Ray 仿真后端自检失败：" + str(ray_report.get("error") or "未知错误"))
         print(f"[Ray] 自检通过：Ray {ray_report.get('ray')}，耗时 {ray_report.get('seconds')}s，"
               f"临时目录 {ray_report.get('ray_temp_dir')}", flush=True)
+    elif backend == "local":
+        print("[Simulation] backend=local (Ray is not started)", flush=True)
 
     entries = {entry.name: entry.value for entry in distribution("flwr").entry_points}
     superlink_entry = entries["flower-superlink"]

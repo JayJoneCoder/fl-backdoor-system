@@ -13,11 +13,20 @@
 7. GPU 不可用时显示警告及解决指引，CPU 运行需主动确认；强制 GPU 不可用则阻止。
 8. 使用内置前端，浏览器打开平台。启动器管理单实例、命名互斥量（供安装器检测）、健康检查及所属进程清理。关闭浏览器不会自动停止后台；关闭启动器会结束所属实验进程。
 9. 若配置窗口被直接关闭，180 秒无轮询后启动器自动取消并以原生弹窗提示，不会永久挂起。
-10. 每次实验启动前会做一次 Ray 自检（结果缓存 12 小时，失败缓存 5 分钟），通过后才拉起 Flower 模拟引擎；失败会直接给出 Ray 原因，而不是 Flower 的 `No heartbeat received`。
+10. **默认使用本地执行后端（不启动 Ray）**：客户端在仿真进程内顺序执行，结果可复现；如需 Ray，设置 `FL_BACKDOOR_SIM_BACKEND=ray`，届时会先做 Ray 自检（成功缓存 12 小时、失败 5 分钟）。
 
-## Windows Ray 故障排查
+## 仿真后端：本地（默认）/ Ray（可选）
 
-Flower 1.29 的模拟引擎**只支持 Ray**，而 Ray 官方标注 Windows 为实验性支持。`Exit Code: 700` 是 Flower 的 `SIMULATION_EXCEPTION`，通常表示 raylet/GCS 没有起来或中途崩溃，随后表现为 `finished:failed No heartbeat received from the run`。
+Flower 1.29 的模拟引擎只带 Ray 后端，而 Ray 在 Windows 上是实验性支持。桌面包通过 `fl_backdoor.simulation.entry` 覆盖 `flwr-simulation` 入口，注册 `LocalBackend` 并把 `backend="local"` 传给 Flower：
+
+- 不启动 GCS/raylet，不依赖 Ray 的原生进程；
+- 客户端顺序执行，调用前后保存/恢复全局 RNG，避免影响服务端的客户端选择；
+- 服务端回复按 `node_id` 排序后再做检测/聚合，Ray 与本地后端结果逐位一致；
+- 仍保留 Ray 作为可选后端（`FL_BACKDOOR_SIM_BACKEND=ray`），仅用于对比或排查。
+
+## Windows Ray 故障排查（仅在显式选择 Ray 时）
+
+`Exit Code: 700` 是 Flower 的 `SIMULATION_EXCEPTION`；随后常见 `finished:failed No heartbeat received from the run`，两者是同一事件：raylet/GCS 未启动或中途退出。
 
 本项目已做的加固：
 
