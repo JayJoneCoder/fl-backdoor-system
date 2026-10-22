@@ -4,7 +4,7 @@
 <body><main><h1>联安智盾 · 运行环境配置</h1><p>其他依赖、数据集和前端由发行包提供。首次使用仅需下载匹配的 <b>PyTorch 2.8.0 + torchvision 0.23.0</b>。</p>
 <p>CPU 版体积较小，但不能调用 CUDA。GPU 版需兼容的 NVIDIA 显卡和驱动，安装后必须通过实际运算自检；不以是否装有 CUDA Toolkit 作为依据。</p>
 <label>下载源 <select id="source"></select></label><small>国内镜像为第三方服务，可能同步延迟；无法下载请主动切换官方源。不会自动换源或关闭 HTTPS 校验。</small>
-<label>PyTorch 版本 <select id="build"></select></label><p>请预留 CPU 至少 2 GiB / GPU 至少 12 GiB 可用空间（含缓存；实际大小取决于所选 wheel）。安装到当前用户的私有目录，不修改系统 Python。</p>
+<label>PyTorch 版本 <select id="build"></select></label><p>请预留 CPU 至少 5 GiB / GPU 至少 16 GiB 可用空间（含缓存；实际大小取决于所选 wheel）。安装到当前用户的私有目录，不修改系统 Python。</p>
 <button id="install">下载并安装 / 换源重试</button><button id="refresh">重新检测</button>
 <pre id="report">正在检测显卡和运行环境…</pre><div id="warning" role="alert"></div><pre id="logs" aria-live="polite">安装日志将在这里显示</pre>
 <label>训练设备 <select id="mode"><option value="auto">自动（启动实验前确定）</option><option value="cpu">CPU</option><option value="cuda">强制 NVIDIA GPU（不可用则阻止）</option></select></label>

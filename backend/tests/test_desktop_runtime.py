@@ -134,6 +134,12 @@ class RuntimeInstallationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.install_command("https://arbitrary.invalid", "cpu", self.root)
 
+    def test_runtime_environment_never_writes_bytecode_into_install_dir(self):
+        env = runtime.runtime_environment()
+        self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertEqual(env["PYTHONNOUSERSITE"], "1")
+        self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[-1], str(app_paths.resource_root()))
+
     def test_active_record_cannot_escape_private_runtime_root(self):
         state = self.root / "platform_state"
         state.mkdir()
@@ -307,6 +313,45 @@ class SetupAndResourceTests(unittest.TestCase):
         names = {entry.split("==")[0] for entry in bundled_requirements()}
         self.assertTrue({"pip", "numpy", "pillow", "sympy", "flwr", "ray", "fastapi"} <= names)
         self.assertFalse({"torch", "torchvision"} & names)
+
+    def test_dependency_manifest_can_verify_a_bundle_without_torch(self):
+        from desktop import dependencies
+
+        real = dependencies.distribution
+
+        def fake(name):
+            if name in dependencies.EXTERNAL:
+                raise dependencies.PackageNotFoundError(name)
+            return real(name)
+
+        with patch.object(dependencies, "distribution", side_effect=fake):
+            names = {entry.split("==")[0] for entry in dependencies.bundled_requirements(allow_missing_external=True)}
+            # The two first-run wheels are absent, but their Windows runtime
+            # requirements must still be proven to exist in the bundle.
+            self.assertTrue({"pip", "numpy", "pillow", "sympy", "filelock", "networkx", "flwr", "ray"} <= names)
+            self.assertFalse({"torch", "torchvision"} & names)
+            with self.assertRaisesRegex(RuntimeError, "发行依赖缺失"):
+                dependencies.bundled_requirements()
+
+    def test_gui_entry_writes_logs_into_the_user_directory(self):
+        from desktop import start_gui
+
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {"FL_BACKDOOR_USER_DIR": temp}, clear=False):
+                self.assertEqual(start_gui.log_directory(), Path(temp).resolve() / "logs")
+        self.assertEqual(start_gui.application_root(), app_paths.resource_root())
+
+    def test_abandoned_setup_window_cancels_instead_of_hanging(self):
+        from desktop.setup_server import SetupState, setup_window
+
+        original = SetupState.IDLE_TIMEOUT
+        SetupState.IDLE_TIMEOUT = 0.5
+        try:
+            with patch("desktop.setup_server.webbrowser.open", side_effect=lambda *args, **kwargs: None):
+                with self.assertRaisesRegex(RuntimeError, "已关闭或长时间无响应"):
+                    setup_window({"cpu_available": True, "gpu_available": False, "warnings": [], "guidance": []})
+        finally:
+            SetupState.IDLE_TIMEOUT = original
 
     def test_cpu_fallback_must_be_acknowledged_and_forced_gpu_is_blocked(self):
         state = SetupState({"cpu_available": True, "gpu_available": False, "warnings": [], "guidance": []})

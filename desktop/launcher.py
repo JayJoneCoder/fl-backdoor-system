@@ -15,6 +15,26 @@ from desktop.runtime import active_runtime, probe, runtime_environment
 from desktop.setup_server import setup_window
 
 
+_PLATFORM_MUTEX = None
+
+
+def hold_platform_mutex() -> None:
+    """Expose a named mutex so the Inno Setup installer/uninstaller can detect us."""
+    global _PLATFORM_MUTEX
+    if os.name != "nt" or _PLATFORM_MUTEX is not None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateMutexW.restype = wintypes.HANDLE
+    handle = kernel.CreateMutexW(None, False, "LianAnZhiDunPlatform")
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    _PLATFORM_MUTEX = handle
+
+
 class InstanceLock:
     """OS-owned advisory lock is automatically released after a launcher crash."""
 
@@ -57,6 +77,7 @@ def main() -> int:
         print(json.dumps(probe(active_runtime()), ensure_ascii=False, indent=2))
         return 0
     os.environ["FL_BACKDOOR_DESKTOP"] = "1"
+    hold_platform_mutex()
     state_root().mkdir(parents=True, exist_ok=True)
     with InstanceLock():
         initialize_desktop()

@@ -17,9 +17,16 @@ from fl_backdoor.utils.app_paths import resource_root
 
 
 EXTERNAL = {"torch", "torchvision"}
+# Metadata of the two first-run wheels. Used only when verifying a bundled
+# environment that deliberately has no torch installed. Windows builds of
+# torch 2.8.0 / torchvision 0.23.0 do not need the Linux-only nvidia-* wheels.
+EXTERNAL_REQUIREMENTS = {
+    "torch": ["filelock", "typing-extensions", "sympy", "networkx", "jinja2", "fsspec"],
+    "torchvision": ["numpy", "pillow", "torch"],
+}
 
 
-def bundled_requirements() -> list[str]:
+def bundled_requirements(*, allow_missing_external: bool = False) -> list[str]:
     with (resource_root() / "pyproject.toml").open("rb") as stream:
         document = tomli.load(stream)
     # Include pip: first-run wheel install and portable Flower console launchers
@@ -35,8 +42,13 @@ def bundled_requirements() -> list[str]:
         try:
             installed = distribution(name)
         except PackageNotFoundError as exc:
-            raise RuntimeError(f"发行依赖缺失：{name}。请先修复构建环境，不要让评委补装。") from exc
-        if requirement.specifier and not requirement.specifier.contains(installed.version):
+            if not (allow_missing_external and name in EXTERNAL):
+                raise RuntimeError(f"发行依赖缺失：{name}。请先修复构建环境，不要让评委补装。") from exc
+            installed = None
+            requirements = EXTERNAL_REQUIREMENTS[name]
+        else:
+            requirements = installed.requires or []
+        if installed is not None and requirement.specifier and not requirement.specifier.contains(installed.version):
             raise RuntimeError(f"发行依赖不满足要求：{requirement}，实际为 {installed.version}")
         if name not in EXTERNAL:
             versions[name] = installed.version
@@ -45,15 +57,17 @@ def bundled_requirements() -> list[str]:
             if key in visited:
                 continue
             visited.add(key)
-            pending.extend((Requirement(value), extra) for value in installed.requires or [])
+            pending.extend((Requirement(value), extra) for value in requirements)
     return [f"{name}=={version}" for name, version in sorted(versions.items())]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="导出已验证环境中的随包依赖，不下载任何包")
     parser.add_argument("--output", type=Path, help="写出锁定版本清单；不指定则只打印")
+    parser.add_argument("--allow-missing-external", action="store_true",
+                        help="校验已随包但不安装 torch/torchvision 的发行环境")
     args = parser.parse_args()
-    entries = bundled_requirements()
+    entries = bundled_requirements(allow_missing_external=args.allow_missing_external)
     header = "# Windows x64 / CPython 3.11; export from verified environment.\n# torch/torchvision are the only first-run downloads.\n"
     content = header + "\n".join(entries) + "\n"
     if args.output:

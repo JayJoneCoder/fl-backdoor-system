@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import secrets
 import threading
+import time
 import webbrowser
 
 from desktop.runtime import BUILDS, SOURCES, active_runtime, install_runtime, probe
@@ -13,6 +14,10 @@ from fl_backdoor.utils.device import select_device
 
 
 class SetupState:
+    """IDLE_TIMEOUT cancels setup when the browser tab was closed without a choice."""
+
+    IDLE_TIMEOUT = 180
+
     def __init__(self, report: dict):
         self.report = report
         self.logs: list[str] = []
@@ -22,6 +27,11 @@ class SetupState:
         self.cancelled = False
         self.ready = threading.Event()
         self.lock = threading.Lock()
+        self.last_activity = time.monotonic()
+
+    def touch(self) -> None:
+        """The page polls /status every 1.5 s while it is still open."""
+        self.last_activity = time.monotonic()
 
     def install(self, source: str, build: str) -> None:
         with self.lock:
@@ -85,6 +95,7 @@ def setup_window(report: dict) -> str:
             if self.path.startswith("/?token="):
                 self.reply(200, (Path(__file__).parent / "setup.html").read_bytes(), "text/html; charset=utf-8")
             elif self.path == "/status" and self.authorized():
+                state.touch()
                 self.reply(200, {"sources": SOURCES, "builds": BUILDS, "report": state.report,
                                  "logs": state.logs[-300:], "installing": state.installing, "error": state.error})
             else:
@@ -131,7 +142,15 @@ def setup_window(report: dict) -> str:
         print(f"运行环境配置窗口：{url}", flush=True)
         try:
             webbrowser.open(url, new=1)
-            state.ready.wait()
+            deadline = time.monotonic() + state.IDLE_TIMEOUT
+            while not state.ready.wait(1.0):
+                if state.installing:
+                    # A download may legitimately run for many minutes.
+                    deadline = time.monotonic() + state.IDLE_TIMEOUT
+                    continue
+                if time.monotonic() > deadline:
+                    state.cancelled = True
+                    raise RuntimeError("运行环境配置窗口已关闭或长时间无响应，启动已取消。请重新启动联安智盾。")
         finally:
             server.shutdown()
             thread.join()

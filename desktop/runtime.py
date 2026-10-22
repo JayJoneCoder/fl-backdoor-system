@@ -25,8 +25,10 @@ VERSIONS = {"torch": "2.8.0", "torchvision": "0.23.0"}
 
 def runtime_environment(target: Path | None = None) -> dict:
     env = os.environ.copy()
-    # Never accidentally import another user's globally installed packages.
-    env.update(PYTHONNOUSERSITE="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    # Never accidentally import another user's globally installed packages, and
+    # never write __pycache__ into the (possibly read-only) installation folder.
+    env.update(PYTHONNOUSERSITE="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
+               PYTHONDONTWRITEBYTECODE="1")
     if target:
         env["FL_BACKDOOR_TORCH_DIR"] = str(target)
     else:
@@ -136,8 +138,8 @@ def install_runtime(source: str, build: str, log=print) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     target = root / f"torch-{build}-{uuid.uuid4().hex}"
     command = install_command(source, build, target)
-    if shutil.disk_usage(root).free < (2 if build == "cpu" else 12) * 1024**3:
-        raise RuntimeError("磁盘空间不足：CPU 安装至少预留 2 GiB，CUDA 安装至少预留 12 GiB（含下载缓存）。")
+    if shutil.disk_usage(root).free < (5 if build == "cpu" else 16) * 1024**3:
+        raise RuntimeError("磁盘空间不足：CPU 安装至少预留 5 GiB，CUDA 安装至少预留 16 GiB（含下载缓存；缓存在用户目录 cache\\pip，可在安装成功后清理）。")
     log("安装到私有用户目录；仅下载 torch 和 torchvision，不修改系统 Python。")
     log("正在检查所选源是否具有精确匹配的 Windows wheel…")
     check_source(source, build)

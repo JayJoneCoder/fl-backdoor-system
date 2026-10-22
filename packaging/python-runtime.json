@@ -1,0 +1,11 @@
+{
+  "tag": "20261021",
+  "asset": "cpython-3.11.17+20261021-x86_64-pc-windows-msvc-install_only.tar.gz",
+  "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261021/cpython-3.11.17%2B20261021-x86_64-pc-windows-msvc-install_only.tar.gz",
+  "mirrors": [
+    "https://gh-proxy.com/https://github.com/astral-sh/python-build-standalone/releases/download/20261021/cpython-3.11.17%2B20261021-x86_64-pc-windows-msvc-install_only.tar.gz"
+  ],
+  "sha256": "136bbb2e50fe037fd5e32126e70e95b35d1fa5dac5bd04a55b8088415ee99540",
+  "python": "3.11",
+  "note": "Relocatable CPython used by the Windows installer. Every URL must match the pinned SHA256."
+}
