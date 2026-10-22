@@ -10,6 +10,7 @@ import time
 import webbrowser
 
 from desktop.runtime import BUILDS, SOURCES, active_runtime, install_runtime, probe, speed_test
+from fl_backdoor.utils.app_paths import resource_root
 from fl_backdoor.utils.device import select_device
 
 
@@ -43,7 +44,7 @@ class SetupState:
         with self.lock:
             last_done, last_time = self._progress_sample
             elapsed = now - last_time
-            if elapsed >= 0.5:
+            if elapsed >= 0.2:
                 speed = max(0.0, (done - last_done) / elapsed)
                 if speed > 0:
                     self._progress_speed = speed
@@ -148,6 +149,12 @@ def setup_window(report: dict) -> str:
         def do_GET(self):
             if self.path.startswith("/?token="):
                 self.reply(200, (Path(__file__).parent / "setup.html").read_bytes(), "text/html; charset=utf-8")
+            elif self.path == "/favicon.svg":
+                icon = resource_root() / "frontend" / "dist" / "favicon.svg"
+                if icon.is_file():
+                    self.reply(200, icon.read_bytes(), "image/svg+xml")
+                else:
+                    self.reply(404, {"detail": "logo 不存在。"})
             elif self.path == "/status" and self.authorized():
                 state.touch()
                 self.reply(200, {"sources": SOURCES, "builds": BUILDS, "report": state.report,

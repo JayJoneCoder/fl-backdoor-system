@@ -355,6 +355,9 @@ class SetupAndResourceTests(unittest.TestCase):
                 self.assertEqual(denied.exception.code, 403)
                 with request("/status") as response:
                     self.assertIn("official", json.load(response)["sources"])
+                with urllib.request.urlopen(base + "/favicon.svg", timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(b"<svg", response.read())
                 with request("/continue", {"mode": "cpu", "acknowledge": True}) as response:
                     self.assertEqual(response.status, 200)
             finally:
@@ -518,6 +521,22 @@ class SetupAndResourceTests(unittest.TestCase):
                                  "import sys, desktop.launcher; assert 'torch' not in sys.modules; assert 'fastapi' not in sys.modules"],
                                 cwd=app_paths.resource_root(), capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ConsoleWindowTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows-only subprocess flag")
+    def test_desktop_sitecustomize_suppresses_console_windows(self):
+        root = str(app_paths.resource_root())
+        code = "import subprocess; print(subprocess.Popen.__name__)"
+        env = {**os.environ, "PYTHONPATH": root}
+        env.pop("FL_BACKDOOR_DESKTOP", None)
+        normal = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                                text=True, timeout=30)
+        self.assertEqual(normal.stdout.strip(), "Popen", normal.stderr)
+        env["FL_BACKDOOR_DESKTOP"] = "1"
+        hidden = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                                text=True, timeout=30)
+        self.assertEqual(hidden.stdout.strip(), "_NoWindowPopen", hidden.stderr)
 
 
 if __name__ == "__main__":

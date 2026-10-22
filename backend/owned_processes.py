@@ -163,6 +163,7 @@ class OwnedProcessTree:
     def spawn(self, worker_path, arguments, **kwargs):
         # The worker reads this gate BEFORE importing Flower or spawning anything.
         # Assigning it to a Job first eliminates the child-before-assignment race.
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         process = subprocess.Popen(
             [sys.executable, "-u", str(worker_path), *arguments],
             stdin=subprocess.PIPE, start_new_session=os.name != "nt", **kwargs,

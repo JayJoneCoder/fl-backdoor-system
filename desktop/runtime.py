@@ -162,7 +162,7 @@ def download_wheel(url: str, destination: Path, expected: int | None, progress, 
             stream.write(chunk)
             done += len(chunk)
             now = time.monotonic()
-            if now - last >= 0.4:
+            if now - last >= 0.2:
                 progress(done)
                 last = now
     if expected is not None and done != expected:

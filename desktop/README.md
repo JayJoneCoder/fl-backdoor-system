@@ -16,13 +16,13 @@
 10. **默认使用本地执行后端（不启动 Ray）**：客户端在仿真进程内顺序执行，结果可复现；如需 Ray，设置 `FL_BACKDOOR_SIM_BACKEND=ray`，届时会先做 Ray 自检（成功缓存 12 小时、失败 5 分钟）。
 
 ## 仿真后端：本地（默认）/ Ray（可选）
-
 Flower 1.29 的模拟引擎只带 Ray 后端，而 Ray 在 Windows 上是实验性支持。桌面包通过 `fl_backdoor.simulation.entry` 覆盖 `flwr-simulation` 入口，注册 `LocalBackend` 并把 `backend="local"` 传给 Flower：
 
 - 不启动 GCS/raylet，不依赖 Ray 的原生进程；
 - 客户端顺序执行，调用前后保存/恢复全局 RNG，避免影响服务端的客户端选择；
 - 服务端回复按 `node_id` 排序后再做检测/聚合，Ray 与本地后端结果逐位一致；
-- 仍保留 Ray 作为可选后端（`FL_BACKDOOR_SIM_BACKEND=ray`），仅用于对比或排查。
+- 仍保留 Ray 作为可选后端（`FL_BACKDOOR_SIM_BACKEND=ray`），仅用于对比或排查；
+- 桌面模式由根目录 `sitecustomize.py` 为所有子进程追加 `CREATE_NO_WINDOW`，Flower 生成的 `flwr-*` 控制台启动器不再弹出终端黑框。
 
 ## Windows Ray 故障排查（仅在显式选择 Ray 时）
 

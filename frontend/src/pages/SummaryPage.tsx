@@ -473,7 +473,7 @@ const SummaryPage: React.FC = () => {
                   <ResponsiveContainer width="100%" height={300}>
                     <LineChart data={chartData}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="round" label={{ value: '轮次', position: 'insideBottom', offset: -4 }} />
+                      <XAxis dataKey="round" />
                       <YAxis />
                       <RechartsTooltip />
                       <Legend />
@@ -490,12 +490,13 @@ const SummaryPage: React.FC = () => {
                       ))}
                     </LineChart>
                   </ResponsiveContainer>
+                  <div style={{ textAlign: 'right', color: '#8592a5', fontSize: 12, paddingRight: 18, marginTop: 2 }}>轮次</div>
 
                   <h4 style={{ marginTop: 24 }}>所有实验攻击成功率（ASR）曲线对比</h4>
                   <ResponsiveContainer width="100%" height={300}>
                     <LineChart data={chartData}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="round" label={{ value: '轮次', position: 'insideBottom', offset: -4 }} />
+                      <XAxis dataKey="round" />
                       <YAxis />
                       <RechartsTooltip />
                       <Legend />
@@ -512,6 +513,7 @@ const SummaryPage: React.FC = () => {
                       ))}
                     </LineChart>
                   </ResponsiveContainer>
+                  <div style={{ textAlign: 'right', color: '#8592a5', fontSize: 12, paddingRight: 18, marginTop: 2 }}>轮次</div>
                   <Divider />
                 </>
               )}

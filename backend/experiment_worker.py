@@ -106,7 +106,8 @@ def main() -> int:
             sys.executable, "-u", "-c", boot, "--insecure", "--simulation",
             "--isolation", "subprocess", "--control-api-address", args.address,
             "--serverappio-api-address", "127.0.0.1:0",
-        ], stdout=logs, stderr=subprocess.STDOUT, env=os.environ.copy(), cwd=args.project)
+        ], stdout=logs, stderr=subprocess.STDOUT, env=os.environ.copy(), cwd=args.project,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         print(f"[Runner] Starting isolated SuperLink on {args.address}...", flush=True)
         with grpc.insecure_channel(args.address) as channel:
             stub = ControlStub(channel)

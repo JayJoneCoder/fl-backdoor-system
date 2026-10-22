@@ -638,7 +638,7 @@ const ExperimentHistory: React.FC = () => {
                       )}
                     >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="round" label={{ value: '轮次', position: 'insideBottom', offset: -4 }} />
+                      <XAxis dataKey="round" />
                       <YAxis />
                       <RechartsTooltip />
                       <Legend />
@@ -656,6 +656,7 @@ const ExperimentHistory: React.FC = () => {
                       />
                     </LineChart>
                   </ResponsiveContainer>
+                  <div style={{ textAlign: 'right', color: '#8592a5', fontSize: 12, paddingRight: 18, marginTop: 2 }}>轮次</div>
                 </div>
               )}
 

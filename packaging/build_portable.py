@@ -35,7 +35,7 @@ except ModuleNotFoundError:  # Python 3.10 build hosts
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = Path(__file__).resolve().parent
 APP_DIRS = ("backend", "desktop", "fl_backdoor", "scripts", "docs")
-APP_FILES = ("pyproject.toml", "README.md", "LICENSE")
+APP_FILES = ("pyproject.toml", "README.md", "LICENSE", "sitecustomize.py")
 REQUIRED_DATA = (
     "MNIST/raw/train-images-idx3-ubyte",
     "MNIST/raw/t10k-images-idx3-ubyte",
