@@ -120,7 +120,8 @@ def start_api(app: Path, user: Path, target: Path, log_path: Path):
     stream = log_path.open("w", encoding="utf-8")
     process = subprocess.Popen([str(private_python(app)), "-u", str(app / "desktop" / "api_entry.py"),
                                 "--ready-file", str(ready)], cwd=str(app), env=env, stdin=subprocess.PIPE,
-                               stdout=stream, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+                               stdout=stream, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     process.log_stream = stream
     process.stdin.write("start\n")
     process.stdin.flush()
